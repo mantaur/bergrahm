@@ -1,0 +1,87 @@
+@import url('https://fonts.googleapis.com/css?family=Lexend+Deca&display=swap');
+
+* {
+    box-sizing: border-box;
+    font-family: 'Lexend Deca', sans-serif;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+}
+
+.nav ul {
+    margin: 0;
+}
+
+.nav li {
+    display: inline;
+}
+
+.nav a {
+    display: inline-block;
+    padding: .8em;
+    color: black;
+    text-decoration: none;
+    font-size: 200%;
+}
+
+.nav a:hover {
+    background-color: rgba(0, 0, 0, .1)
+}
+
+.main-nav {
+    text-align: center;
+    font-weight: lighter;
+}
+
+.main-nav li {
+    padding: 0 5%;
+}
+
+.projects-nav a {
+    display: block;
+    padding: 2em;
+    color: black;
+    text-decoration: none;
+    font-size: 160%;
+    background-color: rgba(0, 0, 0, .1);
+
+}
+
+.projects-nav a:hover {
+    background-color: rgba(109, 52, 52, 0.2);
+}
+
+.projects-nav span {
+    color: red;
+    padding: 0;
+}
+
+.main-header h1 {
+    background-color: rgba(0, 0, 0, .3);
+    background-image: url("images/mountain_PNG30.webp");
+    background-size: cover;
+    background-blend-mode: multiply;
+    font-size: 50px;
+    color: rgb(224, 223, 223);
+    margin: 0;
+    text-align: center;
+    display: block;
+    padding: 5em;
+}
+
+.content-section {
+    padding: 1em;
+    text-align: center;
+}
+
+.footer-nav img {
+    width: 50px;
+    height: 50px;
+}
+
+.footer-nav {
+    flex-grow: 1;
+    text-align: end;
+}
