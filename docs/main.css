@@ -60,7 +60,7 @@ html, body {
 
 .main-header h1 {
     background-color: rgba(0, 0, 0, .3);
-    background-image: url("images/mountain_PNG30.png");
+    background-image: url("images/mountain.jpg");
     background-size: cover;
     background-blend-mode: multiply;
     font-size: 50px;
