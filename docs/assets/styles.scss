@@ -1,0 +1,125 @@
+@import url('https://fonts.googleapis.com/css?family=Lexend+Deca&display=swap');
+
+$padding: 1em;
+$font: 'Lexend Deca', Arial, Helvetica, sans-serif;
+$fontColor: #ddd;
+$logo: url("assets/images/logo3");
+
+$scale: 99%;
+
+* {
+
+  font-family: $font;
+  color: $fontColor;
+}
+
+html, body {
+  background: #1c1c1c;
+  width: $scale;
+  height: $scale;
+}
+
+
+
+// .wrapper > div{
+//   background:#222;
+// }
+// .wrapper > div:nth-child(odd){
+//   background:#444;
+// }
+
+img.icon{
+  width: 4em;
+}
+
+.box {
+  background-color: #252525;
+  border-radius: 1em;
+  margin: 1em;
+  padding: 1em;
+}
+
+.nav{
+  grid-area: nav;
+  grid-column: span 3;
+  display: grid;
+  gap: 2em;
+  grid-template-columns: 1fr auto 1fr;
+
+  li{
+    display: inline;
+  }
+}
+.navItem{
+  padding: 1em;
+  grid-template-columns: auto;
+  justify-self: center;
+}
+
+a {
+  text-decoration: none;
+}
+a:hover{
+  color: springgreen;
+}
+
+.body{
+  grid-area: body;
+  justify-self: center;
+  align-self: start;
+  margin: 1em;
+  // display: grid;
+  // grid-template-rows: 1fr auto 1fr;
+  // gap: 2em;
+}
+
+.body2{
+  align-self: start;
+  grid-area: body2;
+  // display: grid;
+ // grid-template-rows: 1fr 1fr 1fr;
+  grid-column: span 3;
+}
+
+.foot{
+  grid-area: foot;
+  grid-template-columns: auto;
+  align-self: end;
+  justify-self: center;
+  display: grid;
+  gap: 2em;
+  grid-template-columns: 1fr auto;
+}
+.foot1{
+  grid-column: 1;
+  align-self: center;
+}
+.foot2{
+  grid-column: 2;
+}
+
+.wrapper{
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: 3% auto auto auto;
+  grid-template-areas:  "nav"
+                        "body"
+                        "body2"
+                        "foot";
+  gap: 2em;
+}
+
+@media only screen and (min-width: 720px)  {
+  .wrapper{
+    min-height: 100%;
+    display: grid;
+    grid-template-rows: 3% auto auto auto;
+    grid-template-columns: auto auto auto;
+    grid-template-areas:  "nav nav nav"
+                          "body body body"
+                          "body2 body2 body2"
+                          "foot foot foot";
+    gap: 2em;
+    
+  }
+}

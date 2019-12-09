@@ -1,0 +1,68 @@
+@import url("https://fonts.googleapis.com/css?family=Lexend+Deca&display=swap");
+* {
+  font-family: "Lexend Deca", Arial, Helvetica, sans-serif;
+  color: #ddd; }
+
+html, body {
+  background: #1c1c1c;
+  width: 99%;
+  height: 99%; }
+
+.wrapper {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: 3% auto;
+  grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+  gap: 1em; }
+
+a {
+  text-decoration: none; }
+
+a:hover {
+  color: springgreen; }
+
+.nav {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2em;
+  grid-template-columns: 1fr auto 1fr; }
+  .nav li {
+    display: inline; }
+
+.navItem {
+  padding: 1em;
+  grid-template-columns: auto;
+  justify-self: center; }
+
+.box {
+  background-color: #222;
+  border-radius: 1em;
+  padding: 1em;
+  align-self: start;
+  justify-self: center; }
+
+.header {
+  grid-column: 1 / -1;
+  justify-self: center; }
+
+.foot {
+  grid-column: 1 / -1;
+  align-self: end;
+  justify-self: center;
+  display: grid;
+  gap: 2em;
+  grid-template-columns: 1fr auto; }
+
+.foot1 {
+  grid-column: 1;
+  align-self: center; }
+
+.foot2 {
+  grid-column: 2; }
+
+img.icon {
+  width: 6em; }
+
+*.clickable:hover {
+  opacity: 0.7;
+  transition: .25s ease; }

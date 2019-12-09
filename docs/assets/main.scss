@@ -1,0 +1,86 @@
+@import url('https://fonts.googleapis.com/css?family=Lexend+Deca&display=swap');
+
+$font: 'Lexend Deca', Arial, Helvetica, sans-serif;
+$fontColor: #ddd;
+$scale: 99%;
+$numProjects: 3;
+
+
+* {
+  font-family: $font;
+  color: $fontColor
+}
+
+html, body {
+  background: #1c1c1c;
+  width: $scale;
+  height: $scale;
+}
+
+.wrapper {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: 3% auto;
+  grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+  gap: 1em;
+}
+
+a {
+  text-decoration: none;
+}
+a:hover{
+  color: springgreen;
+}
+
+.nav {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2em;
+  grid-template-columns: 1fr auto 1fr;
+
+  li{
+    display: inline;
+  }
+}
+.navItem{
+  padding: 1em;
+  grid-template-columns: auto;
+  justify-self: center;
+}
+
+.box {
+  background-color: #222;
+  border-radius: 1em;
+  padding: 1em;
+  align-self: start;
+  justify-self: center;
+}
+
+.header {
+  grid-column: 1 / -1;
+  justify-self: center;
+}
+
+.foot {
+  grid-column: 1 / -1;
+  align-self: end;
+  justify-self: center;
+  display: grid;
+  gap: 2em;
+  grid-template-columns: 1fr auto;
+}
+.foot1{
+  grid-column: 1;
+  align-self: center;
+}
+.foot2{
+  grid-column: 2;
+}
+
+img.icon{
+  width: 6em;
+}
+*.clickable:hover{
+  opacity: 0.7;
+  transition: .25s ease;
+}
