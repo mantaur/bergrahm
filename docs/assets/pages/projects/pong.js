@@ -144,8 +144,8 @@ var Game = /** @class */ (function () {
             Game.keyDown = false;
         });
         this.canvas = document.getElementById("canvas");
-        this.canvas.height = window.innerHeight - 100;
-        this.canvas.width = window.innerWidth;
+        this.canvas.height = window.innerHeight - 150;
+        this.canvas.width = window.innerWidth - 150;
         this.ctx = this.canvas.getContext("2d");
         this.ctx.font = 'bold 50px serif';
         //Variables for objects
