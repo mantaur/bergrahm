@@ -43,7 +43,10 @@ a:hover {
 
 .header {
   grid-column: 1 / -1;
-  justify-self: center; }
+  justify-self: center;
+  text-align: center;
+  width: 40%;
+}
 
 .foot {
   grid-column: 1 / -1;
