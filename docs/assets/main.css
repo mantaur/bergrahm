@@ -4,7 +4,8 @@
   color: #ddd; }
 
 html, body {
-  background: #1c1c1c;
+  /* background: #1c1c1c; */
+  background: rgb(24,26,27);
   width: 99%;
   height: 99%; }
 
@@ -35,11 +36,14 @@ a:hover {
   justify-self: center; }
 
 .box {
-  background-color: #222;
+  background-color: rgb(37,37,38);
   border-radius: 1em;
   padding: 1em;
   align-self: start;
   justify-self: center; }
+.box:hover {
+  background-color: rgb(51,51,51);
+}
 
 .header {
   grid-column: 1 / -1;
