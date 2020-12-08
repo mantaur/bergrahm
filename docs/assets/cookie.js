@@ -26,7 +26,7 @@ function checkCookie() {
   var accCookies=getCookie("accepted");
   if (accCookies != "" && accCookies != null) {
     off();
-    alert("Welcome again " + accCookies);
+    // alert("Welcome again " + accCookies);
   } else {
     on();
   }
