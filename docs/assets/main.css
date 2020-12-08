@@ -27,8 +27,9 @@ a:hover {
   display: grid;
   /* gap: 1em; */
   grid-template-columns: 1fr auto 1fr; }
-  .nav li {
-    display: inline; }
+
+.nav li {
+  display: inline; }
 
 .navItem {
   padding: 1em;
@@ -74,4 +75,39 @@ img.icon {
 
 *.clickable:hover {
   opacity: 0.7;
-  transition: .25s ease; }
+  transition: .25s ease; 
+  cursor: pointer;}
+
+.cookieBlock {
+  position: fixed;
+  display: none;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0; 
+  background-image: url("https://bergrahm.com/assets/images/hexagon_patternLight2.webp");
+  /* background-color: rgba(0,0,0,0.5); */
+  z-index: 2;
+  cursor: not-allowed;
+}
+
+.cookieText {
+  position: relative;
+  top: 40%;
+  left: 42%;
+  right: 58%;
+  bottom: 60%;
+}
+
+.cookieItem {
+  padding-left: 1em;
+  padding-right: 1em;
+  position: relative;
+  top: 44%;
+  left: 42%;
+  right: 58%;
+  bottom: 56%; 
+  display: inline-flex;
+}
