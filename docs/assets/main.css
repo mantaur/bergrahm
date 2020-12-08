@@ -88,7 +88,7 @@ img.icon {
   right: 0;
   bottom: 0; 
   background-image: url("https://bergrahm.com/assets/images/hexagon_patternLight2.webp");
-  /* background-color: rgba(0,0,0,0.5); */
+  background-color: rgba(0,0,0,0.2);
   z-index: 2;
   cursor: not-allowed;
 }
@@ -96,8 +96,8 @@ img.icon {
 .cookieText {
   position: relative;
   top: 40%;
-  left: 42%;
-  right: 58%;
+  left: 43%;
+  right: 57%;
   bottom: 60%;
 }
 
@@ -106,8 +106,8 @@ img.icon {
   padding-right: 1em;
   position: relative;
   top: 44%;
-  left: 42%;
-  right: 58%;
+  left: 43%;
+  right: 57%;
   bottom: 56%; 
   display: inline-flex;
 }
