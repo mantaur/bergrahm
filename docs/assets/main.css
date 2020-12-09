@@ -88,6 +88,8 @@ img.icon {
   right: 0;
   bottom: 0; 
   background-image: url("https://bergrahm.com/assets/images/hexagon_patternLight2.webp");
+  /* Background image cred: https://www.deviantart.com/black-light-studio/art/Free-Hexagon-pattern-02-371945610
+  license: cc0 or cc3, both are mentioned at site... */
   background-color: rgba(0,0,0,0.2);
   z-index: 2;
   cursor: not-allowed;
