@@ -76,6 +76,9 @@ img.icon {
   margin-right: auto;
   width: 6em; }
 
+img.picture {
+  max-width: 100%; }
+
 *.clickable:hover {
   opacity: 0.7;
   transition: .25s ease; 
