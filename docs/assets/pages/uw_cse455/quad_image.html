@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-154658393-1"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+
+        gtag('config', 'UA-154658393-1');
+    </script>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <meta name="Description" content="Presentation of UW CSE455 final project">
+
+
+    <link rel="stylesheet" href="../../main.css">
+    <link rel="shortcut icon" type="image/png" href="../../images/favicon2.png" />
+    <!-- <link rel="shortcut icon" type="image/png" href="{{ "/assets/images/favicon.png"  | absolute_url }}"/> -->
+    <title>Quad image</title>
+</head>
+
+<body>
+    <div class="wrapper" >
+        <div></div> <!-- Dummy div just to align things right -->
+        <div class="header">
+            <h1>Quad image</h1>
+            <p>Using quadtrees to compress image size for varying levels of quality across different regions of image. The
+              algorithm makes more sense in a video setting than stillframe images, but nontheless for illustration purposes
+              images serve to illustrate its functionality. What promoted this approach is how whenever we look at something
+              our eyes move to put focus on one part of our vision and the rest ends up in our peripheral. So given an image
+              and a region of focus we could save the data in a format where the subjective loss of quality is lower than
+              the loss in data size.
+            </p>
+        </div>
+
+        <a class="box" href="https://github.com/mantaur/iot/tree/main/automaticWatering" target="_blank" rel="noreferrer">
+            Github repo
+            <p>The code for the quad image datastructure and related algorithms</p>
+        </a>
+        <a class="box" href="https://www.youtube.com/watch?v=XllpVXI_b4k" target="_blank" rel="noreferrer">
+            Youtube
+            <p>Video explaining datastructure and algorithm.</p>
+        </a>
+
+        <div class="header">
+            <h2>Sample images</h2>
+            <p>The following 512x512 photo shows a dog, with the rear of truck on a street behind it.</p>
+            <img class="header" src="./dog_512.jpg" alt="A picture of a final watering setup">
+            <p>Pixel groups as large as (2^5)x(2^5) grouped together, with two areas of focus (manually added).</p>
+            <img class="header" src="./dog_512-5-2squares.jpg" alt="A picture of a final watering setup">
+            <p>2048x2048 photo of a wall with some pictures on it.</p>
+            <img class="header" src="./wall2_square.jpg" alt="A picture of a final watering setup">
+            <p>Pixel groups as large as (2^5)x(2^5) grouped together, with 9 areas of focus (manually added).</p>
+            <img class="header" src="./wall2_square_comp5-9squares.jpg" alt="A picture of a final watering setup">
+        </div>
+
+        <div class="foot">
+            <!-- <div class="foot1"><a href="../../../index.html">Bergrahm</a></div> -->
+            <div class="foot2"><a href="../../../index.html"><img class="icon clickable" src="../../images/logo2.webp" alt="Mountain in frame"></a></div>
+        </div>
+    </div>
+</body>
+
+</html>
