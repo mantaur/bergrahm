@@ -6,7 +6,7 @@
 html, body {
   /* background: #1c1c1c; */
   background: rgb(24,26,27);
-  width: 99%;
+  width: 99.5%;
   height: 99%; }
 
 .wrapper {
@@ -62,29 +62,36 @@ a:hover {
   display: grid;
   gap: 2em;
   grid-template-columns: 1fr auto; }
-
-.foot1 {
-  grid-column: 1;
+  
+  .foot1 {
+    grid-column: 1;
   align-self: center; }
 
-.foot2 {
-  grid-column: 2; }
-
-img.icon {
-  display: block;
-  margin-left: auto;
-  margin-right: auto;
-  width: 6em; }
-
+  .foot2 {
+    grid-column: 2; }
+    
+    img.icon {
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
+      width: 6em; }
+      
 img.picture {
   max-width: 100%; }
+  
+  img.panorama {
+    grid-column: 1 / -1;
+    justify-self: center;
+    text-align: center;
+    max-width: 100%;
+  }
 
 *.clickable:hover {
   opacity: 0.7;
   transition: .25s ease; 
   cursor: pointer;}
-
-.cookieBlock {
+  
+  .cookieBlock {
   position: fixed;
   display: none;
   width: 100%;
