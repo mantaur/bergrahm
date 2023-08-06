@@ -19,8 +19,12 @@
 </head>
 
 <body>
-    <button id="1" onclick="oneEuler()">Complete Orbit</button>
-    <button id="2" onclick="euler()">100 steps</button> USE ARROW KEYS TO MOVE CANVAS, + (zoom out), - (Zoom out)
+    <button id="2" onclick="euler()">Standard Euler</button>
+    <button id="1" onclick="impEuler()">Improved Euler</button>
+    <button id="1" onclick="euler_cromer()">Euler-Cromer</button>
+    <p>USE ARROW KEYS TO MOVE CANVAS, + (zoom out), - (Zoom out) [Written 2020]</p>
+    <p>Each Method simulates 1 year of the Earth's orbit around the Sun. Code is innefficient so wait for 10 seconds after clicking a button.</p>
+
     <div id="drawing"></div>
     <script src="orbit.js"></script>
 </body>
