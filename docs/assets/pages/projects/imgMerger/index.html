@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-0FMB6WDGXG"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-0FMB6WDGXG');
+  </script>
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
+
+  <link rel="stylesheet" href="../../../main.css">
+  <link rel="stylesheet" href="imageMerge.css">
+  <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
+  <title>Image Merger</title>
+</head>
+
+<body>
+  <div class="wrapper">
+    <div class="nav">
+      <div class="navItem"><a href="../../../../index.html">Bergrahm</a></div>
+      <div class="navItem"><a href="../projects.html">Projects</a></div>
+      <div class="navItem"><a href="../../contact.html">Contact</a></div>
+    </div>
+
+    <div class="header">
+      <h1>Image Merger</h1>
+      <p>Upload images, paint the regions that must stay visible, then merge them into a single output image.</p>
+    </div>
+
+    <!-- ── STEP 0: Configuration ── -->
+    <div class="im-section" id="section-config">
+      <h2 class="im-step-title">Step 1 — Configure</h2>
+
+      <div class="im-config-grid">
+        <div class="im-field">
+          <label for="cfg-width">Output width (px)</label>
+          <input type="number" id="cfg-width" value="1080" min="1">
+        </div>
+        <div class="im-field">
+          <label for="cfg-height">Output height (px)</label>
+          <input type="number" id="cfg-height" value="1920" min="1">
+        </div>
+        <div class="im-field">
+          <label for="cfg-min-scale">Min scale</label>
+          <div class="im-slider-row">
+            <input type="range" id="cfg-min-scale" min="0.1" max="1" step="0.05" value="0.5">
+            <span id="cfg-min-scale-val">0.5×</span>
+          </div>
+        </div>
+        <div class="im-field">
+          <label for="cfg-max-scale">Max scale</label>
+          <div class="im-slider-row">
+            <input type="range" id="cfg-max-scale" min="1" max="4" step="0.05" value="2">
+            <span id="cfg-max-scale-val">2.0×</span>
+          </div>
+        </div>
+        <div class="im-field">
+          <label for="cfg-fill">Fill color</label>
+          <input type="color" id="cfg-fill" value="#181a1b">
+        </div>
+        <div class="im-field">
+          <label for="cfg-sam-size">SAM mask resolution (px) <span class="im-hint-small">· affects decode speed</span></label>
+          <input type="number" id="cfg-sam-size" value="512" min="64" max="4096" step="64">
+        </div>
+        <div class="im-field">
+          <label for="cfg-sam-workers">SAM background encoders <span class="im-hint-small">· reduce if out of memory</span></label>
+          <input type="number" id="cfg-sam-workers" value="4" min="1" max="8" step="1">
+        </div>
+        <div class="im-field">
+          <label for="cfg-images">Upload images</label>
+          <input type="file" id="cfg-images" accept="image/*" multiple>
+        </div>
+      </div>
+
+      <div class="im-field im-field-row" style="align-items:center;gap:0.6em;margin-bottom:1em;">
+        <input type="checkbox" id="cfg-use-sam">
+        <label for="cfg-use-sam" style="cursor:pointer;font-size:0.85em;color:#aaa;">
+          Enable SAM auto-segmentation
+          <span class="im-hint-small">(~100 MB on first use · requires internet)</span>
+        </label>
+      </div>
+
+      <button class="im-btn" id="btn-to-paint" disabled>Next: Paint masks →</button>
+    </div>
+
+    <!-- ── STEP 1: Bitmap painter ── -->
+    <div class="im-section im-hidden" id="section-paint">
+      <h2 class="im-step-title">Step 2 — Paint essential regions</h2>
+      <p class="im-hint">Paint over the areas that <em>must</em> remain visible. Everything unpainted may be cropped or covered.</p>
+
+      <!-- Image order / rank list -->
+      <div class="im-rank-area">
+        <h3>Importance order <span class="im-hint-small">(drag to reorder — top = highest priority)</span></h3>
+        <ul id="rank-list" class="im-rank-list"></ul>
+      </div>
+
+      <!-- Painter -->
+      <div class="im-painter-controls">
+        <div class="im-field">
+          <label>Editing: <strong id="paint-image-name">—</strong></label>
+          <span class="im-hint">Click to place vertices · click near the first point to close · draw multiple polygons per image</span>
+        </div>
+        <div class="im-field im-field-row">
+          <button class="im-btn im-btn-sm" id="btn-undo">↩ Undo</button>
+          <button class="im-btn im-btn-sm im-btn-danger" id="btn-clear-mask">Clear all</button>
+        </div>
+      </div>
+
+      <div class="im-canvas-wrap" id="canvas-wrap">
+        <canvas id="paint-canvas"></canvas>
+        <canvas id="mask-canvas"></canvas>
+      </div>
+
+      <!-- SAM controls — hidden until user opts in on config page -->
+      <div class="im-hidden" id="sam-controls">
+        <div style="display:flex;align-items:center;gap:0.8em;margin:0.7em 0 0.2em;">
+          <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>SAM: Off</button>
+          <span id="sam-status" class="im-sam-status"></span>
+        </div>
+      </div>
+
+      <div class="im-painter-nav">
+        <button class="im-btn im-btn-sm" id="btn-prev-img">← Prev</button>
+        <span id="paint-index-label">1 / 1</span>
+        <button class="im-btn im-btn-sm" id="btn-next-img">Next →</button>
+      </div>
+
+      <button class="im-btn" id="btn-to-merge">Next: Merge →</button>
+    </div>
+
+    <!-- ── STEP 2: Merge & export ── -->
+    <div class="im-section im-hidden" id="section-merge">
+      <h2 class="im-step-title">Step 3 — Merge</h2>
+      <div class="im-field-row" style="display:flex;gap:0.6em;align-items:center;margin-bottom:0.4em;">
+        <button class="im-btn" id="btn-merge">Run merge</button>
+        <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
+      </div>
+      <div id="merge-log" class="im-log"></div>
+      <div class="im-canvas-wrap im-output-wrap im-hidden" id="output-wrap">
+        <canvas id="output-canvas"></canvas>
+      </div>
+      <button class="im-btn im-hidden" id="btn-download">⬇ Download PNG</button>
+      <button class="im-btn im-btn-sm" id="btn-back-to-paint">← Back to painter</button>
+    </div>
+
+    <div class="foot">
+      <div class="foot2">
+        <a href="../../../../index.html"><img class="icon clickable" src="../../../images/logo2.webp" alt="Mountain in frame"></a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Worker source embedded so the page works from file:// without a server.
+       The type attribute prevents the browser from executing it as a script. -->
+  <script type="text/js-worker" id="merge-worker-src">
+// ── Image Merger — Web Worker (polygon-based) ─────────────────────────────────
+const COARSE_STEP  = 400;
+const FINE_STEP    = 20;
+const FINE_RADIUS  = 200;
+const TOP_K        = 10;
+
+self.onmessage = function (e) {
+  const { images, rankOrder, outW, outH } = e.data;  // each images[i].scale is pre-computed
+  try {
+    const { placements, ownershipMap } = runMerge(images, rankOrder, outW, outH);
+    self.postMessage({ type: 'done', placements, ownershipMap }, [ownershipMap.buffer]);
+  } catch (err) {
+    self.postMessage({ type: 'error', text: err.message });
+  }
+};
+
+function postLog(text, cls) {
+  self.postMessage({ type: 'log', text, cls: cls || '' });
+}
+
+function runMerge(images, rankOrder, W, H) {
+  const forbiddenTris = [];
+  const placements    = [];
+
+  for (let ri = 0; ri < rankOrder.length; ri++) {
+    const imgIdx = rankOrder[ri];
+    const entry  = images[imgIdx];
+    postLog('Placing [' + entry.name + '] (rank ' + (ri + 1) + ') scale=' + entry.scale.toFixed(2) + 'x...');
+
+    entry.triangles = [];
+    for (const poly of entry.polygons) {
+      const tris = triangulate(poly);
+      for (const t of tris) entry.triangles.push(t);
+    }
+
+    if (entry.triangles.length === 0) {
+      postLog('  -> No essential polygons - placed at (0,0) scale=' + entry.scale.toFixed(2) + 'x.');
+      placements.push({ imgIdx, x: 0, y: 0, scale: entry.scale });
+      continue;
+    }
+
+    entry.bbox = trianglesBbox(entry.triangles);
+
+    const { bestScore, bestPlacement } = findBestPlacement(entry, forbiddenTris, W, H);
+
+    if (bestPlacement === null || bestScore < 0) {
+      postLog('  -> Could not find a valid placement - skipped.', 'im-log-warn');
+      continue;
+    }
+
+    const { tx: x, ty: y, s: scale } = bestPlacement;
+    postLog('  -> Placed at (' + x + ', ' + y + ') scale=' + scale.toFixed(2) + 'x  score=' + bestScore, 'im-log-ok');
+    placements.push({ imgIdx, x, y, scale });
+    markEssentials(forbiddenTris, entry.triangles, x, y, scale);
+  }
+
+  postLog('Computing ownership map...');
+  const ownershipMap = computeOwnershipMap(images, placements, W, H);
+  return { placements, ownershipMap };
+}
+
+function findBestPlacement(entry, forbiddenTris, W, H) {
+  const s       = entry.scale;
+  const scaledW = Math.round(entry.w * s);
+  const scaledH = Math.round(entry.h * s);
+  const xMin    = -(scaledW - 1), xMax = W - 1;
+  const yMin    = -(scaledH - 1), yMax = H - 1;
+  const forbiddenBbox = forbiddenTris.length > 0 ? bboxUnion(forbiddenTris.map(t => t.bbox)) : null;
+  const topK = [];
+
+  for (let tx = xMin; tx <= xMax; tx += COARSE_STEP) {
+    for (let ty = yMin; ty <= yMax; ty += COARSE_STEP) {
+      const score = scorePlacement(entry, s, tx, ty, forbiddenTris, forbiddenBbox, W, H);
+      if (topK.length < TOP_K || score > topK[topK.length - 1].score) {
+        topK.push({ tx, ty, score });
+        topK.sort((a, b) => b.score - a.score);
+        if (topK.length > TOP_K) topK.pop();
+      }
+    }
+  }
+
+  if (topK.length === 0) return { bestScore: -Infinity, bestPlacement: null };
+
+  let bestScore = -Infinity, bestPlacement = null;
+
+  for (const { tx: cx, ty: cy } of topK) {
+    const xLo = Math.max(xMin, cx - FINE_RADIUS);
+    const xHi = Math.min(xMax, cx + FINE_RADIUS);
+    const yLo = Math.max(yMin, cy - FINE_RADIUS);
+    const yHi = Math.min(yMax, cy + FINE_RADIUS);
+
+    for (let tx = xLo; tx <= xHi; tx += FINE_STEP) {
+      for (let ty = yLo; ty <= yHi; ty += FINE_STEP) {
+        const score = scorePlacement(entry, s, tx, ty, forbiddenTris, forbiddenBbox, W, H);
+        if (score > bestScore) { bestScore = score; bestPlacement = { tx, ty, s }; }
+      }
+    }
+  }
+
+  return { bestScore, bestPlacement };
+}
+
+function scorePlacement(entry, scale, tx, ty, forbiddenTris, forbiddenBbox, W, H) {
+  const ob = transformBbox(entry.bbox, tx, ty, scale);
+  if (ob.maxX < 0 || ob.minX >= W || ob.maxY < 0 || ob.minY >= H) return -entry.triangles.length;
+  const skipForbidden = !forbiddenBbox || !bboxOverlap(ob, forbiddenBbox);
+  let score = 0;
+  for (const srcTri of entry.triangles) {
+    const t  = transformTri(srcTri, tx, ty, scale);
+    const cx = (t[0].x + t[1].x + t[2].x) / 3;
+    const cy = (t[0].y + t[1].y + t[2].y) / 3;
+    if (cx < 0 || cy < 0 || cx >= W || cy >= H) { score -= 1; continue; }
+    if (skipForbidden) { score += 1; continue; }
+    const tb = triBbox(t);
+    let hit = false;
+    for (const ft of forbiddenTris) {
+      if (bboxOverlap(tb, ft.bbox) && trisOverlap(t, ft.verts)) { hit = true; break; }
+    }
+    score += hit ? -2 : 1;
+  }
+  return score;
+}
+
+function markEssentials(forbiddenTris, srcTriangles, tx, ty, scale) {
+  for (const srcTri of srcTriangles) {
+    const verts = transformTri(srcTri, tx, ty, scale);
+    forbiddenTris.push({ verts, bbox: triBbox(verts) });
+  }
+}
+
+function transformTri(tri, tx, ty, scale) {
+  return tri.map(v => ({ x: tx + v.x * scale, y: ty + v.y * scale }));
+}
+
+function triBbox(tri) {
+  return {
+    minX: Math.min(tri[0].x, tri[1].x, tri[2].x),
+    minY: Math.min(tri[0].y, tri[1].y, tri[2].y),
+    maxX: Math.max(tri[0].x, tri[1].x, tri[2].x),
+    maxY: Math.max(tri[0].y, tri[1].y, tri[2].y),
+  };
+}
+
+function trianglesBbox(tris) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const tri of tris) for (const v of tri) {
+    if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+    if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function transformBbox(bbox, tx, ty, scale) {
+  return { minX: tx + bbox.minX * scale, minY: ty + bbox.minY * scale,
+           maxX: tx + bbox.maxX * scale, maxY: ty + bbox.maxY * scale };
+}
+
+function bboxOverlap(a, b) {
+  return a.maxX >= b.minX && b.maxX >= a.minX && a.maxY >= b.minY && b.maxY >= a.minY;
+}
+
+function bboxUnion(bboxes) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const b of bboxes) {
+    if (b.minX < minX) minX = b.minX; if (b.maxX > maxX) maxX = b.maxX;
+    if (b.minY < minY) minY = b.minY; if (b.maxY > maxY) maxY = b.maxY;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function trisOverlap(t1, t2) {
+  for (const tri of [t1, t2]) {
+    for (let i = 0; i < 3; i++) {
+      const a = tri[i], b = tri[(i + 1) % 3];
+      const nx = -(b.y - a.y), ny = b.x - a.x;
+      let mn1 = Infinity, mx1 = -Infinity, mn2 = Infinity, mx2 = -Infinity;
+      for (const v of t1) { const p = v.x*nx + v.y*ny; if (p < mn1) mn1=p; if (p > mx1) mx1=p; }
+      for (const v of t2) { const p = v.x*nx + v.y*ny; if (p < mn2) mn2=p; if (p > mx2) mx2=p; }
+      if (mx1 < mn2 || mx2 < mn1) return false;
+    }
+  }
+  return true;
+}
+
+function triangulate(polygon) {
+  if (polygon.length < 3) return [];
+  if (polygon.length === 3) return [[polygon[0], polygon[1], polygon[2]]];
+  const verts = ensureCW(polygon).map(v => ({ x: v.x, y: v.y }));
+  const result = [];
+  let safety = verts.length * verts.length + 10;
+  while (verts.length > 3 && safety-- > 0) {
+    let clipped = false;
+    for (let i = 0; i < verts.length; i++) {
+      const prev = verts[(i - 1 + verts.length) % verts.length];
+      const curr = verts[i];
+      const next = verts[(i + 1) % verts.length];
+      if (isEar(prev, curr, next, verts)) {
+        result.push([prev, curr, next]);
+        verts.splice(i, 1);
+        clipped = true;
+        break;
+      }
+    }
+    if (!clipped) break;
+  }
+  if (verts.length === 3) result.push([verts[0], verts[1], verts[2]]);
+  return result;
+}
+
+function signedArea(poly) {
+  let a = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length;
+    a += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
+  }
+  return a / 2;
+}
+
+function ensureCW(poly) { return signedArea(poly) > 0 ? poly : poly.slice().reverse(); }
+
+function cross2d(o, a, b) {
+  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+}
+
+function isEar(prev, curr, next, verts) {
+  if (cross2d(prev, curr, next) <= 0) return false;
+  for (const v of verts) {
+    if (v === prev || v === curr || v === next) continue;
+    if (pointInTriangle(v, prev, curr, next)) return false;
+  }
+  return true;
+}
+
+function pointInTriangle(p, a, b, c) {
+  const ab = cross2d(a, b, p), bc = cross2d(b, c, p), ca = cross2d(c, a, p);
+  return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0);
+}
+
+// ── Voronoi ownership map ──────────────────────────────────────────────────────
+// Returns Int16Array(W*H): each cell holds the imgIdx of the image whose
+// essential region is nearest, or -1 if no image has any polygons.
+function computeOwnershipMap(images, placements, W, H) {
+  const ownerMap = new Int16Array(W * H).fill(-1);
+  const minDist  = new Float32Array(W * H).fill(Infinity);
+  const mask     = new Uint8Array(W * H);
+
+  for (const p of placements) {
+    const entry = images[p.imgIdx];
+    if (!entry.polygons || entry.polygons.length === 0) continue;
+
+    // Transform polygons from source space to output space
+    const outPolys = entry.polygons.map(poly =>
+      poly.map(v => ({ x: p.x + v.x * p.scale, y: p.y + v.y * p.scale }))
+    );
+
+    mask.fill(0);
+    rasterizePolygons(outPolys, W, H, mask);
+    const dist = chamferDist(mask, W, H);
+
+    for (let i = 0; i < W * H; i++) {
+      if (dist[i] < minDist[i]) {
+        minDist[i] = dist[i];
+        ownerMap[i] = p.imgIdx;
+      }
+    }
+  }
+
+  return ownerMap;
+}
+
+// Scanline-fill all polygons into mask (1 = inside, output space).
+function rasterizePolygons(polygons, W, H, mask) {
+  for (const poly of polygons) {
+    if (poly.length < 3) continue;
+    let minY = Infinity, maxY = -Infinity;
+    for (const v of poly) { if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y; }
+    minY = Math.max(0, Math.floor(minY));
+    maxY = Math.min(H - 1, Math.ceil(maxY));
+    const n = poly.length;
+    for (let y = minY; y <= maxY; y++) {
+      const xs = [];
+      for (let i = 0; i < n; i++) {
+        const a = poly[i], b = poly[(i + 1) % n];
+        if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) {
+          xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+        }
+      }
+      xs.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const x0 = Math.max(0, Math.ceil(xs[k]));
+        const x1 = Math.min(W - 1, Math.floor(xs[k + 1]));
+        for (let x = x0; x <= x1; x++) mask[y * W + x] = 1;
+      }
+    }
+  }
+}
+
+// 2-pass chamfer distance transform (3-4 weights).
+// Returns Float32Array(W*H): 0 at seed pixels, distance elsewhere.
+function chamferDist(mask, W, H) {
+  const INF = 1e9;
+  const d = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) d[i] = mask[i] ? 0 : INF;
+
+  // Forward pass (top-left → bottom-right)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (d[i] === 0) continue;
+      let v = d[i];
+      if (x > 0)         v = Math.min(v, d[i - 1]     + 3);
+      if (y > 0) {
+        if (x > 0)       v = Math.min(v, d[i - W - 1] + 4);
+                         v = Math.min(v, d[i - W]     + 3);
+        if (x < W - 1)   v = Math.min(v, d[i - W + 1] + 4);
+      }
+      d[i] = v;
+    }
+  }
+
+  // Backward pass (bottom-right → top-left)
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = W - 1; x >= 0; x--) {
+      const i = y * W + x;
+      if (d[i] === 0) continue;
+      let v = d[i];
+      if (x < W - 1)     v = Math.min(v, d[i + 1]     + 3);
+      if (y < H - 1) {
+        if (x < W - 1)   v = Math.min(v, d[i + W + 1] + 4);
+                         v = Math.min(v, d[i + W]     + 3);
+        if (x > 0)       v = Math.min(v, d[i + W - 1] + 4);
+      }
+      d[i] = v;
+    }
+  }
+
+  return d;
+}
+  </script>
+
+  <script src="imageMerge.js"></script>
+</body>
+
+</html>
