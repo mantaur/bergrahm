@@ -240,6 +240,14 @@
   color: #ddd;
 }
 
+.im-scale-preview {
+  display: block;
+  background: rgb(18, 20, 21);
+  border: 1px solid #444;
+  border-radius: 0.25em;
+  image-rendering: pixelated;
+}
+
 .im-zoom-label {
   margin-left: 0.6em;
   color: #aaa;

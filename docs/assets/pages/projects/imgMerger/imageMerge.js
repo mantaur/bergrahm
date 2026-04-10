@@ -57,9 +57,10 @@ const samControls   = document.getElementById('sam-controls');
 const btnSamToggle  = document.getElementById('btn-sam-toggle');
 const samStatus     = document.getElementById('sam-status');
 
-const painterScaleAuto = document.getElementById('painter-scale-auto');
-const painterScaleInp  = document.getElementById('painter-scale-inp');
-const painterZoomVal   = document.getElementById('painter-zoom-val');
+const painterScaleAuto    = document.getElementById('painter-scale-auto');
+const painterScaleInp     = document.getElementById('painter-scale-inp');
+const painterZoomVal      = document.getElementById('painter-zoom-val');
+const scalePreviewCanvas  = document.getElementById('painter-scale-preview');
 
 const btnMerge      = document.getElementById('btn-merge');
 const mergeLog      = document.getElementById('merge-log');
@@ -117,12 +118,39 @@ function updatePainterZoom(imgIdx) {
   const entry = state.images[imgIdx];
   if (entry.scale === null) {
     painterZoomVal.textContent = 'auto';
-    return;
+  } else {
+    const displayW = Math.min(DISPLAY_MAX_W, entry.w);
+    const outputW  = entry.w * entry.scale;
+    painterZoomVal.textContent = Math.round((displayW / outputW) * 100) + '%';
   }
-  const displayW   = Math.min(DISPLAY_MAX_W, entry.w); // css display width
-  const outputW    = entry.w * entry.scale;             // image width in output pixels
-  const zoomPct    = Math.round((displayW / outputW) * 100);
-  painterZoomVal.textContent = zoomPct + '%';
+  updateScalePreview(imgIdx);
+}
+
+function updateScalePreview(imgIdx) {
+  const entry = state.images[imgIdx];
+  const outW  = state.outW;
+  const outH  = state.outH;
+  const ctx   = scalePreviewCanvas.getContext('2d');
+  const CW    = scalePreviewCanvas.width;
+  const CH    = scalePreviewCanvas.height;
+
+  const resolvedScale = entry.scale === null ? computeAutoScales()[imgIdx].scale : entry.scale;
+  const imgW = entry.w * resolvedScale;
+  const imgH = entry.h * resolvedScale;
+
+  // Fit whichever is larger (output or image) into the canvas with a 1px margin.
+  const fit = Math.min((CW - 2) / Math.max(outW, imgW), (CH - 2) / Math.max(outH, imgH));
+
+  ctx.clearRect(0, 0, CW, CH);
+
+  // Output rect (gray)
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(1.5, 1.5, Math.round(outW * fit), Math.round(outH * fit));
+
+  // Image rect at target scale (green = manual, gray = auto estimate)
+  ctx.strokeStyle = entry.scale === null ? '#888' : 'springgreen';
+  ctx.strokeRect(1.5, 1.5, Math.round(imgW * fit), Math.round(imgH * fit));
 }
 
 cfgImages.addEventListener('change', () => {
@@ -329,6 +357,13 @@ function loadPainterImage(rankIdx) {
   painterScaleAuto.checked    = isAuto;
   painterScaleInp.disabled    = isAuto;
   painterScaleInp.value       = (isAuto ? 1.0 : entry.scale).toFixed(2);
+
+  // Size the preview canvas to match the output aspect ratio (max 80px per side).
+  const PREVIEW_MAX = 80;
+  const ar = state.outW / state.outH;
+  scalePreviewCanvas.width  = ar >= 1 ? PREVIEW_MAX : Math.round(PREVIEW_MAX * ar);
+  scalePreviewCanvas.height = ar >= 1 ? Math.round(PREVIEW_MAX / ar) : PREVIEW_MAX;
+
   updatePainterZoom(imgIdx);
 
   // Update edit buttons in rank list
