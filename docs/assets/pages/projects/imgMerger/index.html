@@ -168,9 +168,9 @@ const FINE_RADIUS  = 200;
 const TOP_K        = 10;
 
 self.onmessage = function (e) {
-  const { images, rankOrder, outW, outH } = e.data;  // each images[i].scale is pre-computed
+  const { images, rankOrder, outW, outH, minScale, maxScale } = e.data;  // each images[i].scale is pre-computed
   try {
-    const { placements, ownershipMap } = runMerge(images, rankOrder, outW, outH);
+    const { placements, ownershipMap } = runMerge(images, rankOrder, outW, outH, minScale, maxScale);
     self.postMessage({ type: 'done', placements, ownershipMap }, [ownershipMap.buffer]);
   } catch (err) {
     self.postMessage({ type: 'error', text: err.message });
@@ -181,7 +181,7 @@ function postLog(text, cls) {
   self.postMessage({ type: 'log', text, cls: cls || '' });
 }
 
-function runMerge(images, rankOrder, W, H) {
+function runMerge(images, rankOrder, W, H, minScale, maxScale) {
   const forbiddenTris = [];
   const placements    = [];
 
@@ -204,7 +204,19 @@ function runMerge(images, rankOrder, W, H) {
 
     entry.bbox = trianglesBbox(entry.triangles);
 
-    const { bestScore, bestPlacement } = findBestPlacement(entry, forbiddenTris, W, H);
+    // Try min, default, and max scale — keep whichever scores best.
+    const scales = [...new Set([minScale, entry.scale, maxScale])];
+    let bestScore = -Infinity, bestPlacement = null;
+    const origScale = entry.scale;
+    try {
+      for (const s of scales) {
+        entry.scale = s;
+        const { bestScore: sc, bestPlacement: pl } = findBestPlacement(entry, forbiddenTris, W, H);
+        if (sc > bestScore) { bestScore = sc; bestPlacement = pl; }
+      }
+    } finally {
+      entry.scale = origScale;
+    }
 
     if (bestPlacement === null || bestScore < 0) {
       postLog('  -> Could not find a valid placement - skipped.', 'im-log-warn');
@@ -264,22 +276,23 @@ function findBestPlacement(entry, forbiddenTris, W, H) {
 }
 
 function scorePlacement(entry, scale, tx, ty, forbiddenTris, forbiddenBbox, W, H) {
+  const s2 = scale * scale; // area weight — larger placements score proportionally more
   const ob = transformBbox(entry.bbox, tx, ty, scale);
-  if (ob.maxX < 0 || ob.minX >= W || ob.maxY < 0 || ob.minY >= H) return -entry.triangles.length;
+  if (ob.maxX < 0 || ob.minX >= W || ob.maxY < 0 || ob.minY >= H) return -entry.triangles.length * s2;
   const skipForbidden = !forbiddenBbox || !bboxOverlap(ob, forbiddenBbox);
   let score = 0;
   for (const srcTri of entry.triangles) {
     const t  = transformTri(srcTri, tx, ty, scale);
     const cx = (t[0].x + t[1].x + t[2].x) / 3;
     const cy = (t[0].y + t[1].y + t[2].y) / 3;
-    if (cx < 0 || cy < 0 || cx >= W || cy >= H) { score -= 1; continue; }
-    if (skipForbidden) { score += 1; continue; }
+    if (cx < 0 || cy < 0 || cx >= W || cy >= H) { score -= s2; continue; }
+    if (skipForbidden) { score += s2; continue; }
     const tb = triBbox(t);
     let hit = false;
     for (const ft of forbiddenTris) {
       if (bboxOverlap(tb, ft.bbox) && trisOverlap(t, ft.verts)) { hit = true; break; }
     }
-    score += hit ? -2 : 1;
+    score += hit ? -2 * s2 : s2;
   }
   return score;
 }

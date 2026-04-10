@@ -669,6 +669,15 @@ function drainEncodeQueue() {
     if (samPool.embeddingCache.has(imgIdx)) continue; // already cached
     sendEncode(wIdx, imgIdx);
   }
+  // Once the queue is empty and no worker is still encoding, release surplus
+  // workers — only worker 0 is kept alive for decoding.
+  if (SAM_WORKER_COUNT > 1 && samPool.encodeQueue.length === 0 && !samPool.busy.some(Boolean)) {
+    for (let i = 1; i < SAM_WORKER_COUNT; i++) samPool.workers[i].terminate();
+    samPool.workers.length = 1;
+    samPool.ready.length   = 1;
+    samPool.busy.length    = 1;
+    SAM_WORKER_COUNT       = 1;
+  }
 }
 
 function sendEncode(wIdx, imgIdx) {
@@ -936,6 +945,8 @@ function startMerge() {
     rankOrder: Array.from(state.rankOrder),
     outW:      state.outW,
     outH:      state.outH,
+    minScale:  state.minScale,
+    maxScale:  state.maxScale,
   });
 }
 
