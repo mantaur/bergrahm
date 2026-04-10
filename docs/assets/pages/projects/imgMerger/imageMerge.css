@@ -186,6 +186,7 @@
 }
 
 .im-rank-edit-btn {
+  margin-left: auto;
   background: none;
   border: 1px solid #555;
   border-radius: 0.3em;
@@ -198,17 +199,6 @@
 .im-rank-edit-btn:hover {
   color: springgreen;
   border-color: springgreen;
-}
-
-/* Per-image scale control */
-.im-scale-ctrl {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 0.35em;
-  font-size: 0.78em;
-  color: #aaa;
-  white-space: nowrap;
 }
 
 .im-scale-auto-lbl {
@@ -233,6 +223,26 @@
 .im-rank-edit-btn.active {
   color: springgreen;
   border-color: springgreen;
+}
+
+/* Painter scale + zoom bar */
+.im-scale-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  margin-bottom: 0.7em;
+  font-size: 0.85em;
+  color: #bbb;
+}
+
+.im-scale-bar-label {
+  font-weight: 500;
+  color: #ddd;
+}
+
+.im-zoom-label {
+  margin-left: 0.6em;
+  color: #aaa;
 }
 
 /* Painter */

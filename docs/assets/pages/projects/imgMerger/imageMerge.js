@@ -57,6 +57,10 @@ const samControls   = document.getElementById('sam-controls');
 const btnSamToggle  = document.getElementById('btn-sam-toggle');
 const samStatus     = document.getElementById('sam-status');
 
+const painterScaleAuto = document.getElementById('painter-scale-auto');
+const painterScaleInp  = document.getElementById('painter-scale-inp');
+const painterZoomVal   = document.getElementById('painter-zoom-val');
+
 const btnMerge      = document.getElementById('btn-merge');
 const mergeLog      = document.getElementById('merge-log');
 const outputWrap    = document.getElementById('output-wrap');
@@ -88,6 +92,38 @@ cfgMaxScale.addEventListener('input', () => {
   cfgMaxScaleV.textContent = v.toFixed(2) + '×';
   state.maxScale = v;
 });
+
+// ── Painter scale bar ─────────────────────────────────────────────────────────
+painterScaleAuto.addEventListener('change', () => {
+  const imgIdx = state.rankOrder[state.paintIdx];
+  const entry  = state.images[imgIdx];
+  painterScaleInp.disabled = painterScaleAuto.checked;
+  entry.scale = painterScaleAuto.checked ? null : parseFloat(painterScaleInp.value);
+  updatePainterZoom(imgIdx);
+});
+
+painterScaleInp.addEventListener('change', () => {
+  const imgIdx = state.rankOrder[state.paintIdx];
+  const entry  = state.images[imgIdx];
+  let v = parseFloat(painterScaleInp.value);
+  if (isNaN(v)) v = 1.0;
+  v = Math.max(0.05, Math.min(20, v));
+  painterScaleInp.value = v.toFixed(2);
+  entry.scale = v;
+  updatePainterZoom(imgIdx);
+});
+
+function updatePainterZoom(imgIdx) {
+  const entry = state.images[imgIdx];
+  if (entry.scale === null) {
+    painterZoomVal.textContent = 'auto';
+    return;
+  }
+  const displayW   = Math.min(DISPLAY_MAX_W, entry.w); // css display width
+  const outputW    = entry.w * entry.scale;             // image width in output pixels
+  const zoomPct    = Math.round((displayW / outputW) * 100);
+  painterZoomVal.textContent = zoomPct + '%';
+}
 
 cfgImages.addEventListener('change', () => {
   const files = Array.from(cfgImages.files);
@@ -196,46 +232,6 @@ function createRankItem(imgIdx, rank) {
   const nameLbl = document.createElement('span');
   nameLbl.textContent = entry.name;
 
-  // Scale control
-  const scaleWrap = document.createElement('span');
-  scaleWrap.className = 'im-scale-ctrl';
-
-  const autoChk = document.createElement('input');
-  autoChk.type = 'checkbox';
-  autoChk.id   = 'scale-auto-' + imgIdx;
-  autoChk.checked = (entry.scale === null);
-
-  const autoLbl = document.createElement('label');
-  autoLbl.htmlFor   = 'scale-auto-' + imgIdx;
-  autoLbl.textContent = 'Auto';
-  autoLbl.className = 'im-scale-auto-lbl';
-
-  const scaleInp = document.createElement('input');
-  scaleInp.type      = 'number';
-  scaleInp.className = 'im-scale-input';
-  scaleInp.min       = 0.05;
-  scaleInp.max       = 20;
-  scaleInp.step      = 0.05;
-  scaleInp.value     = (entry.scale !== null ? entry.scale : 1.0).toFixed(2);
-  scaleInp.disabled  = (entry.scale === null);
-
-  autoChk.addEventListener('change', () => {
-    scaleInp.disabled = autoChk.checked;
-    state.images[imgIdx].scale = autoChk.checked ? null : parseFloat(scaleInp.value);
-  });
-
-  scaleInp.addEventListener('change', () => {
-    let v = parseFloat(scaleInp.value);
-    if (isNaN(v)) v = 1.0;
-    v = Math.max(0.05, Math.min(20, v));
-    scaleInp.value = v.toFixed(2);
-    state.images[imgIdx].scale = v;
-  });
-
-  scaleWrap.appendChild(autoChk);
-  scaleWrap.appendChild(autoLbl);
-  scaleWrap.appendChild(scaleInp);
-
   const editBtn = document.createElement('button');
   editBtn.className = 'im-rank-edit-btn' + (state.rankOrder[state.paintIdx] === imgIdx ? ' active' : '');
   editBtn.textContent = 'Edit mask';
@@ -247,7 +243,6 @@ function createRankItem(imgIdx, rank) {
 
   li.appendChild(thumb);
   li.appendChild(nameLbl);
-  li.appendChild(scaleWrap);
   li.appendChild(editBtn);
 
   // Drag events
@@ -328,6 +323,13 @@ function loadPainterImage(rankIdx) {
   currentPoly  = entry.currentPoly; // point at this image's in-progress polygon
   rubberBandPt = null;
   redrawPolyOverlay(imgIdx);
+
+  // Sync painter scale bar to this image's scale setting
+  const isAuto = entry.scale === null;
+  painterScaleAuto.checked    = isAuto;
+  painterScaleInp.disabled    = isAuto;
+  painterScaleInp.value       = (isAuto ? 1.0 : entry.scale).toFixed(2);
+  updatePainterZoom(imgIdx);
 
   // Update edit buttons in rank list
   rankList.querySelectorAll('.im-rank-edit-btn').forEach((btn, i) => {
