@@ -214,8 +214,11 @@ function runMerge(images, rankOrder, W, H, minScale, maxScale) {
 
     entry.bbox = trianglesBbox(entry.triangles);
 
-    // Try min, default, and max scale — keep whichever scores best.
-    const scales = [...new Set([minScale, entry.scale, maxScale])];
+    // For manually-scaled images use exactly the specified scale.
+    // For auto-scaled images search min/default/max and keep the best.
+    const scales = entry.scaleFixed
+      ? [entry.scale]
+      : [...new Set([minScale, entry.scale, maxScale])];
     let bestScore = -Infinity, bestPlacement = null;
     const origScale = entry.scale;
     try {

@@ -936,13 +936,15 @@ function startMerge() {
     }
   });
 
-  // Deep-copy polygons + resolved scale to send to worker
+  // Deep-copy polygons + resolved scale to send to worker.
+  // scaleFixed=true means the user set this scale manually — don't search over alternatives.
   const workerImages = state.images.map((entry, i) => ({
-    w:        entry.w,
-    h:        entry.h,
-    name:     entry.name,
-    scale:    autoScales[i].scale,
-    polygons: entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
+    w:          entry.w,
+    h:          entry.h,
+    name:       entry.name,
+    scale:      autoScales[i].scale,
+    scaleFixed: entry.scale !== null,
+    polygons:   entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
   }));
 
   // Create worker from a Blob so it works on file:// without a local server.
