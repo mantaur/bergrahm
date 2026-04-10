@@ -140,13 +140,26 @@ function updateScalePreview(imgIdx) {
 
   // Fit whichever is larger (output or image) into the canvas with a 1px margin.
   const fit = Math.min((CW - 2) / Math.max(outW, imgW), (CH - 2) / Math.max(outH, imgH));
+  const dispOutW = Math.round(outW * fit);
+  const dispOutH = Math.round(outH * fit);
 
-  ctx.clearRect(0, 0, CW, CH);
+  // Checkered background (transparent-PNG convention)
+  const TILE = 6;
+  for (let y = 0; y < CH; y += TILE) {
+    for (let x = 0; x < CW; x += TILE) {
+      ctx.fillStyle = ((x / TILE + y / TILE) % 2 === 0) ? '#3c3c3c' : '#2a2a2a';
+      ctx.fillRect(x, y, TILE, TILE);
+    }
+  }
 
-  // Output rect (gray)
-  ctx.strokeStyle = '#666';
+  // Output rect filled with the configured fill color
+  ctx.fillStyle = state.fillColor;
+  ctx.fillRect(1.5, 1.5, dispOutW, dispOutH);
+
+  // Output rect outline
+  ctx.strokeStyle = '#777';
   ctx.lineWidth   = 1;
-  ctx.strokeRect(1.5, 1.5, Math.round(outW * fit), Math.round(outH * fit));
+  ctx.strokeRect(1.5, 1.5, dispOutW, dispOutH);
 
   // Image rect at target scale (green = manual, gray = auto estimate)
   ctx.strokeStyle = entry.scale === null ? '#888' : 'springgreen';
