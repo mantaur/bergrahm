@@ -936,40 +936,22 @@ btnSamToggle.addEventListener('click', () => {
 });
 
 // ── Per-image auto-scale computation ──────────────────────────────────────────
-function polyArea(poly) {
-  let a = 0;
-  for (let i = 0; i < poly.length; i++) {
-    const j = (i + 1) % poly.length;
-    a += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
-  }
-  return Math.abs(a) / 2;
-}
-
-// Returns an array of { scale, wasClamped, rawScale } — one entry per image.
+// Returns an array of { scale, wasClamped } — one entry per image.
 // Images with manual scale pass through unchanged.
-// Auto-scale images are sized so their essential region area equals the median
-// across all images, then clamped to [state.minScale, state.maxScale].
+// Auto-scale: find the shortest output dimension (ties go to width), then check
+// the image's corresponding dimension. If it exceeds the output's shortest dim,
+// scale = outShortDim / imageDim ceiled to the nearest 0.05 multiple.
 function computeAutoScales() {
-  const areas = state.images.map(entry =>
-    entry.polygons.reduce((sum, poly) => sum + polyArea(poly), 0)
-  );
+  const useW    = state.outW <= state.outH; // width is shorter (or tied)
+  const shortOut = useW ? state.outW : state.outH;
 
-  const validAreas = areas.filter(a => a > 0);
-  const fallback   = (state.minScale + state.maxScale) / 2;
-
-  let K = null; // target essential-region area in source pixels²
-  if (validAreas.length > 0) {
-    const sorted = validAreas.slice().sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    K = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-  }
-
-  return state.images.map((entry, i) => {
+  return state.images.map(entry => {
     if (entry.scale !== null) return { scale: entry.scale, wasClamped: false };
-    if (K === null || areas[i] <= 0) return { scale: fallback, wasClamped: false };
-    const raw     = Math.sqrt(K / areas[i]);
-    const clamped = Math.max(state.minScale, Math.min(state.maxScale, raw));
-    return { scale: clamped, wasClamped: Math.abs(raw - clamped) > 0.001, rawScale: raw };
+    const imgDim = useW ? entry.w : entry.h;
+    if (imgDim <= shortOut) return { scale: 1, wasClamped: false };
+    const raw   = shortOut / imgDim;
+    const scale = Math.ceil(raw / 0.05) * 0.05;
+    return { scale, wasClamped: false };
   });
 }
 
@@ -995,17 +977,7 @@ function startMerge() {
   outputWrap.classList.add('im-hidden');
   btnDownload.classList.add('im-hidden');
 
-  // Compute per-image scales (auto or manual), clamped to global min/max
   const autoScales = computeAutoScales();
-  autoScales.forEach((r, i) => {
-    if (r.wasClamped) {
-      log(
-        '[' + state.images[i].name + '] auto scale clamped: ' +
-        r.rawScale.toFixed(2) + '× → ' + r.scale.toFixed(2) + '×',
-        'im-log-warn'
-      );
-    }
-  });
 
   // Deep-copy polygons + resolved scale to send to worker.
   // scaleFixed=true means the user set this scale manually — don't search over alternatives.
