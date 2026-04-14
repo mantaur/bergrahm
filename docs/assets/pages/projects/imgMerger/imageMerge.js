@@ -594,6 +594,7 @@ const samPool = {
   workers:   [],   // Worker instances
   ready:     [],   // bool — model loaded
   busy:      [],   // bool — currently processing a job
+  encoding:  [],   // imgIdx | null — which image this worker is currently encoding
   readyCount: 0,
 
   // Shared coordination
@@ -601,6 +602,7 @@ const samPool = {
   embeddingCache: new Map(), // imgIdx → { embeddings, originalSizes, reshapedSizes }
   dots:           new Map(), // imgIdx → dot span element (cached to avoid DOM queries)
   encodeQueue:    [],        // imgIdx[] awaiting dispatch
+  encodeRetries:  new Map(), // imgIdx → failure count (reset each session)
   pendingDecode:  null,      // {imgIdx, x, y} | null — only one slot; last click wins
 };
 
@@ -625,6 +627,7 @@ function initSamPool() {
     samPool.workers.push(w);
     samPool.ready.push(false);
     samPool.busy.push(false);
+    samPool.encoding.push(null);
   }
   updateSamStatus('Downloading SAM model\u2026');
   // Only start worker 0 now; the rest start after it reports ready so they
@@ -647,9 +650,7 @@ function onWorkerMsg(wIdx, msg) {
       if (samPool.readyCount === 0) updateSamStatus(msg.text);
       break;
     case 'error':
-      samPool.busy[wIdx] = false;
-      updateSamStatus('SAM error: ' + msg.message, true);
-      drainEncodeQueue();
+      onEncodeError(wIdx, msg.message);
       break;
   }
 }
@@ -675,7 +676,8 @@ function onWorkerReady(wIdx) {
 }
 
 function onEncoded(wIdx, { imgIdx, embeddings, originalSizes, reshapedSizes }) {
-  samPool.busy[wIdx] = false;
+  samPool.busy[wIdx]     = false;
+  samPool.encoding[wIdx] = null;
   // Store serialized embeddings in main-thread cache — permanent, no eviction.
   samPool.embeddingCache.set(imgIdx, { embeddings, originalSizes, reshapedSizes });
 
@@ -719,19 +721,52 @@ function drainEncodeQueue() {
     if (samPool.embeddingCache.has(imgIdx)) continue; // already cached
     sendEncode(wIdx, imgIdx);
   }
-  // Once the queue is empty and no worker is still encoding, release surplus
-  // workers — only worker 0 is kept alive for decoding.
-  if (SAM_WORKER_COUNT > 1 && samPool.encodeQueue.length === 0 && !samPool.busy.some(Boolean)) {
-    for (let i = 1; i < SAM_WORKER_COUNT; i++) samPool.workers[i].terminate();
-    samPool.workers.length = 1;
-    samPool.ready.length   = 1;
-    samPool.busy.length    = 1;
-    SAM_WORKER_COUNT       = 1;
+  // Once the queue is empty and no worker is busy, release surplus workers —
+  // only one alive worker is kept for decoding.
+  if (samPool.encodeQueue.length === 0 && !samPool.busy.some(Boolean)) {
+    let keptOne = false;
+    for (let i = 0; i < SAM_WORKER_COUNT; i++) {
+      if (!samPool.ready[i]) continue; // already terminated
+      if (!keptOne) { keptOne = true; continue; }
+      samPool.workers[i].terminate();
+      samPool.ready[i]    = false;
+      samPool.encoding[i] = null;
+      samPool.readyCount  = Math.max(0, samPool.readyCount - 1);
+    }
   }
 }
 
+function onEncodeError(wIdx, message) {
+  const imgIdx = samPool.encoding[wIdx] ?? null;
+  samPool.encoding[wIdx] = null;
+  samPool.busy[wIdx]     = false;
+
+  // Terminate the failed worker — frees its WASM heap (~3 GB).
+  samPool.workers[wIdx].terminate();
+  samPool.ready[wIdx] = false;
+  samPool.readyCount  = Math.max(0, samPool.readyCount - 1);
+
+  if (imgIdx !== null && !samPool.embeddingCache.has(imgIdx)) {
+    const attempts = (samPool.encodeRetries.get(imgIdx) || 0) + 1;
+    samPool.encodeRetries.set(imgIdx, attempts);
+    if (attempts <= 2) {
+      // Re-queue at the front so it's picked up by the next free worker.
+      samPool.encodeQueue.unshift(imgIdx);
+      updateSamStatus('SAM worker failed \u2014 retrying with fewer workers\u2026', true);
+    } else {
+      updateSamStatus('Could not encode [' + (state.images[imgIdx]?.name ?? imgIdx) + '] \u2014 skipping.', true);
+    }
+  } else {
+    // Failure during decode or init (imgIdx null) — just report it.
+    updateSamStatus('SAM error: ' + message, true);
+  }
+
+  drainEncodeQueue();
+}
+
 function sendEncode(wIdx, imgIdx) {
-  samPool.busy[wIdx] = true;
+  samPool.busy[wIdx]     = true;
+  samPool.encoding[wIdx] = imgIdx;
   const entry = state.images[imgIdx];
   const tmp   = document.createElement('canvas');
   tmp.width   = entry.w;
@@ -760,6 +795,7 @@ function sendDecode(wIdx, { imgIdx, x, y }) {
 // is ready. Navigation never clears or rebuilds this queue — encoding proceeds
 // steadily through all images regardless of where the user is painting.
 function buildEncodeQueue() {
+  samPool.encodeRetries.clear();
   const sorted = [...state.images.keys()].sort((a, b) =>
     state.images[a].name.localeCompare(state.images[b].name, undefined, { sensitivity: 'base' })
   );
