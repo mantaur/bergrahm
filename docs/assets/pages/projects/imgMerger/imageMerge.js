@@ -118,14 +118,11 @@ painterScaleInp.addEventListener('change', () => {
 });
 
 function updatePainterZoom(imgIdx) {
-  const entry = state.images[imgIdx];
-  if (entry.scale === null) {
-    painterZoomVal.textContent = 'auto';
-  } else {
-    const displayW = Math.min(DISPLAY_MAX_W, entry.w);
-    const outputW  = entry.w * entry.scale;
-    painterZoomVal.textContent = Math.round((displayW / outputW) * 100) + '%';
-  }
+  const entry        = state.images[imgIdx];
+  const resolvedScale = entry.scale === null ? computeAutoScales()[imgIdx].scale : entry.scale;
+  const displayW     = Math.min(DISPLAY_MAX_W, entry.w);
+  const outputW      = entry.w * resolvedScale;
+  painterZoomVal.textContent = Math.round((displayW / outputW) * 100) + '%';
   updateScalePreview(imgIdx);
 }
 
