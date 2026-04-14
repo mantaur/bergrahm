@@ -103,6 +103,8 @@ painterScaleAuto.addEventListener('change', () => {
   const entry  = state.images[imgIdx];
   painterScaleInp.disabled = painterScaleAuto.checked;
   entry.scale = painterScaleAuto.checked ? null : parseFloat(painterScaleInp.value);
+  if (painterScaleAuto.checked)
+    painterScaleInp.value = computeAutoScales()[imgIdx].scale.toFixed(2);
   updatePainterZoom(imgIdx);
 });
 
@@ -366,10 +368,11 @@ function loadPainterImage(rankIdx) {
   redrawPolyOverlay(imgIdx);
 
   // Sync painter scale bar to this image's scale setting
-  const isAuto = entry.scale === null;
-  painterScaleAuto.checked    = isAuto;
-  painterScaleInp.disabled    = isAuto;
-  painterScaleInp.value       = (isAuto ? 1.0 : entry.scale).toFixed(2);
+  const isAuto        = entry.scale === null;
+  const resolvedScale = isAuto ? computeAutoScales()[imgIdx].scale : entry.scale;
+  painterScaleAuto.checked = isAuto;
+  painterScaleInp.disabled = isAuto;
+  painterScaleInp.value    = resolvedScale.toFixed(2);
 
   // Size the preview canvas to match the output aspect ratio (max 80px per side).
   const PREVIEW_MAX = 80;
