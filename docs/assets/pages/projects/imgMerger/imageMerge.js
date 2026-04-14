@@ -949,8 +949,8 @@ function computeAutoScales() {
     if (entry.scale !== null) return { scale: entry.scale, wasClamped: false };
     const imgDim = useW ? entry.w : entry.h;
     if (imgDim <= shortOut) return { scale: 1, wasClamped: false };
-    const raw   = shortOut / imgDim;
-    const scale = Math.ceil(raw / 0.05) * 0.05;
+    const ratio = imgDim / shortOut;
+    const scale = 1 / (Math.ceil(ratio / 0.05) * 0.05);
     return { scale, wasClamped: false };
   });
 }
