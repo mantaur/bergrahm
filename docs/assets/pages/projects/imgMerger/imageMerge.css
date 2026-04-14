@@ -41,6 +41,34 @@
   margin-bottom: 1.4em;
 }
 
+.im-advanced {
+  margin-bottom: 1.2em;
+}
+
+.im-advanced-toggle {
+  cursor: pointer;
+  font-size: 0.85em;
+  color: #888;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  margin-bottom: 0.8em;
+}
+
+.im-advanced-toggle::before {
+  content: '▶';
+  font-size: 0.65em;
+  transition: transform 0.15s;
+}
+
+.im-advanced[open] .im-advanced-toggle::before {
+  transform: rotate(90deg);
+}
+
+.im-advanced-toggle::-webkit-details-marker { display: none; }
+
 .im-field {
   display: flex;
   flex-direction: column;
