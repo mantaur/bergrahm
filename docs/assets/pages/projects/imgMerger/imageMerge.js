@@ -24,9 +24,10 @@ const state = {
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const cfgUseSam     = document.getElementById('cfg-use-sam');
-const cfgSamSize    = document.getElementById('cfg-sam-size');
-const cfgSamWorkers = document.getElementById('cfg-sam-workers');
+const cfgUseSam          = document.getElementById('cfg-use-sam');
+const cfgSamSize         = document.getElementById('cfg-sam-size');
+const cfgSamWorkers      = document.getElementById('cfg-sam-workers');
+const cfgSamWorkersAuto  = document.getElementById('cfg-sam-workers-auto');
 const cfgWidth      = document.getElementById('cfg-width');
 const cfgHeight     = document.getElementById('cfg-height');
 const cfgMinScale   = document.getElementById('cfg-min-scale');
@@ -75,6 +76,22 @@ const maskCtx       = maskCanvas.getContext('2d');
 const outCtx        = outputCanvas.getContext('2d');
 
 // ── Config step ───────────────────────────────────────────────────────────────
+
+// Estimate safe worker count from device RAM (each ONNX worker ~3 GB).
+// navigator.deviceMemory is rounded to nearest power of 2; reserve 2 GB for OS/browser.
+function autoWorkerCount() {
+  const ram = navigator.deviceMemory ?? 4;
+  return Math.max(1, Math.floor((ram - 2) / 3));
+}
+
+// Initialise the workers input to the auto estimate.
+cfgSamWorkers.value = autoWorkerCount();
+
+cfgSamWorkersAuto.addEventListener('change', () => {
+  cfgSamWorkers.disabled = cfgSamWorkersAuto.checked;
+  if (cfgSamWorkersAuto.checked) cfgSamWorkers.value = autoWorkerCount();
+});
+
 cfgMinScale.addEventListener('input', () => {
   let v = parseFloat(cfgMinScale.value);
   if (v > parseFloat(cfgMaxScale.value)) {
