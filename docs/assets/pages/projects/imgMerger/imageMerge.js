@@ -692,7 +692,7 @@ function onEncoded(wIdx, { imgIdx, embeddings, originalSizes, reshapedSizes }) {
 
   // Flip the rank-list dot to green.
   const dot = samPool.dots.get(imgIdx);
-  if (dot) { dot.classList.add('im-sam-encoded'); dot.title = 'Encoded'; }
+  if (dot) { dot.classList.remove('im-sam-encoding'); dot.classList.add('im-sam-encoded'); dot.title = 'Encoded'; }
 
   if (imgIdx === state.rankOrder[state.paintIdx]) {
     updateSamStatus(samPool.samMode ? 'Click a subject to segment' : 'SAM ready');
@@ -757,6 +757,11 @@ function onEncodeError(wIdx, message) {
   samPool.readyCount  = Math.max(0, samPool.readyCount - 1);
   updateSamWorkerCount();
 
+  if (imgIdx !== null) {
+    const dot = samPool.dots.get(imgIdx);
+    if (dot) { dot.classList.remove('im-sam-encoding'); dot.title = 'Pending encoding'; }
+  }
+
   if (imgIdx !== null && !samPool.embeddingCache.has(imgIdx)) {
     const attempts = (samPool.encodeRetries.get(imgIdx) || 0) + 1;
     samPool.encodeRetries.set(imgIdx, attempts);
@@ -778,6 +783,8 @@ function onEncodeError(wIdx, message) {
 function sendEncode(wIdx, imgIdx) {
   samPool.busy[wIdx]     = true;
   samPool.encoding[wIdx] = imgIdx;
+  const dot = samPool.dots.get(imgIdx);
+  if (dot) { dot.classList.add('im-sam-encoding'); dot.title = 'Encoding\u2026'; }
   const entry = state.images[imgIdx];
   const tmp   = document.createElement('canvas');
   tmp.width   = entry.w;
