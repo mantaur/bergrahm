@@ -770,6 +770,8 @@ function onEncodeError(wIdx, message) {
       samPool.encodeQueue.unshift(imgIdx);
       updateSamStatus('SAM worker failed \u2014 retrying with fewer workers\u2026', true);
     } else {
+      const failDot = samPool.dots.get(imgIdx);
+      if (failDot) { failDot.classList.remove('im-sam-encoding'); failDot.classList.add('im-sam-failed'); failDot.title = 'Encoding failed'; }
       updateSamStatus('Could not encode [' + (state.images[imgIdx]?.name ?? imgIdx) + '] \u2014 skipping.', true);
     }
   } else {

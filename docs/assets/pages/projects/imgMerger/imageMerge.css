@@ -186,6 +186,11 @@
   animation: none;
 }
 
+.im-sam-dot.im-sam-failed {
+  background: #c0392b;
+  animation: none;
+}
+
 .im-rank-thumb {
   width: 32px;
   height: 32px;
