@@ -122,7 +122,6 @@
 
       <!-- Per-image scale + zoom bar -->
       <div class="im-scale-bar">
-        <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray = output canvas · Green = image at target scale"></canvas>
         <label class="im-scale-bar-label">Output scale</label>
         <input type="checkbox" id="painter-scale-auto" checked>
         <label for="painter-scale-auto" class="im-scale-auto-lbl">Auto</label>
@@ -133,6 +132,7 @@
       <div class="im-canvas-wrap" id="canvas-wrap">
         <canvas id="paint-canvas"></canvas>
         <canvas id="mask-canvas"></canvas>
+        <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray = output canvas · Green = image at target scale"></canvas>
       </div>
 
       <!-- SAM controls — hidden until user opts in on config page -->

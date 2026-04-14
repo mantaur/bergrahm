@@ -283,10 +283,14 @@
 }
 
 .im-scale-preview {
-  display: block;
-  border: 1px solid #444;
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  opacity: 0.45;
+  border: 1px solid #666;
   border-radius: 0.25em;
   image-rendering: pixelated;
+  pointer-events: none;
 }
 
 .im-zoom-label {
