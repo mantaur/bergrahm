@@ -54,8 +54,9 @@ const paintCanvas   = document.getElementById('paint-canvas');
 const maskCanvas    = document.getElementById('mask-canvas');
 
 const samControls   = document.getElementById('sam-controls');
-const btnSamToggle  = document.getElementById('btn-sam-toggle');
-const samStatus     = document.getElementById('sam-status');
+const btnSamToggle      = document.getElementById('btn-sam-toggle');
+const samStatus         = document.getElementById('sam-status');
+const samWorkerCountEl  = document.getElementById('sam-worker-count');
 
 const painterScaleAuto    = document.getElementById('painter-scale-auto');
 const painterScaleInp     = document.getElementById('painter-scale-inp');
@@ -611,6 +612,13 @@ function updateSamStatus(text, warn) {
   samStatus.className   = 'im-sam-status' + (warn ? ' im-log-warn' : '');
 }
 
+function updateSamWorkerCount() {
+  const live  = samPool.ready.filter(Boolean).length;
+  const total = SAM_WORKER_COUNT;
+  samWorkerCountEl.textContent = live + '/' + total + ' workers';
+  samWorkerCountEl.className   = 'im-sam-worker-count' + (live < total ? ' im-log-warn' : '');
+}
+
 function initSamPool() {
   SAM_WORKER_COUNT = state.samWorkerCount;
   if (location.protocol === 'file:') {
@@ -659,6 +667,7 @@ function onWorkerReady(wIdx) {
   samPool.ready[wIdx] = true;
   samPool.busy[wIdx]  = false;
   samPool.readyCount++;
+  updateSamWorkerCount();
 
   if (samPool.readyCount === 1) {
     // Model now in browser cache — start the remaining workers.
@@ -733,6 +742,7 @@ function drainEncodeQueue() {
       samPool.encoding[i] = null;
       samPool.readyCount  = Math.max(0, samPool.readyCount - 1);
     }
+    updateSamWorkerCount();
   }
 }
 
@@ -745,6 +755,7 @@ function onEncodeError(wIdx, message) {
   samPool.workers[wIdx].terminate();
   samPool.ready[wIdx] = false;
   samPool.readyCount  = Math.max(0, samPool.readyCount - 1);
+  updateSamWorkerCount();
 
   if (imgIdx !== null && !samPool.embeddingCache.has(imgIdx)) {
     const attempts = (samPool.encodeRetries.get(imgIdx) || 0) + 1;

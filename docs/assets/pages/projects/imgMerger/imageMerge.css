@@ -319,6 +319,12 @@
 }
 
 /* SAM controls */
+.im-sam-worker-count {
+  font-size: 0.78em;
+  color: #888;
+  white-space: nowrap;
+}
+
 .im-sam-status {
   font-size: 0.82em;
   color: #aaa;
