@@ -35,10 +35,28 @@
       <p>Upload images, paint the regions that must stay visible, then merge them into a single output image.</p>
     </div>
 
-    <!-- ── STEP 0: Configuration ── -->
-    <div class="im-section" id="section-config">
-      <h2 class="im-step-title">Step 1 — Configure</h2>
+    <!-- ── STEP 1: Configure + Paint ── -->
+    <div class="im-section" id="section-paint">
+      <h2 class="im-step-title">Step 1 — Configure &amp; paint</h2>
 
+      <!-- SAM toggle -->
+      <div id="cfg-use-sam-row" class="im-field im-field-row im-hidden" style="align-items:center;gap:0.6em;margin-bottom:1em;">
+        <input type="checkbox" id="cfg-use-sam">
+        <label for="cfg-use-sam" style="cursor:pointer;font-size:0.85em;color:#aaa;">
+          Enable SAM auto-segmentation
+          <span class="im-hint-small">(~100 MB on first use · requires internet)</span>
+        </label>
+      </div>
+
+      <!-- Upload -->
+      <div class="im-config-grid" style="margin-bottom:1.4em;">
+        <div class="im-field">
+          <label for="cfg-images">Upload images</label>
+          <input type="file" id="cfg-images" accept="image/*" multiple>
+        </div>
+      </div>
+
+      <!-- Rest of config -->
       <div class="im-config-grid">
         <div class="im-field">
           <label for="cfg-width">Output width (px)</label>
@@ -49,7 +67,11 @@
           <input type="number" id="cfg-height" value="1920" min="1">
         </div>
         <div class="im-field">
-          <label for="cfg-min-scale">Min scale</label>
+          <label for="cfg-min-scale">
+            Min scale
+            <input type="checkbox" id="cfg-use-scale-range" checked style="margin-left:0.5em;vertical-align:middle;">
+            <span style="font-size:0.8em;color:#888;font-weight:normal;">range</span>
+          </label>
           <div class="im-slider-row">
             <input type="range" id="cfg-min-scale" min="0.1" max="1" step="0.05" value="0.5">
             <span id="cfg-min-scale-val">0.5×</span>
@@ -62,10 +84,6 @@
             <span id="cfg-max-scale-val">2.0×</span>
           </div>
         </div>
-        <div class="im-field">
-          <label for="cfg-images">Upload images</label>
-          <input type="file" id="cfg-images" accept="image/*" multiple>
-        </div>
       </div>
 
       <details class="im-advanced">
@@ -76,8 +94,19 @@
             <input type="color" id="cfg-fill" value="#181a1b">
           </div>
           <div class="im-field">
-            <label for="cfg-sam-size">SAM mask resolution (px) <span class="im-hint-small">· affects decode speed</span></label>
-            <input type="number" id="cfg-sam-size" value="512" min="64" max="4096" step="64">
+            <label for="cfg-blend-mode">Blend mode</label>
+            <select id="cfg-blend-mode" class="im-select">
+              <option value="voronoi">Voronoi</option>
+              <option value="dither">Dither</option>
+            </select>
+          </div>
+          <div class="im-field im-hidden" id="cfg-dither-fields">
+            <label for="cfg-seed">Random seed</label>
+            <input type="number" id="cfg-seed" value="42" min="0" step="1">
+          </div>
+          <div class="im-field im-hidden" id="cfg-dither-exp-field">
+            <label for="cfg-dither-exp">Dither sharpness <span class="im-hint-small">· higher = narrower blend band</span></label>
+            <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1">
           </div>
           <div class="im-field">
             <label for="cfg-sam-workers">SAM background encoders <span class="im-hint-small">· reduce if out of memory</span></label>
@@ -86,56 +115,7 @@
         </div>
       </details>
 
-      <div class="im-field im-field-row" style="align-items:center;gap:0.6em;margin-bottom:1em;">
-        <input type="checkbox" id="cfg-use-sam">
-        <label for="cfg-use-sam" style="cursor:pointer;font-size:0.85em;color:#aaa;">
-          Enable SAM auto-segmentation
-          <span class="im-hint-small">(~100 MB on first use · requires internet)</span>
-        </label>
-      </div>
-
-      <button class="im-btn" id="btn-to-paint" disabled>Next: Paint masks →</button>
-    </div>
-
-    <!-- ── STEP 1: Bitmap painter ── -->
-    <div class="im-section im-hidden" id="section-paint">
-      <h2 class="im-step-title">Step 2 — Paint essential regions</h2>
-      <p class="im-hint">Paint over the areas that <em>must</em> remain visible. Everything unpainted may be cropped or covered.</p>
-
-      <!-- Image order / rank list -->
-      <div class="im-rank-area">
-        <h3>Importance order <span class="im-hint-small">(drag to reorder — top = highest priority)</span></h3>
-        <ul id="rank-list" class="im-rank-list"></ul>
-      </div>
-
-      <!-- Painter -->
-      <div class="im-painter-controls">
-        <div class="im-field">
-          <label>Editing: <strong id="paint-image-name">—</strong></label>
-          <span class="im-hint">Click to place vertices · click near the first point to close · draw multiple polygons per image</span>
-        </div>
-        <div class="im-field im-field-row">
-          <button class="im-btn im-btn-sm" id="btn-undo">↩ Undo</button>
-          <button class="im-btn im-btn-sm im-btn-danger" id="btn-clear-mask">Clear all</button>
-        </div>
-      </div>
-
-      <!-- Per-image scale + zoom bar -->
-      <div class="im-scale-bar">
-        <label class="im-scale-bar-label">Output scale</label>
-        <input type="checkbox" id="painter-scale-auto" checked>
-        <label for="painter-scale-auto" class="im-scale-auto-lbl">Auto</label>
-        <input type="number" id="painter-scale-inp" class="im-scale-input" min="0.05" max="20" step="0.05" value="1.00" disabled>
-        <span class="im-zoom-label">Zoom: <strong id="painter-zoom-val">—</strong></span>
-      </div>
-
-      <div class="im-canvas-wrap" id="canvas-wrap">
-        <canvas id="paint-canvas"></canvas>
-        <canvas id="mask-canvas"></canvas>
-        <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray = output canvas · Green = image at target scale"></canvas>
-      </div>
-
-      <!-- SAM controls — hidden until user opts in on config page -->
+      <!-- SAM controls — shown whenever SAM is enabled -->
       <div class="im-hidden" id="sam-controls">
         <div style="display:flex;align-items:center;gap:0.8em;margin:0.7em 0 0.2em;">
           <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>SAM: Off</button>
@@ -144,18 +124,61 @@
         </div>
       </div>
 
-      <div class="im-painter-nav">
-        <button class="im-btn im-btn-sm" id="btn-prev-img">← Prev</button>
-        <span id="paint-index-label">1 / 1</span>
-        <button class="im-btn im-btn-sm" id="btn-next-img">Next →</button>
-      </div>
+      <!-- Rank list + painter — revealed once images are uploaded -->
+      <div id="paint-area" class="im-hidden">
 
-      <button class="im-btn" id="btn-to-merge">Next: Merge →</button>
+        <!-- Image order / rank list -->
+        <div class="im-rank-area">
+          <h3>Importance order <span class="im-hint-small">(drag to reorder — top = highest priority)</span></h3>
+          <ul id="rank-list" class="im-rank-list"></ul>
+        </div>
+
+        <!-- Painter -->
+        <div class="im-painter-controls">
+          <div class="im-field">
+            <label>Editing: <strong id="paint-image-name">—</strong></label>
+            <span class="im-hint">Click to place vertices · click near the first point to close · draw multiple polygons per image</span>
+          </div>
+          <div class="im-field im-field-row">
+            <button class="im-btn im-btn-sm" id="btn-undo">↩ Undo</button>
+            <button class="im-btn im-btn-sm im-btn-danger" id="btn-clear-mask">Clear all</button>
+          </div>
+        </div>
+
+        <div class="im-painter-nav">
+          <button class="im-btn im-btn-sm" id="btn-prev-img">← Prev</button>
+          <span id="paint-index-label">1 / 1</span>
+          <button class="im-btn im-btn-sm" id="btn-next-img">Next →</button>
+        </div>
+
+        <!-- Per-image scale + zoom bar -->
+        <div class="im-scale-bar">
+          <label class="im-scale-bar-label">Output scale</label>
+          <input type="checkbox" id="painter-scale-auto" checked>
+          <label for="painter-scale-auto" class="im-scale-auto-lbl">Auto</label>
+          <input type="number" id="painter-scale-inp" class="im-scale-input" min="0.05" max="20" step="0.05" value="1.00" disabled>
+          <span class="im-zoom-label">Zoom: <strong id="painter-zoom-val">—</strong></span>
+        </div>
+
+        <div class="im-canvas-wrap" id="canvas-wrap">
+          <canvas id="paint-canvas"></canvas>
+          <canvas id="mask-canvas"></canvas>
+          <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray = output canvas · Green = image at target scale"></canvas>
+        </div>
+
+        <!-- Live preview -->
+        <div id="live-preview-wrap" class="im-hidden" style="margin-top:1em;">
+          <p class="im-hint" style="margin-bottom:0.4em;">Live preview <span class="im-hint-small">(updates as you paint)</span></p>
+          <canvas id="live-preview-canvas" style="border:1px solid #444;border-radius:0.25em;image-rendering:pixelated;display:block;"></canvas>
+        </div>
+
+        <button class="im-btn" id="btn-to-merge" style="margin-top:1em;">Next: Merge →</button>
+      </div>
     </div>
 
     <!-- ── STEP 2: Merge & export ── -->
     <div class="im-section im-hidden" id="section-merge">
-      <h2 class="im-step-title">Step 3 — Merge</h2>
+      <h2 class="im-step-title">Step 2 — Merge</h2>
       <div class="im-field-row" style="display:flex;gap:0.6em;align-items:center;margin-bottom:0.4em;">
         <button class="im-btn" id="btn-merge">Run merge</button>
         <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
@@ -184,10 +207,23 @@ const FINE_STEP    = 20;
 const FINE_RADIUS  = 200;
 const TOP_K        = 10;
 
+// Mutable overrides — set per-message so preview runs can use scaled constants.
+let gCoarseStep = COARSE_STEP;
+let gFineStep   = FINE_STEP;
+let gFineRadius = FINE_RADIUS;
+let gTopK       = TOP_K;
+let gSilent     = false;
+
 self.onmessage = function (e) {
-  const { images, rankOrder, outW, outH, minScale, maxScale } = e.data;  // each images[i].scale is pre-computed
+  const { images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp,
+          coarseStep, fineStep, fineRadius, topK, silent } = e.data;
+  gCoarseStep = coarseStep  || COARSE_STEP;
+  gFineStep   = fineStep    || FINE_STEP;
+  gFineRadius = fineRadius  || FINE_RADIUS;
+  gTopK       = topK        || TOP_K;
+  gSilent     = !!silent;
   try {
-    const { placements, ownershipMap } = runMerge(images, rankOrder, outW, outH, minScale, maxScale);
+    const { placements, ownershipMap } = runMerge(images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp);
     self.postMessage({ type: 'done', placements, ownershipMap }, [ownershipMap.buffer]);
   } catch (err) {
     self.postMessage({ type: 'error', text: err.message });
@@ -195,10 +231,11 @@ self.onmessage = function (e) {
 };
 
 function postLog(text, cls) {
+  if (gSilent) return;
   self.postMessage({ type: 'log', text, cls: cls || '' });
 }
 
-function runMerge(images, rankOrder, W, H, minScale, maxScale) {
+function runMerge(images, rankOrder, W, H, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp) {
   const forbiddenTris = [];
   const placements    = [];
 
@@ -221,9 +258,9 @@ function runMerge(images, rankOrder, W, H, minScale, maxScale) {
 
     entry.bbox = trianglesBbox(entry.triangles);
 
-    // For manually-scaled images use exactly the specified scale.
-    // For auto-scaled images search min/default/max and keep the best.
-    const scales = entry.scaleFixed
+    // For manually-scaled images, or when scale-range search is off, use the
+    // single resolved scale. Otherwise search min/default/max and keep the best.
+    const scales = (entry.scaleFixed || !useScaleRange)
       ? [entry.scale]
       : [...new Set([minScale, entry.scale, maxScale])];
     let bestScore = -Infinity, bestPlacement = null;
@@ -250,7 +287,7 @@ function runMerge(images, rankOrder, W, H, minScale, maxScale) {
   }
 
   postLog('Computing ownership map...');
-  const ownershipMap = computeOwnershipMap(images, placements, W, H);
+  const ownershipMap = computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp);
   return { placements, ownershipMap };
 }
 
@@ -263,13 +300,13 @@ function findBestPlacement(entry, forbiddenTris, W, H) {
   const forbiddenBbox = forbiddenTris.length > 0 ? bboxUnion(forbiddenTris.map(t => t.bbox)) : null;
   const topK = [];
 
-  for (let tx = xMin; tx <= xMax; tx += COARSE_STEP) {
-    for (let ty = yMin; ty <= yMax; ty += COARSE_STEP) {
+  for (let tx = xMin; tx <= xMax; tx += gCoarseStep) {
+    for (let ty = yMin; ty <= yMax; ty += gCoarseStep) {
       const score = scorePlacement(entry, s, tx, ty, forbiddenTris, forbiddenBbox, W, H);
-      if (topK.length < TOP_K || score > topK[topK.length - 1].score) {
+      if (topK.length < gTopK || score > topK[topK.length - 1].score) {
         topK.push({ tx, ty, score });
         topK.sort((a, b) => b.score - a.score);
-        if (topK.length > TOP_K) topK.pop();
+        if (topK.length > gTopK) topK.pop();
       }
     }
   }
@@ -279,13 +316,13 @@ function findBestPlacement(entry, forbiddenTris, W, H) {
   let bestScore = -Infinity, bestPlacement = null;
 
   for (const { tx: cx, ty: cy } of topK) {
-    const xLo = Math.max(xMin, cx - FINE_RADIUS);
-    const xHi = Math.min(xMax, cx + FINE_RADIUS);
-    const yLo = Math.max(yMin, cy - FINE_RADIUS);
-    const yHi = Math.min(yMax, cy + FINE_RADIUS);
+    const xLo = Math.max(xMin, cx - gFineRadius);
+    const xHi = Math.min(xMax, cx + gFineRadius);
+    const yLo = Math.max(yMin, cy - gFineRadius);
+    const yHi = Math.min(yMax, cy + gFineRadius);
 
-    for (let tx = xLo; tx <= xHi; tx += FINE_STEP) {
-      for (let ty = yLo; ty <= yHi; ty += FINE_STEP) {
+    for (let tx = xLo; tx <= xHi; tx += gFineStep) {
+      for (let ty = yLo; ty <= yHi; ty += gFineStep) {
         const score = scorePlacement(entry, s, tx, ty, forbiddenTris, forbiddenBbox, W, H);
         if (score > bestScore) { bestScore = score; bestPlacement = { tx, ty, s }; }
       }
@@ -432,10 +469,16 @@ function pointInTriangle(p, a, b, c) {
   return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0);
 }
 
+// ── Ownership map dispatcher ───────────────────────────────────────────────────
+function computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp) {
+  if (blendMode === 'dither') return computeDitherMap(images, placements, W, H, seed | 0, Math.max(1, ditherExp | 0) || 4);
+  return computeVoronoiMap(images, placements, W, H);
+}
+
 // ── Voronoi ownership map ──────────────────────────────────────────────────────
 // Returns Int16Array(W*H): each cell holds the imgIdx of the image whose
 // essential region is nearest, or -1 if no image has any polygons.
-function computeOwnershipMap(images, placements, W, H) {
+function computeVoronoiMap(images, placements, W, H) {
   const ownerMap = new Int16Array(W * H).fill(-1);
   const minDist  = new Float32Array(W * H).fill(Infinity);
   const mask     = new Uint8Array(W * H);
@@ -464,6 +507,98 @@ function computeOwnershipMap(images, placements, W, H) {
   return ownerMap;
 }
 
+// ── Dither ownership map ───────────────────────────────────────────────────────
+// Each pixel is assigned to an image by weighted random sampling.
+// Weight = 1 / (chamferDist + 1). Essential-region pixels (dist=0) always win.
+// Only images whose bounding box covers the pixel are eligible (per-user spec).
+function computeDitherMap(images, placements, W, H, seed, exp) {
+  const N       = placements.length;
+  const ownerMap = new Int16Array(W * H).fill(-1);
+  if (N === 0) return ownerMap;
+
+  const distMaps = new Array(N).fill(null);
+  const bboxes   = new Array(N).fill(null);
+  const mask     = new Uint8Array(W * H);
+
+  for (let k = 0; k < N; k++) {
+    const p     = placements[k];
+    const entry = images[p.imgIdx];
+    if (!entry.polygons || entry.polygons.length === 0) continue;
+
+    const outPolys = entry.polygons.map(poly =>
+      poly.map(v => ({ x: p.x + v.x * p.scale, y: p.y + v.y * p.scale }))
+    );
+    mask.fill(0);
+    rasterizePolygons(outPolys, W, H, mask);
+    distMaps[k] = chamferDist(mask, W, H);
+    bboxes[k]   = {
+      x0: Math.max(0, Math.floor(p.x)),
+      y0: Math.max(0, Math.floor(p.y)),
+      x1: Math.min(W - 1, Math.ceil(p.x + entry.w * p.scale)),
+      y1: Math.min(H - 1, Math.ceil(p.y + entry.h * p.scale)),
+    };
+  }
+
+  // Indices of placements that have polygon data
+  const active = [];
+  for (let k = 0; k < N; k++) { if (distMaps[k] !== null) active.push(k); }
+  if (active.length === 0) return ownerMap;
+
+  const covering = new Int32Array(active.length); // reused per pixel
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+
+      // Gather active placements whose bbox covers (x, y)
+      let nCov = 0;
+      for (const k of active) {
+        const bb = bboxes[k];
+        if (x >= bb.x0 && x <= bb.x1 && y >= bb.y0 && y <= bb.y1) {
+          covering[nCov++] = k;
+        }
+      }
+      if (nCov === 0) continue;
+      if (nCov === 1) { ownerMap[i] = placements[covering[0]].imgIdx; continue; }
+
+      // Essential region (dist=0) — first covering wins (= highest rank)
+      let essentialOwner = -1;
+      for (let j = 0; j < nCov; j++) {
+        if (distMaps[covering[j]][i] === 0) { essentialOwner = placements[covering[j]].imgIdx; break; }
+      }
+      if (essentialOwner !== -1) { ownerMap[i] = essentialOwner; continue; }
+
+      // Find the two covering placements with smallest chamfer distance.
+      // Blending only between the two nearest avoids sampling a far-away image
+      // whose essential region is on the opposite side of the canvas.
+      let d0 = Infinity, d1 = Infinity, k0 = covering[0], k1 = covering[1];
+      for (let j = 0; j < nCov; j++) {
+        const d = distMaps[covering[j]][i];
+        if (d < d0) { d1 = d0; k1 = k0; d0 = d; k0 = covering[j]; }
+        else if (d < d1) { d1 = d; k1 = covering[j]; }
+      }
+
+      // p(k0) = d1^exp / (d0^exp + d1^exp) — higher exp = narrower blend band.
+      const w0 = Math.pow(d1, exp);
+      const w1 = Math.pow(d0, exp);
+      ownerMap[i] = placements[pixelRand(seed, i) < w0 / (w0 + w1) ? k0 : k1].imgIdx;
+    }
+  }
+
+  return ownerMap;
+}
+
+// Wang hash — deterministic float in [0, 1) from seed + pixel index.
+function pixelRand(seed, idx) {
+  let h = ((seed >>> 0) ^ (idx >>> 0)) >>> 0;
+  h = ((h ^ 61) ^ (h >>> 16)) >>> 0;
+  h = (h + (h << 3))          >>> 0;
+  h = (h ^ (h >>> 4))         >>> 0;
+  h = Math.imul(h, 0x27d4eb2d) >>> 0;
+  h = (h ^ (h >>> 15))        >>> 0;
+  return h / 4294967296;
+}
+
 // Scanline-fill all polygons into mask (1 = inside, output space).
 function rasterizePolygons(polygons, W, H, mask) {
   for (const poly of polygons) {
@@ -490,6 +625,7 @@ function rasterizePolygons(polygons, W, H, mask) {
     }
   }
 }
+
 
 // 2-pass chamfer distance transform (3-4 weights).
 // Returns Float32Array(W*H): 0 at seed pixels, distance elsewhere.

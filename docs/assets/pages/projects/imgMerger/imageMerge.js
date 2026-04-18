@@ -1,4 +1,7 @@
 // ── Image Merger ──────────────────────────────────────────────────────────────
+const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  || window.matchMedia('(pointer: coarse)').matches;
+
 // State
 const state = {
   // config
@@ -25,21 +28,25 @@ const state = {
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const cfgUseSam          = document.getElementById('cfg-use-sam');
-const cfgSamSize         = document.getElementById('cfg-sam-size');
-const cfgSamWorkers = document.getElementById('cfg-sam-workers');
+const cfgSamWorkers      = document.getElementById('cfg-sam-workers');
+const cfgBlendMode       = document.getElementById('cfg-blend-mode');
+const cfgDitherFields    = document.getElementById('cfg-dither-fields');
+const cfgDitherExpField  = document.getElementById('cfg-dither-exp-field');
+const cfgSeed            = document.getElementById('cfg-seed');
+const cfgDitherExp       = document.getElementById('cfg-dither-exp');
 const cfgWidth      = document.getElementById('cfg-width');
 const cfgHeight     = document.getElementById('cfg-height');
-const cfgMinScale   = document.getElementById('cfg-min-scale');
-const cfgMinScaleV  = document.getElementById('cfg-min-scale-val');
-const cfgMaxScale   = document.getElementById('cfg-max-scale');
-const cfgMaxScaleV  = document.getElementById('cfg-max-scale-val');
+const cfgUseScaleRange = document.getElementById('cfg-use-scale-range');
+const cfgMinScale      = document.getElementById('cfg-min-scale');
+const cfgMinScaleV     = document.getElementById('cfg-min-scale-val');
+const cfgMaxScale      = document.getElementById('cfg-max-scale');
+const cfgMaxScaleV     = document.getElementById('cfg-max-scale-val');
 const cfgFill       = document.getElementById('cfg-fill');
 const cfgImages     = document.getElementById('cfg-images');
-const btnToPaint    = document.getElementById('btn-to-paint');
 
-const secConfig     = document.getElementById('section-config');
 const secPaint      = document.getElementById('section-paint');
 const secMerge      = document.getElementById('section-merge');
+const paintArea     = document.getElementById('paint-area');
 
 const rankList      = document.getElementById('rank-list');
 const paintName     = document.getElementById('paint-image-name');
@@ -63,6 +70,9 @@ const painterScaleInp     = document.getElementById('painter-scale-inp');
 const painterZoomVal      = document.getElementById('painter-zoom-val');
 const scalePreviewCanvas  = document.getElementById('painter-scale-preview');
 
+const livePreviewWrap   = document.getElementById('live-preview-wrap');
+const livePreviewCanvas = document.getElementById('live-preview-canvas');
+
 const btnMerge      = document.getElementById('btn-merge');
 const mergeLog      = document.getElementById('merge-log');
 const outputWrap    = document.getElementById('output-wrap');
@@ -76,6 +86,42 @@ const outCtx        = outputCanvas.getContext('2d');
 
 // ── Config step ───────────────────────────────────────────────────────────────
 
+if (isMobile) {
+  document.getElementById('cfg-use-sam-row').classList.remove('im-hidden');
+} else {
+  // Desktop: SAM always on, no need to expose the toggle.
+  cfgUseSam.checked = true;
+  state.useSam = true;
+  samControls.classList.remove('im-hidden');
+}
+
+cfgBlendMode.addEventListener('change', () => {
+  const isDither = cfgBlendMode.value === 'dither';
+  cfgDitherFields.classList.toggle('im-hidden', !isDither);
+  cfgDitherExpField.classList.toggle('im-hidden', !isDither);
+  schedulePreview();
+});
+
+cfgSeed.addEventListener('input', schedulePreview);
+cfgDitherExp.addEventListener('input', schedulePreview);
+
+cfgWidth.addEventListener('input', () => {
+  state.outW = parseInt(cfgWidth.value) || 1080;
+  if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
+  schedulePreview();
+});
+
+cfgHeight.addEventListener('input', () => {
+  state.outH = parseInt(cfgHeight.value) || 1920;
+  if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
+  schedulePreview();
+});
+
+cfgFill.addEventListener('input', () => {
+  state.fillColor = cfgFill.value;
+  if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
+  schedulePreview();
+});
 
 cfgMinScale.addEventListener('input', () => {
   let v = parseFloat(cfgMinScale.value);
@@ -97,6 +143,27 @@ cfgMaxScale.addEventListener('input', () => {
   state.maxScale = v;
 });
 
+cfgUseScaleRange.addEventListener('change', () => {
+  const on = cfgUseScaleRange.checked;
+  cfgMinScale.disabled = !on;
+  cfgMaxScale.disabled = !on;
+});
+
+cfgUseSam.addEventListener('change', () => {
+  state.useSam = cfgUseSam.checked;
+  samControls.classList.toggle('im-hidden', !state.useSam);
+  if (state.useSam && state.images.length > 0) {
+    state.samWorkerCount = Math.max(1, parseInt(cfgSamWorkers.value) || 4);
+    if (samPool.workers.length === 0) {
+      initSamPool();
+    } else if (samPool.readyCount > 0) {
+      buildEncodeQueue();
+    }
+  }
+  // Rebuild rank list to add or remove SAM dots.
+  if (state.images.length > 0) buildRankList();
+});
+
 // ── Painter scale bar ─────────────────────────────────────────────────────────
 painterScaleAuto.addEventListener('change', () => {
   const imgIdx = state.rankOrder[state.paintIdx];
@@ -106,6 +173,7 @@ painterScaleAuto.addEventListener('change', () => {
   if (painterScaleAuto.checked)
     painterScaleInp.value = computeAutoScales()[imgIdx].scale.toFixed(2);
   updatePainterZoom(imgIdx);
+  schedulePreview();
 });
 
 painterScaleInp.addEventListener('change', () => {
@@ -117,6 +185,7 @@ painterScaleInp.addEventListener('change', () => {
   painterScaleInp.value = v.toFixed(2);
   entry.scale = v;
   updatePainterZoom(imgIdx);
+  schedulePreview();
 });
 
 function updatePainterZoom(imgIdx) {
@@ -171,64 +240,64 @@ function updateScalePreview(imgIdx) {
 cfgImages.addEventListener('change', () => {
   const files = Array.from(cfgImages.files);
   if (!files.length) return;
-  state.images = [];
-  state.rankOrder = [];
+  // Clear input so re-selecting same files triggers change again.
+  cfgImages.value = '';
+
+  const firstLoad = state.images.length === 0;
+  const baseIdx   = state.images.length;
   let loaded = 0;
+
   files.forEach((file, i) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
+      const idx = baseIdx + i;
       const w = img.naturalWidth, h = img.naturalHeight;
-      state.images[i] = {
-        file,
-        name: file.name,
-        img,
-        thumbUrl: url,
-        w,
-        h,
-        polygons:    [],  // completed essential-region polygons [{x,y}...]
-        currentPoly: [],  // polygon currently being drawn
-        scale:       null, // null = auto, number = manual fixed scale
+      state.images[idx] = {
+        file, name: file.name, img, thumbUrl: url, w, h,
+        polygons:    [],
+        currentPoly: [],
+        scale:       null,
       };
       loaded++;
       if (loaded === files.length) {
-        // init rank order 0..n-1
-        state.rankOrder = state.images.map((_, idx) => idx);
-        // init undo stacks per image
-        state.undoStack = state.images.map(() => []);
-        btnToPaint.disabled = false;
+        // Append new indices to rankOrder and undoStack.
+        for (let j = baseIdx; j < baseIdx + files.length; j++) {
+          state.rankOrder.push(j);
+          state.undoStack[j] = [];
+        }
+        paintArea.classList.remove('im-hidden');
+        buildRankList();
+        if (firstLoad) loadPainterImage(0);
+        schedulePreview();
+        // Start encoding if SAM is already checked and pool is live.
+        if (state.useSam) {
+          state.samWorkerCount = Math.max(1, parseInt(cfgSamWorkers.value) || 4);
+          if (samPool.workers.length === 0) {
+            initSamPool(); // pool not started yet — it will call buildEncodeQueue when ready
+          } else if (samPool.readyCount > 0) {
+            if (firstLoad) {
+              buildEncodeQueue(); // full sorted queue build
+            } else {
+              // Append only — don't re-queue images already being encoded.
+              for (let j = baseIdx; j < baseIdx + files.length; j++) {
+                if (!samPool.embeddingCache.has(j)) samPool.encodeQueue.push(j);
+              }
+              samPool.encodeQueueBuilt = true;
+              drainEncodeQueue();
+            }
+          }
+        }
       }
     };
     img.src = url;
   });
 });
 
-btnToPaint.addEventListener('click', () => {
-  state.outW      = parseInt(cfgWidth.value) || 1080;
-  state.outH      = parseInt(cfgHeight.value) || 1920;
-  state.fillColor     = cfgFill.value;
-  state.useSam        = cfgUseSam.checked;
-  state.samDecodeSize   = Math.max(64, parseInt(cfgSamSize.value)    || 512);
-  state.samWorkerCount  = Math.max(1,  parseInt(cfgSamWorkers.value) || 4);
-  showSection('paint');
-  buildRankList();
-  loadPainterImage(0);
-  if (state.useSam) {
-    samControls.classList.remove('im-hidden');
-    initSamPool();
-  } else {
-    samControls.classList.add('im-hidden');
-  }
-});
-
 // ── Section navigation ────────────────────────────────────────────────────────
 function showSection(name) {
-  secConfig.classList.add('im-hidden');
-  secPaint.classList.add('im-hidden');
-  secMerge.classList.add('im-hidden');
-  if (name === 'config') secConfig.classList.remove('im-hidden');
-  if (name === 'paint')  secPaint.classList.remove('im-hidden');
-  if (name === 'merge')  secMerge.classList.remove('im-hidden');
+  secPaint.classList.toggle('im-hidden', name !== 'paint');
+  secMerge.classList.toggle('im-hidden', name !== 'merge');
 }
 
 btnToMerge.addEventListener('click', () => showSection('merge'));
@@ -242,6 +311,59 @@ function buildRankList() {
     const item = createRankItem(imgIdx, rank);
     rankList.appendChild(item);
   });
+}
+
+function removeImage(imgIdx) {
+  // Compact state arrays, remapping all indices.
+  const remap = {};
+  const newImages    = [];
+  const newUndoStack = [];
+  state.images.forEach((entry, i) => {
+    if (i === imgIdx) return;
+    remap[i] = newImages.length;
+    newImages.push(entry);
+    newUndoStack.push(state.undoStack[i] || []);
+  });
+
+  state.images    = newImages;
+  state.undoStack = newUndoStack;
+  state.rankOrder = state.rankOrder
+    .filter(i => i !== imgIdx)
+    .map(i => remap[i]);
+
+  // Remap SAM embedding cache.
+  const newCache = new Map();
+  samPool.embeddingCache.forEach((val, key) => {
+    if (remap[key] !== undefined) newCache.set(remap[key], val);
+  });
+  samPool.embeddingCache = newCache;
+  samPool.encodeQueue    = samPool.encodeQueue
+    .filter(i => i !== imgIdx)
+    .map(i => remap[i] ?? i);
+  samPool.encodeRetries.clear();
+
+  // Workers mid-encode will return old indices — discard those results and
+  // re-queue surviving images under their new indices so they get re-encoded.
+  for (let wi = 0; wi < samPool.encoding.length; wi++) {
+    const oldEnc = samPool.encoding[wi];
+    if (oldEnc === null) continue;
+    samPool.staleEncodeSet.add(oldEnc); // onEncoded will discard this result
+    if (oldEnc !== imgIdx && remap[oldEnc] !== undefined) {
+      const newEnc = remap[oldEnc];
+      if (!samPool.embeddingCache.has(newEnc)) samPool.encodeQueue.push(newEnc);
+    }
+    samPool.encoding[wi] = null;
+  }
+
+  if (state.images.length === 0) {
+    paintArea.classList.add('im-hidden');
+    return;
+  }
+
+  state.paintIdx = Math.min(state.paintIdx, state.rankOrder.length - 1);
+  buildRankList();
+  loadPainterImage(state.paintIdx);
+  schedulePreview();
 }
 
 function createRankItem(imgIdx, rank) {
@@ -259,10 +381,11 @@ function createRankItem(imgIdx, rank) {
 
   // SAM encoding status dot — only visible when SAM is enabled
   if (state.useSam) {
-    const encoded = samPool.embeddingCache.has(imgIdx);
+    const encoded  = samPool.embeddingCache.has(imgIdx);
+    const encoding = !encoded && samPool.encoding.includes(imgIdx);
     const dot = document.createElement('span');
-    dot.className = 'im-sam-dot' + (encoded ? ' im-sam-encoded' : '');
-    dot.title = encoded ? 'Encoded' : 'Pending encoding';
+    dot.className = 'im-sam-dot' + (encoded ? ' im-sam-encoded' : encoding ? ' im-sam-encoding' : '');
+    dot.title = encoded ? 'Encoded' : encoding ? 'Encoding\u2026' : 'Pending encoding';
     samPool.dots.set(imgIdx, dot);
     li.appendChild(dot);
   }
@@ -284,9 +407,23 @@ function createRankItem(imgIdx, rank) {
     loadPainterImage(newPaintIdx);
   });
 
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'im-rank-edit-btn im-btn-danger';
+  removeBtn.textContent = '✕';
+  removeBtn.title = 'Remove image';
+  removeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeImage(imgIdx);
+  });
+
+  const btnGroup = document.createElement('div');
+  btnGroup.className = 'im-rank-btn-group';
+  btnGroup.appendChild(editBtn);
+  btnGroup.appendChild(removeBtn);
+
   li.appendChild(thumb);
   li.appendChild(nameLbl);
-  li.appendChild(editBtn);
+  li.appendChild(btnGroup);
 
   // Drag events
   li.addEventListener('dragstart', onDragStart);
@@ -328,6 +465,7 @@ function onDrop(e) {
   const currentImgIdx = state.rankOrder[state.paintIdx];
   buildRankList();
   state.paintIdx = state.rankOrder.indexOf(currentImgIdx);
+  schedulePreview();
 }
 
 function onDragEnd(e) {
@@ -513,6 +651,7 @@ canvasWrap.addEventListener('click', (e) => {
       rubberBandPt = null;
       redrawPolyOverlay(imgIdx);
       updateUndoBtn(imgIdx);
+      schedulePreview();
       return;
     }
   }
@@ -555,6 +694,7 @@ btnUndo.addEventListener('click', () => {
   const entry  = state.images[imgIdx];
   if (!state.undoStack[imgIdx].length) return;
   const snap = state.undoStack[imgIdx].pop();
+  schedulePreview();
   entry.polygons = snap.polygons;
   // Restore currentPoly in-place so the entry.currentPoly reference stays valid
   currentPoly.length = 0;
@@ -574,6 +714,7 @@ btnClearMask.addEventListener('click', () => {
   rubberBandPt = null;
   redrawPolyOverlay(imgIdx);
   updateUndoBtn(imgIdx);
+  schedulePreview();
 });
 
 btnPrev.addEventListener('click', () => {
@@ -604,8 +745,10 @@ const samPool = {
   samMode:        false,
   embeddingCache: new Map(), // imgIdx → { embeddings, originalSizes, reshapedSizes }
   dots:           new Map(), // imgIdx → dot span element (cached to avoid DOM queries)
-  encodeQueue:    [],        // imgIdx[] awaiting dispatch
-  encodeRetries:  new Map(), // imgIdx → failure count (reset each session)
+  encodeQueue:      [],        // imgIdx[] awaiting dispatch
+  encodeQueueBuilt: false,    // true once buildEncodeQueue() has been called
+  encodeRetries:    new Map(), // imgIdx → failure count (reset each session)
+  staleEncodeSet:   new Set(), // old imgIdx values to discard in onEncoded after a remove
   pendingDecode:  null,      // {imgIdx, x, y} | null — only one slot; last click wins
 };
 
@@ -622,7 +765,9 @@ function updateSamWorkerCount() {
 }
 
 function initSamPool() {
+  if (samPool.workers.length > 0) return; // already initialised
   SAM_WORKER_COUNT = state.samWorkerCount;
+  samPool.encodeQueueBuilt = false;
   if (location.protocol === 'file:') {
     updateSamStatus(
       'SAM requires HTTP \u2014 open a terminal in docs/ and run: python3 -m http.server 8080, ' +
@@ -675,7 +820,9 @@ function onWorkerReady(wIdx) {
     // Model now in browser cache — start the remaining workers.
     for (let i = 1; i < SAM_WORKER_COUNT; i++) samPool.workers[i].postMessage({ type: 'init' });
     btnSamToggle.disabled = false;
-    buildEncodeQueue(); // build once; navigation will never disrupt this queue
+    // Only build queue now if images are already loaded; otherwise cfgImages
+    // listener will call buildEncodeQueue() once images arrive.
+    if (state.images.length > 0) buildEncodeQueue();
   }
 
   const all = samPool.readyCount === SAM_WORKER_COUNT;
@@ -689,6 +836,14 @@ function onWorkerReady(wIdx) {
 function onEncoded(wIdx, { imgIdx, embeddings, originalSizes, reshapedSizes }) {
   samPool.busy[wIdx]     = false;
   samPool.encoding[wIdx] = null;
+
+  // Result from before a remove — index is stale, discard it.
+  if (samPool.staleEncodeSet.has(imgIdx)) {
+    samPool.staleEncodeSet.delete(imgIdx);
+    drainEncodeQueue();
+    return;
+  }
+
   // Store serialized embeddings in main-thread cache — permanent, no eviction.
   samPool.embeddingCache.set(imgIdx, { embeddings, originalSizes, reshapedSizes });
 
@@ -733,8 +888,9 @@ function drainEncodeQueue() {
     sendEncode(wIdx, imgIdx);
   }
   // Once the queue is empty and no worker is busy, release surplus workers —
-  // only one alive worker is kept for decoding.
-  if (samPool.encodeQueue.length === 0 && !samPool.busy.some(Boolean)) {
+  // only one alive worker is kept for decoding. Guard against premature teardown
+  // before any images have been queued (e.g. pool initialised before upload).
+  if (samPool.encodeQueueBuilt && samPool.encodeQueue.length === 0 && !samPool.busy.some(Boolean)) {
     let keptOne = false;
     for (let i = 0; i < SAM_WORKER_COUNT; i++) {
       if (!samPool.ready[i]) continue; // already terminated
@@ -817,6 +973,7 @@ function sendDecode(wIdx, { imgIdx, x, y }) {
 // is ready. Navigation never clears or rebuilds this queue — encoding proceeds
 // steadily through all images regardless of where the user is painting.
 function buildEncodeQueue() {
+  samPool.encodeQueueBuilt = true;
   samPool.encodeRetries.clear();
   const sorted = [...state.images.keys()].sort((a, b) =>
     state.images[a].name.localeCompare(state.images[b].name, undefined, { sensitivity: 'base' })
@@ -865,6 +1022,7 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   redrawPolyOverlay(forImgIdx);
   updateUndoBtn(forImgIdx);
   updateSamStatus('Segment added. Click for another or switch to manual mode.');
+  schedulePreview();
 }
 
 // Convert a flat Uint8Array mask (0=bg, 1=fg) to an [{x,y}...] polygon
@@ -1027,8 +1185,12 @@ function startMerge() {
     rankOrder: Array.from(state.rankOrder),
     outW:      state.outW,
     outH:      state.outH,
-    minScale:  state.minScale,
-    maxScale:  state.maxScale,
+    minScale:      state.minScale,
+    maxScale:      state.maxScale,
+    useScaleRange: cfgUseScaleRange.checked,
+    blendMode:     cfgBlendMode.value,
+    seed:       parseInt(cfgSeed.value, 10) || 0,
+    ditherExp:  parseInt(cfgDitherExp.value, 10) || 4,
   });
 }
 
@@ -1045,6 +1207,153 @@ function cancelMerge() {
 function resetMergeUI() {
   btnMerge.disabled = false;
   btnCancel.classList.add('im-hidden');
+}
+
+// ── Live preview ──────────────────────────────────────────────────────────────
+const PREVIEW_MAX = 128;
+let previewWorker = null;
+let previewTimer  = null;
+
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runPreviewWorker, 350);
+}
+
+function runPreviewWorker() {
+  if (previewWorker) {
+    previewWorker.terminate();
+    URL.revokeObjectURL(previewWorker._blobUrl);
+    previewWorker = null;
+  }
+  if (state.images.length === 0) return;
+
+  const ratio = Math.min(PREVIEW_MAX / state.outW, PREVIEW_MAX / state.outH);
+  const PW = Math.max(1, Math.round(state.outW * ratio));
+  const PH = Math.max(1, Math.round(state.outH * ratio));
+
+  const autoScales = computeAutoScales();
+  const workerImages = state.images.map((entry, i) => ({
+    w:          entry.w,
+    h:          entry.h,
+    name:       entry.name,
+    scale:      autoScales[i].scale * ratio,
+    scaleFixed: true,
+    polygons:   entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
+  }));
+
+  const workerSrc  = document.getElementById('merge-worker-src').textContent;
+  const workerBlob = URL.createObjectURL(new Blob([workerSrc], { type: 'application/javascript' }));
+  previewWorker = new Worker(workerBlob);
+  previewWorker._blobUrl = workerBlob;
+
+  previewWorker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === 'done') {
+      URL.revokeObjectURL(previewWorker._blobUrl);
+      previewWorker = null;
+      renderPreview(msg.placements, msg.ownershipMap, PW, PH);
+    } else if (msg.type === 'error') {
+      URL.revokeObjectURL(previewWorker._blobUrl);
+      previewWorker = null;
+    }
+    // 'log' messages suppressed (silent mode)
+  };
+
+  previewWorker.onerror = () => {
+    if (previewWorker) {
+      URL.revokeObjectURL(previewWorker._blobUrl);
+      previewWorker = null;
+    }
+  };
+
+  previewWorker.postMessage({
+    images:    workerImages,
+    rankOrder: Array.from(state.rankOrder),
+    outW:      PW,
+    outH:      PH,
+    minScale:  state.minScale * ratio,
+    maxScale:  state.maxScale * ratio,
+    useScaleRange: false,
+    blendMode:    cfgBlendMode.value,
+    seed:      parseInt(cfgSeed.value, 10) || 0,
+    ditherExp: parseInt(cfgDitherExp.value, 10) || 4,
+    coarseStep: Math.max(1, Math.round(400 * ratio)),
+    fineStep:   Math.max(1, Math.round(20  * ratio)),
+    fineRadius: Math.max(1, Math.round(200 * ratio)),
+    topK:       10,
+    silent:     true,
+  });
+}
+
+function renderPreview(placements, ownershipMap, W, H) {
+  livePreviewCanvas.width  = W;
+  livePreviewCanvas.height = H;
+  const PREVIEW_DISPLAY = 256;
+  const dispScale = Math.min(PREVIEW_DISPLAY / W, PREVIEW_DISPLAY / H);
+  livePreviewCanvas.style.width  = Math.round(W * dispScale) + 'px';
+  livePreviewCanvas.style.height = Math.round(H * dispScale) + 'px';
+  livePreviewWrap.classList.remove('im-hidden');
+
+  const ctx = livePreviewCanvas.getContext('2d');
+
+  const imgData = [];
+  for (const p of placements) {
+    const entry   = state.images[p.imgIdx];
+    const scaledW = Math.round(entry.w * p.scale);
+    const scaledH = Math.round(entry.h * p.scale);
+    const x0 = Math.max(0, p.x),           y0 = Math.max(0, p.y);
+    const x1 = Math.min(W, p.x + scaledW), y1 = Math.min(H, p.y + scaledH);
+    if (x1 <= x0 || y1 <= y0) { imgData.push(null); continue; }
+
+    const rw = x1 - x0, rh = y1 - y0;
+    const tmp = document.createElement('canvas');
+    tmp.width = rw; tmp.height = rh;
+    const tmpCtx = tmp.getContext('2d');
+    const srcX = (x0 - p.x) / p.scale, srcY = (y0 - p.y) / p.scale;
+    const srcW = rw / p.scale,          srcH = rh / p.scale;
+    tmpCtx.drawImage(entry.img, srcX, srcY, srcW, srcH, 0, 0, rw, rh);
+    imgData.push({ imgIdx: p.imgIdx, x0, y0, x1, y1, rw, data: tmpCtx.getImageData(0, 0, rw, rh).data });
+  }
+
+  const imgDataByIdx = new Map();
+  for (const id of imgData) { if (id) imgDataByIdx.set(id.imgIdx, id); }
+
+  const [fr, fg, fb] = hexToRgb(state.fillColor);
+  const outImgData = ctx.createImageData(W, H);
+  const out = outImgData.data;
+
+  for (let oy = 0; oy < H; oy++) {
+    for (let ox = 0; ox < W; ox++) {
+      const oi   = oy * W + ox;
+      const out4 = oi * 4;
+
+      let pixel = null;
+      const owner = ownershipMap ? ownershipMap[oi] : -1;
+      if (owner >= 0) pixel = sampleImgData(imgDataByIdx.get(owner), ox, oy);
+
+      if (!pixel) {
+        for (const id of imgData) {
+          if (!id) continue;
+          pixel = sampleImgData(id, ox, oy);
+          if (pixel) break;
+        }
+      }
+
+      if (pixel) {
+        out[out4]     = pixel[0];
+        out[out4 + 1] = pixel[1];
+        out[out4 + 2] = pixel[2];
+        out[out4 + 3] = 255;
+      } else {
+        out[out4]     = fr;
+        out[out4 + 1] = fg;
+        out[out4 + 2] = fb;
+        out[out4 + 3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(outImgData, 0, 0);
 }
 
 function hexToRgb(hex) {
