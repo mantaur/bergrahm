@@ -70,8 +70,10 @@ const painterScaleInp     = document.getElementById('painter-scale-inp');
 const painterZoomVal      = document.getElementById('painter-zoom-val');
 const scalePreviewCanvas  = document.getElementById('painter-scale-preview');
 
-const livePreviewWrap   = document.getElementById('live-preview-wrap');
-const livePreviewCanvas = document.getElementById('live-preview-canvas');
+const simWrap     = document.getElementById('sim-wrap');
+const simCanvas   = document.getElementById('sim-canvas');
+const btnSimReset = document.getElementById('btn-sim-reset');
+const simStatusEl = document.getElementById('sim-status');
 
 const btnMerge      = document.getElementById('btn-merge');
 const mergeLog      = document.getElementById('merge-log');
@@ -99,28 +101,21 @@ cfgBlendMode.addEventListener('change', () => {
   const isDither = cfgBlendMode.value === 'dither';
   cfgDitherFields.classList.toggle('im-hidden', !isDither);
   cfgDitherExpField.classList.toggle('im-hidden', !isDither);
-  schedulePreview();
 });
-
-cfgSeed.addEventListener('input', schedulePreview);
-cfgDitherExp.addEventListener('input', schedulePreview);
 
 cfgWidth.addEventListener('input', () => {
   state.outW = parseInt(cfgWidth.value) || 1080;
   if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
-  schedulePreview();
 });
 
 cfgHeight.addEventListener('input', () => {
   state.outH = parseInt(cfgHeight.value) || 1920;
   if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
-  schedulePreview();
 });
 
 cfgFill.addEventListener('input', () => {
   state.fillColor = cfgFill.value;
   if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
-  schedulePreview();
 });
 
 cfgMinScale.addEventListener('input', () => {
@@ -173,7 +168,6 @@ painterScaleAuto.addEventListener('change', () => {
   if (painterScaleAuto.checked)
     painterScaleInp.value = computeAutoScales()[imgIdx].scale.toFixed(2);
   updatePainterZoom(imgIdx);
-  schedulePreview();
 });
 
 painterScaleInp.addEventListener('change', () => {
@@ -185,7 +179,6 @@ painterScaleInp.addEventListener('change', () => {
   painterScaleInp.value = v.toFixed(2);
   entry.scale = v;
   updatePainterZoom(imgIdx);
-  schedulePreview();
 });
 
 function updatePainterZoom(imgIdx) {
@@ -269,7 +262,6 @@ cfgImages.addEventListener('change', () => {
         paintArea.classList.remove('im-hidden');
         buildRankList();
         if (firstLoad) loadPainterImage(0);
-        schedulePreview();
         // Start encoding if SAM is already checked and pool is live.
         if (state.useSam) {
           state.samWorkerCount = Math.max(1, parseInt(cfgSamWorkers.value) || 4);
@@ -300,8 +292,8 @@ function showSection(name) {
   secMerge.classList.toggle('im-hidden', name !== 'merge');
 }
 
-btnToMerge.addEventListener('click', () => showSection('merge'));
-btnBackPaint.addEventListener('click', () => showSection('paint'));
+btnToMerge.addEventListener('click', () => { showSection('merge'); initSim(); });
+btnBackPaint.addEventListener('click', () => { teardownSim(); showSection('paint'); });
 
 // ── Rank list (drag-to-reorder) ───────────────────────────────────────────────
 function buildRankList() {
@@ -363,7 +355,6 @@ function removeImage(imgIdx) {
   state.paintIdx = Math.min(state.paintIdx, state.rankOrder.length - 1);
   buildRankList();
   loadPainterImage(state.paintIdx);
-  schedulePreview();
 }
 
 function createRankItem(imgIdx, rank) {
@@ -465,7 +456,6 @@ function onDrop(e) {
   const currentImgIdx = state.rankOrder[state.paintIdx];
   buildRankList();
   state.paintIdx = state.rankOrder.indexOf(currentImgIdx);
-  schedulePreview();
 }
 
 function onDragEnd(e) {
@@ -651,7 +641,6 @@ canvasWrap.addEventListener('click', (e) => {
       rubberBandPt = null;
       redrawPolyOverlay(imgIdx);
       updateUndoBtn(imgIdx);
-      schedulePreview();
       return;
     }
   }
@@ -694,7 +683,6 @@ btnUndo.addEventListener('click', () => {
   const entry  = state.images[imgIdx];
   if (!state.undoStack[imgIdx].length) return;
   const snap = state.undoStack[imgIdx].pop();
-  schedulePreview();
   entry.polygons = snap.polygons;
   // Restore currentPoly in-place so the entry.currentPoly reference stays valid
   currentPoly.length = 0;
@@ -714,7 +702,6 @@ btnClearMask.addEventListener('click', () => {
   rubberBandPt = null;
   redrawPolyOverlay(imgIdx);
   updateUndoBtn(imgIdx);
-  schedulePreview();
 });
 
 btnPrev.addEventListener('click', () => {
@@ -1022,7 +1009,6 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   redrawPolyOverlay(forImgIdx);
   updateUndoBtn(forImgIdx);
   updateSamStatus('Segment added. Click for another or switch to manual mode.');
-  schedulePreview();
 }
 
 // Convert a flat Uint8Array mask (0=bg, 1=fg) to an [{x,y}...] polygon
@@ -1135,20 +1121,14 @@ function startMerge() {
   outputWrap.classList.add('im-hidden');
   btnDownload.classList.add('im-hidden');
 
-  const autoScales = computeAutoScales();
-
-  // Deep-copy polygons + resolved scale to send to worker.
-  // scaleFixed=true means the user set this scale manually — don't search over alternatives.
-  const workerImages = state.images.map((entry, i) => ({
-    w:          entry.w,
-    h:          entry.h,
-    name:       entry.name,
-    scale:      autoScales[i].scale,
-    scaleFixed: entry.scale !== null,
-    polygons:   entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
+  const placements   = extractPlacements();
+  const workerImages = state.images.map(entry => ({
+    w:        entry.w,
+    h:        entry.h,
+    name:     entry.name,
+    polygons: entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
   }));
 
-  // Create worker from a Blob so it works on file:// without a local server.
   const workerSrc  = document.getElementById('merge-worker-src').textContent;
   const workerBlob = URL.createObjectURL(new Blob([workerSrc], { type: 'application/javascript' }));
   activeWorker = new Worker(workerBlob);
@@ -1181,16 +1161,13 @@ function startMerge() {
   };
 
   activeWorker.postMessage({
+    precomputedPlacements: placements,
     images:    workerImages,
-    rankOrder: Array.from(state.rankOrder),
     outW:      state.outW,
     outH:      state.outH,
-    minScale:      state.minScale,
-    maxScale:      state.maxScale,
-    useScaleRange: cfgUseScaleRange.checked,
-    blendMode:     cfgBlendMode.value,
-    seed:       parseInt(cfgSeed.value, 10) || 0,
-    ditherExp:  parseInt(cfgDitherExp.value, 10) || 4,
+    blendMode: cfgBlendMode.value,
+    seed:      parseInt(cfgSeed.value, 10) || 0,
+    ditherExp: parseInt(cfgDitherExp.value, 10) || 4,
   });
 }
 
@@ -1209,152 +1186,304 @@ function resetMergeUI() {
   btnCancel.classList.add('im-hidden');
 }
 
-// ── Live preview ──────────────────────────────────────────────────────────────
-const PREVIEW_MAX = 128;
-let previewWorker = null;
-let previewTimer  = null;
+// ── Force-directed placement sim ──────────────────────────────────────────────
+const SIM_MAX_W = 560;
 
-function schedulePreview() {
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(runPreviewWorker, 350);
+let simEngine  = null;
+let simGroups  = [];   // indexed by imgIdx; null entry = image has no polygons
+let simAlpha   = 1.0;
+let simRafId   = null;
+let simSettled = false;
+let _lastSimTs = null;
+
+// RDP simplification (mirrored from merge worker for main-thread use)
+function rdpSimplify(pts, eps) {
+  if (pts.length <= 2) return pts.slice();
+  const first = pts[0], last = pts[pts.length - 1];
+  const dx = last.x - first.x, dy = last.y - first.y;
+  const lenSq = dx * dx + dy * dy;
+  let maxDist = 0, maxIdx = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    let dist;
+    if (lenSq === 0) {
+      const ex = pts[i].x - first.x, ey = pts[i].y - first.y;
+      dist = Math.sqrt(ex * ex + ey * ey);
+    } else {
+      const t  = ((pts[i].x - first.x) * dx + (pts[i].y - first.y) * dy) / lenSq;
+      const px = first.x + t * dx, py = first.y + t * dy;
+      const ex = pts[i].x - px,    ey = pts[i].y - py;
+      dist = Math.sqrt(ex * ex + ey * ey);
+    }
+    if (dist > maxDist) { maxDist = dist; maxIdx = i; }
+  }
+  if (maxDist > eps) {
+    const L = rdpSimplify(pts.slice(0, maxIdx + 1), eps);
+    const R = rdpSimplify(pts.slice(maxIdx), eps);
+    return L.slice(0, -1).concat(R);
+  }
+  return [first, last];
 }
 
-function runPreviewWorker() {
-  if (previewWorker) {
-    previewWorker.terminate();
-    URL.revokeObjectURL(previewWorker._blobUrl);
-    previewWorker = null;
+// Convex hull — Andrew's monotone chain (screen/y-down coords)
+function convexHull(pts) {
+  if (pts.length < 3) return pts.slice();
+  const s = [...pts].sort((a, b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
+  function cr(o, a, b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); }
+  const lo = [], hi = [];
+  for (const p of s) {
+    while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop();
+    lo.push(p);
   }
-  if (state.images.length === 0) return;
+  for (let i = s.length - 1; i >= 0; i--) {
+    const p = s[i];
+    while (hi.length >= 2 && cr(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop();
+    hi.push(p);
+  }
+  hi.pop(); lo.pop();
+  return lo.concat(hi);
+}
 
-  const ratio = Math.min(PREVIEW_MAX / state.outW, PREVIEW_MAX / state.outH);
-  const PW = Math.max(1, Math.round(state.outW * ratio));
-  const PH = Math.max(1, Math.round(state.outH * ratio));
+// Build one Matter.js body group for image imgIdx.
+// worldScale converts output pixels → sim canvas pixels.
+function buildSimGroup(imgIdx, worldScale) {
+  const { Bodies, Body } = Matter;
+  const entry = state.images[imgIdx];
+  const scale = computeAutoScales()[imgIdx].scale;
+  const N     = state.images.length;
+  const eps   = Math.max(1, 2 * scale * worldScale);
 
+  const polys = [];
+  for (const poly of entry.polygons) {
+    const verts = poly.map(v => ({ x: v.x * scale * worldScale, y: v.y * scale * worldScale }));
+    const simp  = rdpSimplify(verts, eps);
+    if (simp.length < 3) continue;
+    const hull = convexHull(simp);
+    if (hull.length < 3) continue;
+    polys.push({ shape: simp, hull });
+  }
+  if (polys.length === 0) return null;
+
+  const parts = [];
+  for (const { hull } of polys) {
+    const cx = hull.reduce((s, v) => s + v.x, 0) / hull.length;
+    const cy = hull.reduce((s, v) => s + v.y, 0) / hull.length;
+    try {
+      const part = Bodies.fromVertices(cx, cy, hull, { frictionAir: 0.15, restitution: 0.05, friction: 0.05 });
+      if (part) parts.push(part);
+    } catch (_) {}
+  }
+  if (parts.length === 0) return null;
+
+  const body = parts.length === 1
+    ? parts[0]
+    : Body.create({ parts, frictionAir: 0.15, restitution: 0.05 });
+  Body.setInertia(body, Infinity); // lock rotation
+
+  return {
+    imgIdx,
+    body,
+    scale,
+    worldScale,
+    imgCentroidSim: { x: body.position.x, y: body.position.y },
+    polysInSim:     polys.map(p => p.shape),
+    color:          `hsl(${Math.round(imgIdx * 360 / Math.max(N, 1))}, 70%, 55%)`,
+  };
+}
+
+function initSim() {
+  teardownSim();
+  const { Engine, Bodies, Body, World, Events, Mouse, MouseConstraint } = Matter;
+
+  const W  = state.outW, H = state.outH;
+  const sw = Math.min(SIM_MAX_W, W);
+  const sh = Math.round(sw * H / W);
+  const ws = sw / W; // world scale
+
+  simCanvas.width  = sw;
+  simCanvas.height = sh;
+
+  const engine = Engine.create({ gravity: { x: 0, y: 0 } });
+  engine.enableSleeping = false;
+  simEngine = engine;
+
+  const T = 60; // wall thickness
+  World.add(engine.world, [
+    Bodies.rectangle(sw / 2,    -T / 2,       sw + T * 2, T,           { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(sw / 2,    sh + T / 2,   sw + T * 2, T,           { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(-T / 2,    sh / 2,       T,          sh + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(sw + T / 2, sh / 2,      T,          sh + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
+  ]);
+
+  simGroups = [];
+  for (let i = 0; i < state.images.length; i++) simGroups.push(buildSimGroup(i, ws));
+
+  // Initial grid placement
+  const active = simGroups.filter(Boolean);
+  const cols = Math.max(1, Math.ceil(Math.sqrt(active.length * sw / sh)));
+  const rows = Math.ceil(active.length / cols);
+  const cw = sw / cols, ch = sh / rows;
+  active.forEach((g, rank) => {
+    const gx = (rank % cols + 0.5) * cw;
+    const gy = (Math.floor(rank / cols) + 0.5) * ch;
+    Body.setPosition(g.body, { x: gx, y: gy });
+    Body.setVelocity(g.body, { x: 0, y: 0 });
+    World.add(engine.world, g.body);
+  });
+
+  simAlpha   = 1.0;
+  simSettled = false;
+  _lastSimTs = null;
+
+  // Drag interaction
+  const mouse = Mouse.create(simCanvas);
+  const mc    = MouseConstraint.create(engine, {
+    mouse,
+    constraint: { stiffness: 0.3, render: { visible: false } },
+  });
+  World.add(engine.world, mc);
+  Events.on(mc, 'enddrag', () => {
+    simAlpha   = Math.max(simAlpha, 0.3);
+    simSettled = false;
+    updateSimStatus('Settling\u2026');
+  });
+
+  simWrap.classList.remove('im-hidden');
+  updateSimStatus('Settling\u2026');
+  simRafId = requestAnimationFrame(simTick);
+}
+
+function teardownSim() {
+  if (simRafId !== null) { cancelAnimationFrame(simRafId); simRafId = null; }
+  simEngine  = null;
+  simGroups  = [];
+  simSettled = false;
+  _lastSimTs = null;
+  simWrap.classList.add('im-hidden');
+}
+
+function simTick(ts) {
+  simRafId = requestAnimationFrame(simTick);
+  const dt = _lastSimTs ? Math.min(ts - _lastSimTs, 50) : 16.67;
+  _lastSimTs = ts;
+
+  applySimForces();
+  Matter.Engine.update(simEngine, dt);
+  simAlpha = Math.max(0, simAlpha * 0.995);
+
+  drawSim();
+
+  if (!simSettled) {
+    const bodies = simGroups.filter(Boolean).map(g => g.body);
+    const ke     = bodies.reduce((s, b) => s + b.speed * b.speed, 0);
+    const n      = bodies.length || 1;
+    if (simAlpha < 0.08 && ke < 0.04 * n) {
+      simSettled = true;
+      updateSimStatus('Settled \u2713 \u2014 drag to adjust, or run merge');
+      startMerge();
+    }
+  }
+}
+
+function applySimForces() {
+  const bodies = simGroups.filter(Boolean).map(g => g.body);
+  if (bodies.length === 0) return;
+  const cx = simCanvas.width  / 2;
+  const cy = simCanvas.height / 2;
+  const kc = 0.00002 * simAlpha;
+  const kr = 80      * simAlpha;
+
+  for (const b of bodies) {
+    Matter.Body.applyForce(b, b.position, {
+      x: (cx - b.position.x) * kc,
+      y: (cy - b.position.y) * kc,
+    });
+    for (const o of bodies) {
+      if (o === b) continue;
+      const dx = b.position.x - o.position.x;
+      const dy = b.position.y - o.position.y;
+      const d2 = dx * dx + dy * dy || 1;
+      const d  = Math.sqrt(d2);
+      Matter.Body.applyForce(b, b.position, {
+        x: (dx / d) * kr / d2,
+        y: (dy / d) * kr / d2,
+      });
+    }
+  }
+}
+
+function drawSim() {
+  const ctx = simCanvas.getContext('2d');
+  const W = simCanvas.width, H = simCanvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#1a1b1c';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+  const fontSize = Math.max(9, Math.round(11 * W / 400));
+  ctx.font      = `${fontSize}px sans-serif`;
+  ctx.textAlign = 'center';
+
+  for (const g of simGroups) {
+    if (!g) continue;
+    const dx = g.body.position.x - g.imgCentroidSim.x;
+    const dy = g.body.position.y - g.imgCentroidSim.y;
+
+    for (const poly of g.polysInSim) {
+      ctx.beginPath();
+      ctx.moveTo(poly[0].x + dx, poly[0].y + dy);
+      for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x + dx, poly[i].y + dy);
+      ctx.closePath();
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle   = g.color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = g.color;
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle   = g.color;
+    ctx.fillText(
+      state.images[g.imgIdx].name.replace(/\.[^.]+$/, ''),
+      g.body.position.x,
+      g.body.position.y + fontSize / 3,
+    );
+    ctx.globalAlpha = 1;
+  }
+}
+
+function updateSimStatus(text) { simStatusEl.textContent = text; }
+
+function extractPlacements() {
   const autoScales = computeAutoScales();
-  const workerImages = state.images.map((entry, i) => ({
-    w:          entry.w,
-    h:          entry.h,
-    name:       entry.name,
-    scale:      autoScales[i].scale * ratio,
-    scaleFixed: true,
-    polygons:   entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
-  }));
-
-  const workerSrc  = document.getElementById('merge-worker-src').textContent;
-  const workerBlob = URL.createObjectURL(new Blob([workerSrc], { type: 'application/javascript' }));
-  previewWorker = new Worker(workerBlob);
-  previewWorker._blobUrl = workerBlob;
-
-  previewWorker.onmessage = (e) => {
-    const msg = e.data;
-    if (msg.type === 'done') {
-      URL.revokeObjectURL(previewWorker._blobUrl);
-      previewWorker = null;
-      renderPreview(msg.placements, msg.ownershipMap, PW, PH);
-    } else if (msg.type === 'error') {
-      URL.revokeObjectURL(previewWorker._blobUrl);
-      previewWorker = null;
+  return state.rankOrder.map(imgIdx => {
+    const entry = state.images[imgIdx];
+    const scale = autoScales[imgIdx].scale;
+    const g     = simGroups[imgIdx];
+    if (!g) {
+      return {
+        imgIdx,
+        x: Math.round((state.outW - entry.w * scale) / 2),
+        y: Math.round((state.outH - entry.h * scale) / 2),
+        scale,
+      };
     }
-    // 'log' messages suppressed (silent mode)
-  };
-
-  previewWorker.onerror = () => {
-    if (previewWorker) {
-      URL.revokeObjectURL(previewWorker._blobUrl);
-      previewWorker = null;
-    }
-  };
-
-  previewWorker.postMessage({
-    images:    workerImages,
-    rankOrder: Array.from(state.rankOrder),
-    outW:      PW,
-    outH:      PH,
-    minScale:  state.minScale * ratio,
-    maxScale:  state.maxScale * ratio,
-    useScaleRange: false,
-    blendMode:    cfgBlendMode.value,
-    seed:      parseInt(cfgSeed.value, 10) || 0,
-    ditherExp: parseInt(cfgDitherExp.value, 10) || 4,
-    coarseStep: Math.max(1, Math.round(400 * ratio)),
-    fineStep:   Math.max(1, Math.round(20  * ratio)),
-    fineRadius: Math.max(1, Math.round(200 * ratio)),
-    topK:       10,
-    silent:     true,
+    const dx = g.body.position.x - g.imgCentroidSim.x;
+    const dy = g.body.position.y - g.imgCentroidSim.y;
+    return {
+      imgIdx,
+      x: Math.round(dx / g.worldScale),
+      y: Math.round(dy / g.worldScale),
+      scale,
+    };
   });
 }
 
-function renderPreview(placements, ownershipMap, W, H) {
-  livePreviewCanvas.width  = W;
-  livePreviewCanvas.height = H;
-  const PREVIEW_DISPLAY = 256;
-  const dispScale = Math.min(PREVIEW_DISPLAY / W, PREVIEW_DISPLAY / H);
-  livePreviewCanvas.style.width  = Math.round(W * dispScale) + 'px';
-  livePreviewCanvas.style.height = Math.round(H * dispScale) + 'px';
-  livePreviewWrap.classList.remove('im-hidden');
-
-  const ctx = livePreviewCanvas.getContext('2d');
-
-  const imgData = [];
-  for (const p of placements) {
-    const entry   = state.images[p.imgIdx];
-    const scaledW = Math.round(entry.w * p.scale);
-    const scaledH = Math.round(entry.h * p.scale);
-    const x0 = Math.max(0, p.x),           y0 = Math.max(0, p.y);
-    const x1 = Math.min(W, p.x + scaledW), y1 = Math.min(H, p.y + scaledH);
-    if (x1 <= x0 || y1 <= y0) { imgData.push(null); continue; }
-
-    const rw = x1 - x0, rh = y1 - y0;
-    const tmp = document.createElement('canvas');
-    tmp.width = rw; tmp.height = rh;
-    const tmpCtx = tmp.getContext('2d');
-    const srcX = (x0 - p.x) / p.scale, srcY = (y0 - p.y) / p.scale;
-    const srcW = rw / p.scale,          srcH = rh / p.scale;
-    tmpCtx.drawImage(entry.img, srcX, srcY, srcW, srcH, 0, 0, rw, rh);
-    imgData.push({ imgIdx: p.imgIdx, x0, y0, x1, y1, rw, data: tmpCtx.getImageData(0, 0, rw, rh).data });
-  }
-
-  const imgDataByIdx = new Map();
-  for (const id of imgData) { if (id) imgDataByIdx.set(id.imgIdx, id); }
-
-  const [fr, fg, fb] = hexToRgb(state.fillColor);
-  const outImgData = ctx.createImageData(W, H);
-  const out = outImgData.data;
-
-  for (let oy = 0; oy < H; oy++) {
-    for (let ox = 0; ox < W; ox++) {
-      const oi   = oy * W + ox;
-      const out4 = oi * 4;
-
-      let pixel = null;
-      const owner = ownershipMap ? ownershipMap[oi] : -1;
-      if (owner >= 0) pixel = sampleImgData(imgDataByIdx.get(owner), ox, oy);
-
-      if (!pixel) {
-        for (const id of imgData) {
-          if (!id) continue;
-          pixel = sampleImgData(id, ox, oy);
-          if (pixel) break;
-        }
-      }
-
-      if (pixel) {
-        out[out4]     = pixel[0];
-        out[out4 + 1] = pixel[1];
-        out[out4 + 2] = pixel[2];
-        out[out4 + 3] = 255;
-      } else {
-        out[out4]     = fr;
-        out[out4 + 1] = fg;
-        out[out4 + 2] = fb;
-        out[out4 + 3] = 255;
-      }
-    }
-  }
-
-  ctx.putImageData(outImgData, 0, 0);
-}
+btnSimReset.addEventListener('click', () => { if (simEngine) initSim(); });
 
 function hexToRgb(hex) {
   return [

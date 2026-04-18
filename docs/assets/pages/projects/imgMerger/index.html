@@ -20,6 +20,8 @@
   <link rel="stylesheet" href="imageMerge.css">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/poly-decomp/0.3.0/poly-decomp.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
 </head>
 
 <body>
@@ -166,12 +168,6 @@
           <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray = output canvas · Green = image at target scale"></canvas>
         </div>
 
-        <!-- Live preview -->
-        <div id="live-preview-wrap" class="im-hidden" style="margin-top:1em;">
-          <p class="im-hint" style="margin-bottom:0.4em;">Live preview <span class="im-hint-small">(updates as you paint)</span></p>
-          <canvas id="live-preview-canvas" style="border:1px solid #444;border-radius:0.25em;image-rendering:pixelated;display:block;"></canvas>
-        </div>
-
         <button class="im-btn" id="btn-to-merge" style="margin-top:1em;">Next: Merge →</button>
       </div>
     </div>
@@ -179,7 +175,17 @@
     <!-- ── STEP 2: Merge & export ── -->
     <div class="im-section im-hidden" id="section-merge">
       <h2 class="im-step-title">Step 2 — Merge</h2>
-      <div class="im-field-row" style="display:flex;gap:0.6em;align-items:center;margin-bottom:0.4em;">
+
+      <!-- Force-directed placement sim -->
+      <div id="sim-wrap" class="im-hidden">
+        <canvas id="sim-canvas"></canvas>
+        <div style="display:flex;align-items:center;gap:0.8em;margin-top:0.5em;">
+          <span id="sim-status" class="im-sim-status">Initializing…</span>
+          <button class="im-btn im-btn-sm" id="btn-sim-reset">↺ Reset</button>
+        </div>
+      </div>
+
+      <div class="im-field-row" style="display:flex;gap:0.6em;align-items:center;margin-bottom:0.4em;margin-top:0.8em;">
         <button class="im-btn" id="btn-merge">Run merge</button>
         <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
       </div>
@@ -216,7 +222,19 @@ let gSilent     = false;
 
 self.onmessage = function (e) {
   const { images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp,
-          coarseStep, fineStep, fineRadius, topK, silent } = e.data;
+          coarseStep, fineStep, fineRadius, topK, silent, precomputedPlacements } = e.data;
+
+  // Shortcut: skip placement search, compute ownership map only.
+  if (precomputedPlacements) {
+    try {
+      const ownershipMap = computeOwnershipMap(images, precomputedPlacements, outW, outH, blendMode, seed | 0, Math.max(1, ditherExp | 0) || 4);
+      self.postMessage({ type: 'done', placements: precomputedPlacements, ownershipMap }, [ownershipMap.buffer]);
+    } catch (err) {
+      self.postMessage({ type: 'error', text: err.message });
+    }
+    return;
+  }
+
   gCoarseStep = coarseStep  || COARSE_STEP;
   gFineStep   = fineStep    || FINE_STEP;
   gFineRadius = fineRadius  || FINE_RADIUS;

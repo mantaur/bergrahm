@@ -386,3 +386,25 @@
   color: springgreen;
   border-color: springgreen;
 }
+
+/* Force-directed sim canvas */
+#sim-wrap {
+  margin-bottom: 0.8em;
+}
+
+#sim-canvas {
+  display: block;
+  border: 1px solid #444;
+  border-radius: 0.4em;
+  max-width: 100%;
+  cursor: grab;
+}
+
+#sim-canvas:active {
+  cursor: grabbing;
+}
+
+.im-sim-status {
+  font-size: 0.82em;
+  color: #aaa;
+}
