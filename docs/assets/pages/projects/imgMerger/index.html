@@ -168,33 +168,20 @@
           <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray = output canvas · Green = image at target scale"></canvas>
         </div>
 
-        <button class="im-btn" id="btn-to-merge" style="margin-top:1em;">Next: Merge →</button>
-      </div>
-    </div>
-
-    <!-- ── STEP 2: Merge & export ── -->
-    <div class="im-section im-hidden" id="section-merge">
-      <h2 class="im-step-title">Step 2 — Merge</h2>
-
-      <!-- Force-directed placement sim -->
-      <div id="sim-wrap" class="im-hidden">
-        <canvas id="sim-canvas"></canvas>
-        <div style="display:flex;align-items:center;gap:0.8em;margin-top:0.5em;">
-          <span id="sim-status" class="im-sim-status">Initializing…</span>
-          <button class="im-btn im-btn-sm" id="btn-sim-reset">↺ Reset</button>
+        <!-- Force-directed placement sim — live while painting -->
+        <div id="sim-wrap" class="im-hidden" style="margin-top:1em;">
+          <canvas id="sim-canvas"></canvas>
+          <div style="display:flex;align-items:center;gap:0.8em;margin-top:0.5em;flex-wrap:wrap;">
+            <span id="sim-status" class="im-sim-status">Initializing…</span>
+            <button class="im-btn im-btn-sm" id="btn-sim-reset">↺ Reset</button>
+            <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
+            <label style="display:flex;align-items:center;gap:0.4em;font-size:0.82em;color:#aaa;cursor:pointer;">
+              <input type="checkbox" id="cfg-rotation"> Allow rotation
+            </label>
+            <button class="im-btn im-btn-sm im-hidden" id="btn-download">⬇ Download PNG</button>
+          </div>
         </div>
       </div>
-
-      <div class="im-field-row" style="display:flex;gap:0.6em;align-items:center;margin-bottom:0.4em;margin-top:0.8em;">
-        <button class="im-btn" id="btn-merge">Run merge</button>
-        <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
-      </div>
-      <div id="merge-log" class="im-log"></div>
-      <div class="im-canvas-wrap im-output-wrap im-hidden" id="output-wrap">
-        <canvas id="output-canvas"></canvas>
-      </div>
-      <button class="im-btn im-hidden" id="btn-download">⬇ Download PNG</button>
-      <button class="im-btn im-btn-sm" id="btn-back-to-paint">← Back to painter</button>
     </div>
 
     <div class="foot">
@@ -493,6 +480,20 @@ function computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherEx
   return computeVoronoiMap(images, placements, W, H);
 }
 
+// Transform a single vertex from image space to output space,
+// applying scale, rotation around pivot, and placement.
+function transformPolyVert(v, p) {
+  const angle = p.angle || 0;
+  if (!angle) return { x: p.x + v.x * p.scale, y: p.y + v.y * p.scale };
+  const lx = v.x * p.scale - p.imgCentroidX;
+  const ly = v.y * p.scale - p.imgCentroidY;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  return {
+    x: p.pivotX + lx * cos - ly * sin,
+    y: p.pivotY + lx * sin + ly * cos,
+  };
+}
+
 // ── Voronoi ownership map ──────────────────────────────────────────────────────
 // Returns Int16Array(W*H): each cell holds the imgIdx of the image whose
 // essential region is nearest, or -1 if no image has any polygons.
@@ -507,7 +508,7 @@ function computeVoronoiMap(images, placements, W, H) {
 
     // Transform polygons from source space to output space
     const outPolys = entry.polygons.map(poly =>
-      poly.map(v => ({ x: p.x + v.x * p.scale, y: p.y + v.y * p.scale }))
+      poly.map(v => transformPolyVert(v, p))
     );
 
     mask.fill(0);
@@ -544,16 +545,22 @@ function computeDitherMap(images, placements, W, H, seed, exp) {
     if (!entry.polygons || entry.polygons.length === 0) continue;
 
     const outPolys = entry.polygons.map(poly =>
-      poly.map(v => ({ x: p.x + v.x * p.scale, y: p.y + v.y * p.scale }))
+      poly.map(v => transformPolyVert(v, p))
     );
     mask.fill(0);
     rasterizePolygons(outPolys, W, H, mask);
     distMaps[k] = chamferDist(mask, W, H);
-    bboxes[k]   = {
-      x0: Math.max(0, Math.floor(p.x)),
-      y0: Math.max(0, Math.floor(p.y)),
-      x1: Math.min(W - 1, Math.ceil(p.x + entry.w * p.scale)),
-      y1: Math.min(H - 1, Math.ceil(p.y + entry.h * p.scale)),
+    // Compute AABB of (possibly rotated) image corners
+    const corners = [
+      { x: 0, y: 0 }, { x: entry.w, y: 0 },
+      { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
+    ].map(c => transformPolyVert(c, p));
+    const cxs = corners.map(c => c.x), cys = corners.map(c => c.y);
+    bboxes[k] = {
+      x0: Math.max(0,     Math.floor(Math.min(...cxs))),
+      y0: Math.max(0,     Math.floor(Math.min(...cys))),
+      x1: Math.min(W - 1, Math.ceil(Math.max(...cxs))),
+      y1: Math.min(H - 1, Math.ceil(Math.max(...cys))),
     };
   }
 

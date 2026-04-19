@@ -45,7 +45,6 @@ const cfgFill       = document.getElementById('cfg-fill');
 const cfgImages     = document.getElementById('cfg-images');
 
 const secPaint      = document.getElementById('section-paint');
-const secMerge      = document.getElementById('section-merge');
 const paintArea     = document.getElementById('paint-area');
 
 const rankList      = document.getElementById('rank-list');
@@ -55,7 +54,6 @@ const btnUndo       = document.getElementById('btn-undo');
 const btnClearMask  = document.getElementById('btn-clear-mask');
 const btnPrev       = document.getElementById('btn-prev-img');
 const btnNext       = document.getElementById('btn-next-img');
-const btnToMerge    = document.getElementById('btn-to-merge');
 const canvasWrap    = document.getElementById('canvas-wrap');
 const paintCanvas   = document.getElementById('paint-canvas');
 const maskCanvas    = document.getElementById('mask-canvas');
@@ -72,19 +70,15 @@ const scalePreviewCanvas  = document.getElementById('painter-scale-preview');
 
 const simWrap     = document.getElementById('sim-wrap');
 const simCanvas   = document.getElementById('sim-canvas');
+const simCtx      = simCanvas.getContext('2d');
 const btnSimReset = document.getElementById('btn-sim-reset');
+const btnCancel   = document.getElementById('btn-cancel');
+const btnDownload = document.getElementById('btn-download');
 const simStatusEl = document.getElementById('sim-status');
+const cfgRotation = document.getElementById('cfg-rotation');
 
-const btnMerge      = document.getElementById('btn-merge');
-const mergeLog      = document.getElementById('merge-log');
-const outputWrap    = document.getElementById('output-wrap');
-const outputCanvas  = document.getElementById('output-canvas');
-const btnDownload   = document.getElementById('btn-download');
-const btnBackPaint  = document.getElementById('btn-back-to-paint');
-
-const paintCtx      = paintCanvas.getContext('2d');
-const maskCtx       = maskCanvas.getContext('2d');
-const outCtx        = outputCanvas.getContext('2d');
+const paintCtx = paintCanvas.getContext('2d');
+const maskCtx  = maskCanvas.getContext('2d');
 
 // ── Config step ───────────────────────────────────────────────────────────────
 
@@ -106,11 +100,13 @@ cfgBlendMode.addEventListener('change', () => {
 cfgWidth.addEventListener('input', () => {
   state.outW = parseInt(cfgWidth.value) || 1080;
   if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
+  scheduleResizeSim();
 });
 
 cfgHeight.addEventListener('input', () => {
   state.outH = parseInt(cfgHeight.value) || 1920;
   if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
+  scheduleResizeSim();
 });
 
 cfgFill.addEventListener('input', () => {
@@ -168,6 +164,7 @@ painterScaleAuto.addEventListener('change', () => {
   if (painterScaleAuto.checked)
     painterScaleInp.value = computeAutoScales()[imgIdx].scale.toFixed(2);
   updatePainterZoom(imgIdx);
+  simRefreshGroup(imgIdx);
 });
 
 painterScaleInp.addEventListener('change', () => {
@@ -179,6 +176,7 @@ painterScaleInp.addEventListener('change', () => {
   painterScaleInp.value = v.toFixed(2);
   entry.scale = v;
   updatePainterZoom(imgIdx);
+  simRefreshGroup(imgIdx);
 });
 
 function updatePainterZoom(imgIdx) {
@@ -251,6 +249,7 @@ cfgImages.addEventListener('change', () => {
         polygons:    [],
         currentPoly: [],
         scale:       null,
+        simHidden:   false,
       };
       loaded++;
       if (loaded === files.length) {
@@ -285,15 +284,6 @@ cfgImages.addEventListener('change', () => {
     img.src = url;
   });
 });
-
-// ── Section navigation ────────────────────────────────────────────────────────
-function showSection(name) {
-  secPaint.classList.toggle('im-hidden', name !== 'paint');
-  secMerge.classList.toggle('im-hidden', name !== 'merge');
-}
-
-btnToMerge.addEventListener('click', () => { showSection('merge'); initSim(); });
-btnBackPaint.addEventListener('click', () => { teardownSim(); showSection('paint'); });
 
 // ── Rank list (drag-to-reorder) ───────────────────────────────────────────────
 function buildRankList() {
@@ -347,6 +337,19 @@ function removeImage(imgIdx) {
     samPool.encoding[wi] = null;
   }
 
+  // Remap simGroups to match the new image indices
+  if (simEngine) {
+    const old = simGroups[imgIdx];
+    if (old && old.inWorld) Matter.World.remove(simEngine.world, old.body);
+    const newSG = [];
+    simGroups.forEach((g, i) => {
+      if (i === imgIdx || !g) return;
+      const ni = remap[i];
+      if (ni !== undefined) { g.imgIdx = ni; newSG[ni] = g; }
+    });
+    simGroups = newSG;
+  }
+
   if (state.images.length === 0) {
     paintArea.classList.add('im-hidden');
     return;
@@ -398,6 +401,29 @@ function createRankItem(imgIdx, rank) {
     loadPainterImage(newPaintIdx);
   });
 
+  const hideBtn = document.createElement('button');
+  hideBtn.className = 'im-rank-edit-btn';
+  hideBtn.textContent = entry.simHidden ? 'Show' : 'Hide';
+  hideBtn.title = 'Hide / show in sim';
+  hideBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    entry.simHidden = !entry.simHidden;
+    hideBtn.textContent = entry.simHidden ? 'Show' : 'Hide';
+    const g = simGroups[imgIdx];
+    if (!g || !simEngine) return;
+    if (entry.simHidden) {
+      if (g.inWorld) { Matter.World.remove(simEngine.world, g.body); g.inWorld = false; }
+    } else {
+      if (!g.inWorld) {
+        Matter.World.add(simEngine.world, g.body);
+        g.inWorld = true;
+        simAlpha   = Math.max(simAlpha, 0.3);
+        simSettled = false;
+        updateSimStatus('Settling\u2026');
+      }
+    }
+  });
+
   const removeBtn = document.createElement('button');
   removeBtn.className = 'im-rank-edit-btn im-btn-danger';
   removeBtn.textContent = '✕';
@@ -410,6 +436,7 @@ function createRankItem(imgIdx, rank) {
   const btnGroup = document.createElement('div');
   btnGroup.className = 'im-rank-btn-group';
   btnGroup.appendChild(editBtn);
+  btnGroup.appendChild(hideBtn);
   btnGroup.appendChild(removeBtn);
 
   li.appendChild(thumb);
@@ -641,6 +668,7 @@ canvasWrap.addEventListener('click', (e) => {
       rubberBandPt = null;
       redrawPolyOverlay(imgIdx);
       updateUndoBtn(imgIdx);
+      simRefreshGroup(imgIdx);
       return;
     }
   }
@@ -690,6 +718,7 @@ btnUndo.addEventListener('click', () => {
   rubberBandPt = currentPoly.length > 0 ? rubberBandPt : null;
   redrawPolyOverlay(imgIdx);
   updateUndoBtn(imgIdx);
+  simRefreshGroup(imgIdx);
 });
 
 btnClearMask.addEventListener('click', () => {
@@ -702,6 +731,7 @@ btnClearMask.addEventListener('click', () => {
   rubberBandPt = null;
   redrawPolyOverlay(imgIdx);
   updateUndoBtn(imgIdx);
+  simRefreshGroup(imgIdx);
 });
 
 btnPrev.addEventListener('click', () => {
@@ -1008,6 +1038,7 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   entry.polygons.push(scaledPoly);
   redrawPolyOverlay(forImgIdx);
   updateUndoBtn(forImgIdx);
+  simRefreshGroup(forImgIdx);
   updateSamStatus('Segment added. Click for another or switch to manual mode.');
 }
 
@@ -1100,25 +1131,13 @@ function computeAutoScales() {
 }
 
 // ── Merge algorithm (delegated to Web Worker) ─────────────────────────────────
-const btnCancel = document.getElementById('btn-cancel');
 let activeWorker = null;
 
-btnMerge.addEventListener('click', startMerge);
 btnCancel.addEventListener('click', cancelMerge);
 
-function log(text, cls) {
-  const span = document.createElement('span');
-  span.className = cls || '';
-  span.textContent = text + '\n';
-  mergeLog.appendChild(span);
-  mergeLog.scrollTop = mergeLog.scrollHeight;
-}
-
 function startMerge() {
-  mergeLog.innerHTML = '';
-  btnMerge.disabled = true;
+  updateSimStatus('Merging\u2026');
   btnCancel.classList.remove('im-hidden');
-  outputWrap.classList.add('im-hidden');
   btnDownload.classList.add('im-hidden');
 
   const placements   = extractPlacements();
@@ -1142,21 +1161,19 @@ function startMerge() {
 
   activeWorker.onmessage = (e) => {
     const msg = e.data;
-    if (msg.type === 'log') {
-      log(msg.text, msg.cls);
-    } else if (msg.type === 'done') {
+    if (msg.type === 'done') {
       cleanupWorker();
       finishMerge(msg.placements, msg.ownershipMap);
     } else if (msg.type === 'error') {
       cleanupWorker();
-      log('Worker error: ' + msg.text, 'im-log-warn');
+      updateSimStatus('Worker error: ' + msg.text);
       resetMergeUI();
     }
   };
 
   activeWorker.onerror = (err) => {
     cleanupWorker();
-    log('Worker error: ' + err.message, 'im-log-warn');
+    updateSimStatus('Worker error: ' + err.message);
     resetMergeUI();
   };
 
@@ -1176,25 +1193,26 @@ function cancelMerge() {
     URL.revokeObjectURL(activeWorker._blobUrl);
     activeWorker.terminate();
     activeWorker = null;
-    log('Merge cancelled.', 'im-log-warn');
+    updateSimStatus('Merge cancelled.');
   }
   resetMergeUI();
 }
 
 function resetMergeUI() {
-  btnMerge.disabled = false;
   btnCancel.classList.add('im-hidden');
+  btnDownload.classList.add('im-hidden');
+  simMergedImageData = null;
 }
 
 // ── Force-directed placement sim ──────────────────────────────────────────────
-const SIM_MAX_W = 560;
-
-let simEngine  = null;
-let simGroups  = [];   // indexed by imgIdx; null entry = image has no polygons
-let simAlpha   = 1.0;
-let simRafId   = null;
-let simSettled = false;
-let _lastSimTs = null;
+let simEngine          = null;
+let simGroups          = [];   // indexed by imgIdx; null entry = image has no polygons
+let simAlpha           = 1.0;
+let simRafId           = null;
+let simSettled         = false;
+let _lastSimTs         = null;
+let simMergedImageData = null; // set when merge complete; cleared when sim re-activates
+let simLastPlacements  = null; // placements from last finishMerge — used for mask overlay
 
 // RDP simplification (mirrored from merge worker for main-thread use)
 function rdpSimplify(pts, eps) {
@@ -1243,18 +1261,16 @@ function convexHull(pts) {
   return lo.concat(hi);
 }
 
-// Build one Matter.js body group for image imgIdx.
-// worldScale converts output pixels → sim canvas pixels.
-function buildSimGroup(imgIdx, worldScale) {
+function buildSimGroup(imgIdx) {
   const { Bodies, Body } = Matter;
   const entry = state.images[imgIdx];
   const scale = computeAutoScales()[imgIdx].scale;
   const N     = state.images.length;
-  const eps   = Math.max(1, 2 * scale * worldScale);
+  const eps   = Math.max(1, 2 * scale);
 
   const polys = [];
   for (const poly of entry.polygons) {
-    const verts = poly.map(v => ({ x: v.x * scale * worldScale, y: v.y * scale * worldScale }));
+    const verts = poly.map(v => ({ x: v.x * scale, y: v.y * scale }));
     const simp  = rdpSimplify(verts, eps);
     if (simp.length < 3) continue;
     const hull = convexHull(simp);
@@ -1277,13 +1293,14 @@ function buildSimGroup(imgIdx, worldScale) {
   const body = parts.length === 1
     ? parts[0]
     : Body.create({ parts, frictionAir: 0.15, restitution: 0.05 });
-  Body.setInertia(body, Infinity); // lock rotation
+  const originalInertia = body.inertia;
+  if (!cfgRotation.checked) Body.setInertia(body, Infinity);
 
   return {
     imgIdx,
     body,
     scale,
-    worldScale,
+    originalInertia,
     imgCentroidSim: { x: body.position.x, y: body.position.y },
     polysInSim:     polys.map(p => p.shape),
     color:          `hsl(${Math.round(imgIdx * 360 / Math.max(N, 1))}, 70%, 55%)`,
@@ -1294,13 +1311,11 @@ function initSim() {
   teardownSim();
   const { Engine, Bodies, Body, World, Events, Mouse, MouseConstraint } = Matter;
 
-  const W  = state.outW, H = state.outH;
-  const sw = Math.min(SIM_MAX_W, W);
-  const sh = Math.round(sw * H / W);
-  const ws = sw / W; // world scale
+  const W = state.outW, H = state.outH;
 
-  simCanvas.width  = sw;
-  simCanvas.height = sh;
+  simCanvas.width  = W;
+  simCanvas.height = H;
+  simMergedImageData = null;
 
   const engine = Engine.create({ gravity: { x: 0, y: 0 } });
   engine.enableSleeping = false;
@@ -1308,25 +1323,25 @@ function initSim() {
 
   const T = 60; // wall thickness
   World.add(engine.world, [
-    Bodies.rectangle(sw / 2,    -T / 2,       sw + T * 2, T,           { isStatic: true, friction: 0, restitution: 0.3 }),
-    Bodies.rectangle(sw / 2,    sh + T / 2,   sw + T * 2, T,           { isStatic: true, friction: 0, restitution: 0.3 }),
-    Bodies.rectangle(-T / 2,    sh / 2,       T,          sh + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
-    Bodies.rectangle(sw + T / 2, sh / 2,      T,          sh + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(W / 2,    -T / 2,   W + T * 2, T,          { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(W / 2,    H + T / 2, W + T * 2, T,          { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(-T / 2,    H / 2,   T,          H + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(W + T / 2, H / 2,   T,          H + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
   ]);
 
   simGroups = [];
-  for (let i = 0; i < state.images.length; i++) simGroups.push(buildSimGroup(i, ws));
+  for (let i = 0; i < state.images.length; i++) {
+    const g = buildSimGroup(i);
+    if (g) g.inWorld = false;
+    simGroups.push(g);
+  }
 
-  // Initial grid placement
-  const active = simGroups.filter(Boolean);
-  const cols = Math.max(1, Math.ceil(Math.sqrt(active.length * sw / sh)));
-  const rows = Math.ceil(active.length / cols);
-  const cw = sw / cols, ch = sh / rows;
+  // Initial grid placement — only bodies not simHidden enter the world
+  const active = simGroups.filter(g => g && !state.images[g.imgIdx].simHidden);
   active.forEach((g, rank) => {
-    const gx = (rank % cols + 0.5) * cw;
-    const gy = (Math.floor(rank / cols) + 0.5) * ch;
-    Body.setPosition(g.body, { x: gx, y: gy });
+    Body.setPosition(g.body, simGridPos(rank, active.length, W, H));
     Body.setVelocity(g.body, { x: 0, y: 0 });
+    g.inWorld = true;
     World.add(engine.world, g.body);
   });
 
@@ -1342,6 +1357,8 @@ function initSim() {
   });
   World.add(engine.world, mc);
   Events.on(mc, 'enddrag', () => {
+    simMergedImageData = null;
+    simLastPlacements  = null;
     simAlpha   = Math.max(simAlpha, 0.3);
     simSettled = false;
     updateSimStatus('Settling\u2026');
@@ -1361,19 +1378,37 @@ function teardownSim() {
   simWrap.classList.add('im-hidden');
 }
 
+function simGridPos(rank, n, W, H) {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(n * W / H)));
+  const cw = W / cols, ch = H / Math.ceil(n / cols);
+  return { x: (rank % cols + 0.5) * cw, y: (Math.floor(rank / cols) + 0.5) * ch };
+}
+
+function simActiveBodies() {
+  return simGroups.filter(g => g && g.inWorld).map(g => g.body);
+}
+
 function simTick(ts) {
   simRafId = requestAnimationFrame(simTick);
   const dt = _lastSimTs ? Math.min(ts - _lastSimTs, 50) : 16.67;
   _lastSimTs = ts;
 
+  // Always run physics so MouseConstraint processes drag events even when
+  // the merged image is being displayed.
   applySimForces();
   Matter.Engine.update(simEngine, dt);
-  simAlpha = Math.max(0, simAlpha * 0.995);
 
+  if (simMergedImageData && simSettled) {
+    simCtx.putImageData(simMergedImageData, 0, 0);
+    drawMergedMaskOverlay();
+    return;
+  }
+
+  simAlpha = Math.max(0, simAlpha * 0.995);
   drawSim();
 
   if (!simSettled) {
-    const bodies = simGroups.filter(Boolean).map(g => g.body);
+    const bodies = simActiveBodies();
     const ke     = bodies.reduce((s, b) => s + b.speed * b.speed, 0);
     const n      = bodies.length || 1;
     if (simAlpha < 0.08 && ke < 0.04 * n) {
@@ -1385,7 +1420,7 @@ function simTick(ts) {
 }
 
 function applySimForces() {
-  const bodies = simGroups.filter(Boolean).map(g => g.body);
+  const bodies = simActiveBodies();
   if (bodies.length === 0) return;
   const cx = simCanvas.width  / 2;
   const cy = simCanvas.height / 2;
@@ -1412,38 +1447,68 @@ function applySimForces() {
 }
 
 function drawSim() {
-  const ctx = simCanvas.getContext('2d');
+  const ctx = simCtx;
   const W = simCanvas.width, H = simCanvas.height;
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#1a1b1c';
   ctx.fillRect(0, 0, W, H);
 
+  const ds = Math.max(1, Math.round(W / 400)); // draw-scale relative to 400px base
+
   ctx.strokeStyle = '#555';
-  ctx.lineWidth   = 1;
+  ctx.lineWidth   = ds;
   ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
 
-  const fontSize = Math.max(9, Math.round(11 * W / 400));
+  const fontSize = Math.max(9, Math.round(11 * ds));
   ctx.font      = `${fontSize}px sans-serif`;
   ctx.textAlign = 'center';
 
   for (const g of simGroups) {
-    if (!g) continue;
-    const dx = g.body.position.x - g.imgCentroidSim.x;
-    const dy = g.body.position.y - g.imgCentroidSim.y;
+    if (!g || !g.inWorld) continue;
+    const bx  = g.body.position.x, by = g.body.position.y;
+    const ang = g.body.angle;
+    const cos = Math.cos(ang), sin = Math.sin(ang);
 
     for (const poly of g.polysInSim) {
       ctx.beginPath();
-      ctx.moveTo(poly[0].x + dx, poly[0].y + dy);
-      for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x + dx, poly[i].y + dy);
+      for (let i = 0; i < poly.length; i++) {
+        const lx = poly[i].x - g.imgCentroidSim.x;
+        const ly = poly[i].y - g.imgCentroidSim.y;
+        const rx = bx + lx * cos - ly * sin;
+        const ry = by + lx * sin + ly * cos;
+        if (i === 0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
+      }
       ctx.closePath();
       ctx.globalAlpha = 0.4;
       ctx.fillStyle   = g.color;
       ctx.fill();
       ctx.globalAlpha = 1;
       ctx.strokeStyle = g.color;
-      ctx.lineWidth   = 1.5;
+      ctx.lineWidth   = 1.5 * ds;
       ctx.stroke();
     }
+
+    // Faint dashed rectangle showing full image bounds (rotation-aware)
+    const entry = state.images[g.imgIdx];
+    const imgCorners = [
+      { x: 0, y: 0 }, { x: entry.w, y: 0 },
+      { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
+    ].map(c => {
+      const lx = c.x * g.scale - g.imgCentroidSim.x;
+      const ly = c.y * g.scale - g.imgCentroidSim.y;
+      return { x: bx + lx * cos - ly * sin, y: by + lx * sin + ly * cos };
+    });
+    ctx.beginPath();
+    ctx.moveTo(imgCorners[0].x, imgCorners[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(imgCorners[i].x, imgCorners[i].y);
+    ctx.closePath();
+    ctx.globalAlpha = 0.18;
+    ctx.strokeStyle = g.color;
+    ctx.lineWidth   = ds;
+    ctx.setLineDash([4 * ds, 4 * ds]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
 
     ctx.globalAlpha = 0.85;
     ctx.fillStyle   = g.color;
@@ -1456,11 +1521,40 @@ function drawSim() {
   }
 }
 
+function drawMergedMaskOverlay() {
+  if (!simLastPlacements) return;
+  const ctx = simCtx;
+  const W   = simCanvas.width;
+  const ds  = Math.max(1, Math.round(W / 400));
+  const N   = state.images.length;
+
+  for (const p of simLastPlacements) {
+    const entry = state.images[p.imgIdx];
+    if (!entry.polygons || entry.polygons.length === 0) continue;
+    const color = `hsl(${Math.round(p.imgIdx * 360 / Math.max(N, 1))}, 70%, 55%)`;
+
+    for (const poly of entry.polygons) {
+      const out = poly.map(v => transformPolyVert(v, p));
+      ctx.beginPath();
+      ctx.moveTo(out[0].x, out[0].y);
+      for (let i = 1; i < out.length; i++) ctx.lineTo(out[i].x, out[i].y);
+      ctx.closePath();
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle   = color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = 1.5 * ds;
+      ctx.stroke();
+    }
+  }
+}
+
 function updateSimStatus(text) { simStatusEl.textContent = text; }
 
 function extractPlacements() {
   const autoScales = computeAutoScales();
-  return state.rankOrder.map(imgIdx => {
+  return state.rankOrder.filter(imgIdx => !state.images[imgIdx].simHidden).map(imgIdx => {
     const entry = state.images[imgIdx];
     const scale = autoScales[imgIdx].scale;
     const g     = simGroups[imgIdx];
@@ -1470,20 +1564,140 @@ function extractPlacements() {
         x: Math.round((state.outW - entry.w * scale) / 2),
         y: Math.round((state.outH - entry.h * scale) / 2),
         scale,
+        angle: 0,
+        pivotX: state.outW / 2,
+        pivotY: state.outH / 2,
+        imgCentroidX: entry.w * scale / 2,
+        imgCentroidY: entry.h * scale / 2,
       };
     }
-    const dx = g.body.position.x - g.imgCentroidSim.x;
-    const dy = g.body.position.y - g.imgCentroidSim.y;
     return {
       imgIdx,
-      x: Math.round(dx / g.worldScale),
-      y: Math.round(dy / g.worldScale),
+      x:            Math.round(g.body.position.x - g.imgCentroidSim.x),
+      y:            Math.round(g.body.position.y - g.imgCentroidSim.y),
       scale,
+      angle:        g.body.angle,
+      pivotX:       g.body.position.x,
+      pivotY:       g.body.position.y,
+      imgCentroidX: g.imgCentroidSim.x,
+      imgCentroidY: g.imgCentroidSim.y,
     };
   });
 }
 
 btnSimReset.addEventListener('click', () => { if (simEngine) initSim(); });
+
+let _resizeSimTimer = null;
+function scheduleResizeSim() {
+  if (!simEngine) return;
+  if (_resizeSimTimer) clearTimeout(_resizeSimTimer);
+  _resizeSimTimer = setTimeout(() => {
+    _resizeSimTimer = null;
+    resizeSim();
+  }, 400);
+}
+
+function resizeSim() {
+  if (!simEngine) return;
+  const oldW = simCanvas.width, oldH = simCanvas.height;
+  const newW = state.outW, newH = state.outH;
+  if (oldW === newW && oldH === newH) return;
+
+  // Save relative positions and angles before teardown
+  const saved = simGroups.map(g => g ? {
+    rx: g.body.position.x / oldW,
+    ry: g.body.position.y / oldH,
+    angle: g.body.angle,
+  } : null);
+
+  initSim(); // rebuilds shapes, walls, canvas; does grid placement
+
+  // Override grid positions with proportionally-scaled saved positions
+  const { Body } = Matter;
+  for (let i = 0; i < simGroups.length; i++) {
+    const g = simGroups[i];
+    const s = saved[i];
+    if (!g || !s) continue;
+    Body.setPosition(g.body, { x: s.rx * newW, y: s.ry * newH });
+    if (cfgRotation.checked) Body.setAngle(g.body, s.angle);
+    Body.setVelocity(g.body, { x: 0, y: 0 });
+  }
+}
+
+function simRefreshGroup(imgIdx) {
+  const entry = state.images[imgIdx];
+  const hasPolys = entry && entry.polygons.length > 0;
+
+  if (!simEngine) {
+    if (hasPolys) initSim(); // first polygon ever — cold start builds all groups
+    return;
+  }
+
+  // Remove existing body from world
+  const old = simGroups[imgIdx];
+  if (old) {
+    if (old.inWorld) Matter.World.remove(simEngine.world, old.body);
+    simGroups[imgIdx] = null;
+  }
+
+  if (!hasPolys) return;
+
+  simMergedImageData = null;
+  const g = buildSimGroup(imgIdx);
+  if (!g) return;
+
+  if (old) {
+    Matter.Body.setPosition(g.body, old.body.position);
+    Matter.Body.setVelocity(g.body, { x: 0, y: 0 });
+    if (cfgRotation.checked) Matter.Body.setAngle(g.body, old.body.angle);
+  } else {
+    const rank = state.rankOrder.indexOf(imgIdx);
+    const n    = simGroups.filter(Boolean).length + 1;
+    Matter.Body.setPosition(g.body, simGridPos(rank, n, state.outW, state.outH));
+    Matter.Body.setVelocity(g.body, { x: 0, y: 0 });
+  }
+
+  g.inWorld = !entry.simHidden;
+  if (g.inWorld) Matter.World.add(simEngine.world, g.body);
+  simGroups[imgIdx] = g;
+
+  if (g.inWorld) {
+    simAlpha   = Math.max(simAlpha, 0.4);
+    simSettled = false;
+    updateSimStatus('Settling\u2026');
+  }
+  simWrap.classList.remove('im-hidden');
+}
+
+cfgRotation.addEventListener('change', () => {
+  if (!simEngine) return;
+  const { Body } = Matter;
+  for (const g of simGroups) {
+    if (!g) continue;
+    if (cfgRotation.checked) {
+      Body.setInertia(g.body, g.originalInertia);
+    } else {
+      Body.setInertia(g.body, Infinity);
+      Body.setAngle(g.body, 0);
+    }
+  }
+  simMergedImageData = null;
+  simAlpha   = Math.max(simAlpha, 0.2);
+  simSettled = false;
+  updateSimStatus('Settling\u2026');
+});
+
+function transformPolyVert(v, p) {
+  const angle = p.angle || 0;
+  if (!angle) return { x: p.x + v.x * p.scale, y: p.y + v.y * p.scale };
+  const lx = v.x * p.scale - p.imgCentroidX;
+  const ly = v.y * p.scale - p.imgCentroidY;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  return {
+    x: p.pivotX + lx * cos - ly * sin,
+    y: p.pivotY + lx * sin + ly * cos,
+  };
+}
 
 function hexToRgb(hex) {
   return [
@@ -1506,29 +1720,53 @@ function finishMerge(placements, ownershipMap) {
   resetMergeUI();
 
   const W = state.outW, H = state.outH;
-  outputCanvas.width  = W;
-  outputCanvas.height = H;
+  const simCtx = simCanvas.getContext('2d');
 
   // Pre-render each placed image into a clipped canvas and capture its pixels.
   // The temp canvas is only as large as the region that overlaps the output,
   // so large-scale images don't create huge off-screen surfaces.
   const imgData = []; // { imgIdx, x0, y0, x1, y1, rw, data }
   for (const p of placements) {
-    const entry   = state.images[p.imgIdx];
-    const scaledW = Math.round(entry.w * p.scale);
-    const scaledH = Math.round(entry.h * p.scale);
-    const x0 = Math.max(0, p.x),           y0 = Math.max(0, p.y);
-    const x1 = Math.min(W, p.x + scaledW), y1 = Math.min(H, p.y + scaledH);
+    const entry = state.images[p.imgIdx];
+    const angle = p.angle || 0;
+
+    let x0, y0, x1, y1;
+    if (angle) {
+      const corners = [
+        { x: 0, y: 0 }, { x: entry.w, y: 0 },
+        { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
+      ].map(c => transformPolyVert(c, p));
+      const cxs = corners.map(c => c.x), cys = corners.map(c => c.y);
+      x0 = Math.max(0, Math.floor(Math.min(...cxs)));
+      y0 = Math.max(0, Math.floor(Math.min(...cys)));
+      x1 = Math.min(W, Math.ceil(Math.max(...cxs)));
+      y1 = Math.min(H, Math.ceil(Math.max(...cys)));
+    } else {
+      const scaledW = Math.round(entry.w * p.scale);
+      const scaledH = Math.round(entry.h * p.scale);
+      x0 = Math.max(0, p.x);           y0 = Math.max(0, p.y);
+      x1 = Math.min(W, p.x + scaledW); y1 = Math.min(H, p.y + scaledH);
+    }
     if (x1 <= x0 || y1 <= y0) { imgData.push(null); continue; }
 
     const rw = x1 - x0, rh = y1 - y0;
     const tmp = document.createElement('canvas');
     tmp.width = rw; tmp.height = rh;
     const tmpCtx = tmp.getContext('2d');
-    // Draw only the source sub-region that maps to [x0..x1] × [y0..y1]
-    const srcX = (x0 - p.x) / p.scale, srcY = (y0 - p.y) / p.scale;
-    const srcW = rw / p.scale,          srcH = rh / p.scale;
-    tmpCtx.drawImage(entry.img, srcX, srcY, srcW, srcH, 0, 0, rw, rh);
+
+    if (angle) {
+      tmpCtx.save();
+      tmpCtx.translate(p.pivotX - x0, p.pivotY - y0);
+      tmpCtx.rotate(angle);
+      tmpCtx.drawImage(entry.img, 0, 0, entry.w, entry.h,
+        -p.imgCentroidX, -p.imgCentroidY, entry.w * p.scale, entry.h * p.scale);
+      tmpCtx.restore();
+    } else {
+      // Draw only the source sub-region that maps to [x0..x1] × [y0..y1]
+      const srcX = (x0 - p.x) / p.scale, srcY = (y0 - p.y) / p.scale;
+      const srcW = rw / p.scale,          srcH = rh / p.scale;
+      tmpCtx.drawImage(entry.img, srcX, srcY, srcW, srcH, 0, 0, rw, rh);
+    }
     imgData.push({ imgIdx: p.imgIdx, x0, y0, x1, y1, rw, data: tmpCtx.getImageData(0, 0, rw, rh).data });
   }
 
@@ -1538,7 +1776,7 @@ function finishMerge(placements, ownershipMap) {
 
   // Build output image pixel-by-pixel using ownership map
   const [fr, fg, fb] = hexToRgb(state.fillColor);
-  const outImgData = outCtx.createImageData(W, H);
+  const outImgData = simCtx.createImageData(W, H);
   const out = outImgData.data;
 
   for (let oy = 0; oy < H; oy++) {
@@ -1574,16 +1812,16 @@ function finishMerge(placements, ownershipMap) {
     }
   }
 
-  outCtx.putImageData(outImgData, 0, 0);
+  // Hand result to rAF loop — it will putImageData on next frame
+  simMergedImageData = outImgData;
+  simLastPlacements  = placements;
 
-  log(`Done. ${placements.length} / ${state.images.length} images placed.`,
-      placements.length === state.images.length ? 'im-log-ok' : 'im-log-warn');
-
-  const dispScale = Math.min(1, DISPLAY_MAX_W / W);
-  outputCanvas.style.width  = Math.round(W * dispScale) + 'px';
-  outputCanvas.style.height = Math.round(H * dispScale) + 'px';
-
-  outputWrap.classList.remove('im-hidden');
+  const placed = placements.length, total = state.images.length;
+  updateSimStatus(
+    placed === total
+      ? 'Merged \u2713 \u2014 drag to re-arrange'
+      : `Merged (${placed}/${total} placed) \u2014 drag to re-arrange`
+  );
   btnDownload.classList.remove('im-hidden');
 }
 
@@ -1591,6 +1829,6 @@ function finishMerge(placements, ownershipMap) {
 btnDownload.addEventListener('click', () => {
   const link = document.createElement('a');
   link.download = 'merged.png';
-  link.href = outputCanvas.toDataURL('image/png');
+  link.href = simCanvas.toDataURL('image/png');
   link.click();
 });
