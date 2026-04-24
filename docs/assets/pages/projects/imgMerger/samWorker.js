@@ -20,7 +20,7 @@ async function doInit() {
     lib = await import(SAM_CDN);
     lib.env.allowLocalModels  = false;
     lib.env.allowRemoteModels = true;
-    lib.env.useBrowserCache   = true;
+    lib.env.useBrowserCache   = typeof caches !== 'undefined';
     lib.env.backends.onnx.wasm.wasmPaths = SAM_CDN.replace('transformers.min.js', '');
 
     const prog = p => {

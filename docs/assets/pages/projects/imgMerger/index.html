@@ -17,7 +17,7 @@
   <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
 
   <link rel="stylesheet" href="../../../main.css">
-  <link rel="stylesheet" href="imageMerge.css">
+  <link rel="stylesheet" href="imageMerge.css?v=2">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/poly-decomp/0.3.0/poly-decomp.min.js"></script>
@@ -54,7 +54,11 @@
       <div class="im-config-grid" style="margin-bottom:1.4em;">
         <div class="im-field">
           <label for="cfg-images">Upload images</label>
-          <input type="file" id="cfg-images" accept="image/*" multiple>
+          <div class="im-upload-area" style="position:relative;">
+            <span class="im-upload-label">Tap to choose images</span>
+            <span class="im-upload-hint">JPG, PNG, WebP · multiple OK</span>
+            <input type="file" id="cfg-images" accept="image/*" multiple>
+          </div>
         </div>
       </div>
 
@@ -62,11 +66,11 @@
       <div class="im-config-grid">
         <div class="im-field">
           <label for="cfg-width">Output width (px)</label>
-          <input type="number" id="cfg-width" value="1080" min="1">
+          <input type="number" id="cfg-width" value="1080" min="1" inputmode="numeric">
         </div>
         <div class="im-field">
           <label for="cfg-height">Output height (px)</label>
-          <input type="number" id="cfg-height" value="1920" min="1">
+          <input type="number" id="cfg-height" value="1920" min="1" inputmode="numeric">
         </div>
         <div class="im-field">
           <label for="cfg-min-scale">
@@ -104,22 +108,22 @@
           </div>
           <div class="im-field im-hidden" id="cfg-dither-fields">
             <label for="cfg-seed">Random seed</label>
-            <input type="number" id="cfg-seed" value="42" min="0" step="1">
+            <input type="number" id="cfg-seed" value="42" min="0" step="1" inputmode="numeric">
           </div>
           <div class="im-field im-hidden" id="cfg-dither-exp-field">
             <label for="cfg-dither-exp">Dither sharpness <span class="im-hint-small">· higher = narrower blend band</span></label>
-            <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1">
+            <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1" inputmode="numeric">
           </div>
           <div class="im-field">
             <label for="cfg-sam-workers">SAM background encoders <span class="im-hint-small">· reduce if out of memory</span></label>
-            <input type="number" id="cfg-sam-workers" value="4" min="1" max="8" step="1">
+            <input type="number" id="cfg-sam-workers" value="4" min="1" max="8" step="1" inputmode="numeric">
           </div>
         </div>
       </details>
 
       <!-- SAM controls — shown whenever SAM is enabled -->
       <div class="im-hidden" id="sam-controls">
-        <div style="display:flex;align-items:center;gap:0.8em;margin:0.7em 0 0.2em;">
+        <div class="im-sam-controls-row">
           <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>SAM: Off</button>
           <span id="sam-worker-count" class="im-sam-worker-count"></span>
           <span id="sam-status" class="im-sam-status"></span>
@@ -174,6 +178,7 @@
           <div style="display:flex;align-items:center;gap:0.8em;margin-top:0.5em;flex-wrap:wrap;">
             <span id="sim-status" class="im-sim-status">Initializing…</span>
             <button class="im-btn im-btn-sm" id="btn-sim-reset">↺ Reset</button>
+            <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
             <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
             <label style="display:flex;align-items:center;gap:0.4em;font-size:0.82em;color:#aaa;cursor:pointer;">
               <input type="checkbox" id="cfg-rotation"> Allow rotation
@@ -695,7 +700,7 @@ function chamferDist(mask, W, H) {
 }
   </script>
 
-  <script src="imageMerge.js"></script>
+  <script src="imageMerge.js?v=5"></script>
 </body>
 
 </html>

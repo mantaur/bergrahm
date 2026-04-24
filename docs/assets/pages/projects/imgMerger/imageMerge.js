@@ -72,6 +72,7 @@ const simWrap     = document.getElementById('sim-wrap');
 const simCanvas   = document.getElementById('sim-canvas');
 const simCtx      = simCanvas.getContext('2d');
 const btnSimReset = document.getElementById('btn-sim-reset');
+const btnMerge    = document.getElementById('btn-merge');
 const btnCancel   = document.getElementById('btn-cancel');
 const btnDownload = document.getElementById('btn-download');
 const simStatusEl = document.getElementById('sim-status');
@@ -503,7 +504,11 @@ function loadPainterImage(rankIdx) {
   paintIndexLbl.textContent = (rankIdx + 1) + ' / ' + state.images.length;
 
   // Size the canvases to a display-friendly scale
-  const scale   = Math.min(1, DISPLAY_MAX_W / entry.w);
+  const availW = canvasWrap.parentElement.clientWidth
+               - parseFloat(getComputedStyle(canvasWrap.parentElement).paddingLeft || '0')
+               - parseFloat(getComputedStyle(canvasWrap.parentElement).paddingRight || '0');
+  const effectiveMaxW = Math.min(DISPLAY_MAX_W, availW > 0 ? availW : DISPLAY_MAX_W);
+  const scale   = Math.min(1, effectiveMaxW / entry.w);
   const dispW   = Math.round(entry.w * scale);
   const dispH   = Math.round(entry.h * scale);
 
@@ -692,6 +697,26 @@ canvasWrap.addEventListener('mouseleave', () => {
   redrawPolyOverlay(state.rankOrder[state.paintIdx]);
 });
 
+canvasWrap.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  canvasWrap.dispatchEvent(new MouseEvent('click', {
+    clientX: t.clientX, clientY: t.clientY, bubbles: true
+  }));
+}, { passive: false });
+
+canvasWrap.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  canvasWrap.dispatchEvent(new MouseEvent('mousemove', {
+    clientX: t.clientX, clientY: t.clientY, bubbles: true
+  }));
+}, { passive: false });
+
+canvasWrap.addEventListener('touchend', (e) => {
+  e.preventDefault();
+}, { passive: false });
+
 // ── Polygon undo ──────────────────────────────────────────────────────────────
 function pushPolyUndo(imgIdx) {
   const entry = state.images[imgIdx];
@@ -794,7 +819,7 @@ function initSamPool() {
     return;
   }
   for (let i = 0; i < SAM_WORKER_COUNT; i++) {
-    const w = new Worker('samWorker.js');
+    const w = new Worker('samWorker.js?v=2');
     w.onmessage = (e) => onWorkerMsg(i, e.data);
     samPool.workers.push(w);
     samPool.ready.push(false);
@@ -1135,8 +1160,11 @@ let activeWorker = null;
 
 btnCancel.addEventListener('click', cancelMerge);
 
+btnMerge.addEventListener('click', startMerge);
+
 function startMerge() {
   updateSimStatus('Merging\u2026');
+  btnMerge.classList.add('im-hidden');
   btnCancel.classList.remove('im-hidden');
   btnDownload.classList.add('im-hidden');
 
@@ -1201,6 +1229,7 @@ function cancelMerge() {
 function resetMergeUI() {
   btnCancel.classList.add('im-hidden');
   btnDownload.classList.add('im-hidden');
+  if (simSettled) btnMerge.classList.remove('im-hidden');
   simMergedImageData = null;
 }
 
@@ -1361,6 +1390,7 @@ function initSim() {
     simLastPlacements  = null;
     simAlpha   = Math.max(simAlpha, 0.3);
     simSettled = false;
+    btnMerge.classList.add('im-hidden');
     updateSimStatus('Settling\u2026');
   });
 
@@ -1375,6 +1405,7 @@ function teardownSim() {
   simGroups  = [];
   simSettled = false;
   _lastSimTs = null;
+  btnMerge.classList.add('im-hidden');
   simWrap.classList.add('im-hidden');
 }
 
@@ -1413,8 +1444,8 @@ function simTick(ts) {
     const n      = bodies.length || 1;
     if (simAlpha < 0.08 && ke < 0.04 * n) {
       simSettled = true;
-      updateSimStatus('Settled \u2713 \u2014 drag to adjust, or run merge');
-      startMerge();
+      btnMerge.classList.remove('im-hidden');
+      updateSimStatus('Settled \u2713 \u2014 drag to adjust, then click Merge');
     }
   }
 }
@@ -1664,6 +1695,7 @@ function simRefreshGroup(imgIdx) {
   if (g.inWorld) {
     simAlpha   = Math.max(simAlpha, 0.4);
     simSettled = false;
+    btnMerge.classList.add('im-hidden');
     updateSimStatus('Settling\u2026');
   }
   simWrap.classList.remove('im-hidden');
@@ -1684,6 +1716,7 @@ cfgRotation.addEventListener('change', () => {
   simMergedImageData = null;
   simAlpha   = Math.max(simAlpha, 0.2);
   simSettled = false;
+  btnMerge.classList.add('im-hidden');
   updateSimStatus('Settling\u2026');
 });
 

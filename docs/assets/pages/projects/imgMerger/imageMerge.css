@@ -127,6 +127,8 @@
   cursor: pointer;
   font-size: 0.95em;
   transition: background 0.2s, color 0.2s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .im-btn:hover:not(:disabled) {
@@ -172,6 +174,7 @@
   gap: 0.7em;
   cursor: grab;
   user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .im-rank-item.dragging {
@@ -242,6 +245,8 @@
   font-size: 0.75em;
   padding: 0.2em 0.5em;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .im-rank-edit-btn:hover {
@@ -408,4 +413,126 @@
 .im-sim-status {
   font-size: 0.82em;
   color: #aaa;
+}
+
+.im-sam-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  margin: 0.7em 0 0.2em;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 600px) {
+  .im-section { padding: 1em 0.75em; }
+
+  .im-upload-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4em;
+    border: 2px dashed #555;
+    border-radius: 0.75em;
+    padding: 1.5em 1em;
+    text-align: center;
+    background: rgb(24,26,27);
+    cursor: pointer;
+    min-height: 80px;
+  }
+  .im-upload-area:active { border-color: springgreen; }
+  .im-upload-area input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+  }
+  .im-upload-label {
+    font-size: 0.95em;
+    color: #aaa;
+    pointer-events: none;
+  }
+  .im-upload-hint {
+    font-size: 0.75em;
+    color: #666;
+    pointer-events: none;
+  }
+
+  .im-config-grid { grid-template-columns: 1fr; gap: 0.9em; }
+
+  .im-field input[type="number"],
+  .im-field input[type="file"],
+  .im-select {
+    min-height: 44px;
+    font-size: 1em;
+    padding: 0.5em 0.75em;
+  }
+  .im-slider-row input[type="range"] { height: 28px; }
+
+  .im-sam-controls-row { flex-wrap: wrap; gap: 0.5em; }
+  .im-sam-controls-row .im-btn { min-height: 44px; min-width: 100px; font-size: 0.9em; }
+
+  .im-rank-item {
+    flex-wrap: wrap;
+    gap: 0.5em;
+    min-height: 52px;
+    padding: 0.6em 0.75em;
+  }
+  .im-rank-item > span:not(.im-rank-badge):not(.im-sam-dot) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+    font-size: 0.9em;
+  }
+  .im-rank-btn-group {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-end;
+    gap: 0.5em;
+  }
+  .im-rank-edit-btn {
+    min-height: 36px;
+    padding: 0.3em 0.75em;
+    font-size: 0.8em;
+  }
+  .im-rank-thumb { width: 36px; height: 36px; }
+
+  .im-painter-controls { flex-direction: column; align-items: stretch; gap: 0.6em; }
+  .im-painter-controls .im-field { width: 100%; }
+  .im-painter-controls .im-field-row { justify-content: flex-start; }
+
+  .im-painter-nav { gap: 0.6em; }
+  .im-painter-nav .im-btn {
+    min-height: 44px;
+    padding: 0.5em 1.2em;
+    font-size: 0.9em;
+    flex: 1;
+  }
+  #paint-index-label { text-align: center; min-width: 3em; }
+
+  .im-scale-bar { flex-wrap: wrap; gap: 0.4em; }
+  .im-scale-bar .im-scale-input { min-height: 36px; font-size: 0.95em; }
+
+  #paint-canvas, #mask-canvas { height: auto !important; }
+  .im-canvas-wrap { border-radius: 0.5em; }
+
+  #sim-wrap > div { gap: 0.6em; }
+  #btn-download {
+    min-height: 48px;
+    font-size: 1em;
+    padding: 0.6em 1.5em;
+    background: rgb(20, 60, 20);
+    border-color: springgreen;
+    color: springgreen;
+    width: 100%;
+    margin-top: 0.5em;
+  }
+
+  .im-log { font-size: 0.75em; }
+
+  .im-step-title { font-size: 1.15em; }
 }
