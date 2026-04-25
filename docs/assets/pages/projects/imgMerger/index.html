@@ -12,12 +12,12 @@
   </script>
 
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta http-equiv="X-UA-Compatible" content="ie=edge">
   <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
 
   <link rel="stylesheet" href="../../../main.css">
-  <link rel="stylesheet" href="imageMerge.css?v=2">
+  <link rel="stylesheet" href="imageMerge.css?v=6">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/poly-decomp/0.3.0/poly-decomp.min.js"></script>
@@ -25,176 +25,219 @@
 </head>
 
 <body>
-  <div class="wrapper">
-    <div class="nav">
-      <div class="navItem"><a href="../../../../index.html">Bergrahm</a></div>
-      <div class="navItem"><a href="../projects.html">Projects</a></div>
-      <div class="navItem"><a href="../../contact.html">Contact</a></div>
-    </div>
+<div class="im-app">
 
-    <div class="header">
-      <h1>Image Merger</h1>
-      <p>Upload images, paint the regions that must stay visible, then merge them into a single output image.</p>
-    </div>
+  <!-- ── App bar ── -->
+  <header class="im-appbar">
+    <nav class="im-breadcrumb">
+      <a href="../../../../index.html">Bergrahm</a>
+      <span class="im-bsep">/</span>
+      <a href="../projects.html">Projects</a>
+      <span class="im-bsep">/</span>
+      <span>Merger</span>
+    </nav>
+    <span class="im-apptitle">Image Merger</span>
+  </header>
 
-    <!-- ── STEP 1: Configure + Paint ── -->
-    <div class="im-section" id="section-paint">
-      <h2 class="im-step-title">Step 1 — Configure &amp; paint</h2>
+  <!-- ── Workflow accordion ── -->
+  <div class="im-workflow">
 
-      <!-- SAM toggle -->
-      <div id="cfg-use-sam-row" class="im-field im-field-row im-hidden" style="align-items:center;gap:0.6em;margin-bottom:1em;">
-        <input type="checkbox" id="cfg-use-sam">
-        <label for="cfg-use-sam" style="cursor:pointer;font-size:0.85em;color:#aaa;">
-          Enable SAM auto-segmentation
-          <span class="im-hint-small">(~100 MB on first use · requires internet)</span>
-        </label>
-      </div>
+    <!-- ── 01 Images ── -->
+    <section class="im-step im-step-open" id="step-images">
+      <button class="im-step-hd" type="button" data-num="01">
+        <span class="im-snum">01</span>
+        <div class="im-step-titles">
+          <span class="im-slbl">Images</span>
+          <span class="im-smeta" id="smeta-images">Upload to start</span>
+        </div>
+        <span class="im-sicon">▾</span>
+      </button>
+      <div class="im-step-bd">
+        <div class="im-step-inner" id="section-paint">
 
-      <!-- Upload -->
-      <div class="im-config-grid" style="margin-bottom:1.4em;">
-        <div class="im-field">
-          <label for="cfg-images">Upload images</label>
-          <div class="im-upload-area" style="position:relative;">
-            <span class="im-upload-label">Tap to choose images</span>
-            <span class="im-upload-hint">JPG, PNG, WebP · multiple OK</span>
+          <!-- SAM toggle (mobile only) -->
+          <div id="cfg-use-sam-row" class="im-sam-toggle-row im-hidden">
+            <input type="checkbox" id="cfg-use-sam">
+            <label for="cfg-use-sam">Enable SAM auto-segmentation
+              <span class="im-hint-small">(~100 MB · needs internet)</span>
+            </label>
+          </div>
+
+          <!-- Upload zone -->
+          <div class="im-upload-zone">
+            <span class="im-uz-icon">⊕</span>
+            <span class="im-uz-label">Tap to add images</span>
+            <span class="im-uz-hint">JPG · PNG · WebP · multiple OK</span>
             <input type="file" id="cfg-images" accept="image/*" multiple>
           </div>
-        </div>
-      </div>
 
-      <!-- Rest of config -->
-      <div class="im-config-grid">
-        <div class="im-field">
-          <label for="cfg-width">Output width (px)</label>
-          <input type="number" id="cfg-width" value="1080" min="1" inputmode="numeric">
-        </div>
-        <div class="im-field">
-          <label for="cfg-height">Output height (px)</label>
-          <input type="number" id="cfg-height" value="1920" min="1" inputmode="numeric">
-        </div>
-        <div class="im-field">
-          <label for="cfg-min-scale">
-            Min scale
-            <input type="checkbox" id="cfg-use-scale-range" checked style="margin-left:0.5em;vertical-align:middle;">
-            <span style="font-size:0.8em;color:#888;font-weight:normal;">range</span>
-          </label>
-          <div class="im-slider-row">
-            <input type="range" id="cfg-min-scale" min="0.1" max="1" step="0.05" value="0.5">
-            <span id="cfg-min-scale-val">0.5×</span>
-          </div>
-        </div>
-        <div class="im-field">
-          <label for="cfg-max-scale">Max scale</label>
-          <div class="im-slider-row">
-            <input type="range" id="cfg-max-scale" min="1" max="4" step="0.05" value="2">
-            <span id="cfg-max-scale-val">2.0×</span>
-          </div>
-        </div>
-      </div>
+          <!-- Filmstrip + config — hidden until images loaded -->
+          <div id="paint-area" class="im-hidden">
 
-      <details class="im-advanced">
-        <summary class="im-advanced-toggle">Advanced settings</summary>
-        <div class="im-config-grid">
-          <div class="im-field">
-            <label for="cfg-fill">Fill color</label>
-            <input type="color" id="cfg-fill" value="#181a1b">
-          </div>
-          <div class="im-field">
-            <label for="cfg-blend-mode">Blend mode</label>
-            <select id="cfg-blend-mode" class="im-select">
-              <option value="voronoi">Voronoi</option>
-              <option value="dither">Dither</option>
-            </select>
-          </div>
-          <div class="im-field im-hidden" id="cfg-dither-fields">
-            <label for="cfg-seed">Random seed</label>
-            <input type="number" id="cfg-seed" value="42" min="0" step="1" inputmode="numeric">
-          </div>
-          <div class="im-field im-hidden" id="cfg-dither-exp-field">
-            <label for="cfg-dither-exp">Dither sharpness <span class="im-hint-small">· higher = narrower blend band</span></label>
-            <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1" inputmode="numeric">
-          </div>
-          <div class="im-field">
-            <label for="cfg-sam-workers">SAM background encoders <span class="im-hint-small">· reduce if out of memory</span></label>
-            <input type="number" id="cfg-sam-workers" value="4" min="1" max="8" step="1" inputmode="numeric">
-          </div>
+            <div class="im-film-wrap">
+              <ul id="rank-list" class="im-rank-list"></ul>
+              <p class="im-film-hint">Drag to reorder · tap to edit mask</p>
+            </div>
+
+            <!-- Output size + advanced toggle -->
+            <div class="im-cfg-row">
+              <span class="im-cfg-lbl">Output</span>
+              <input type="number" id="cfg-width" class="im-cfg-num" value="1080" min="1" inputmode="numeric">
+              <span class="im-cfg-x">×</span>
+              <input type="number" id="cfg-height" class="im-cfg-num" value="1920" min="1" inputmode="numeric">
+              <span class="im-cfg-px">px</span>
+              <button class="im-btn im-btn-sm im-adv-toggle" id="btn-adv-toggle" type="button">⋯ More</button>
+            </div>
+
+            <!-- Advanced panel -->
+            <div class="im-adv-panel im-hidden" id="adv-panel">
+              <div class="im-config-grid">
+                <div class="im-field">
+                  <label for="cfg-fill">Fill color</label>
+                  <input type="color" id="cfg-fill" value="#181a1b">
+                </div>
+                <div class="im-field">
+                  <label for="cfg-blend-mode">Blend mode</label>
+                  <select id="cfg-blend-mode" class="im-select">
+                    <option value="voronoi">Voronoi</option>
+                    <option value="dither">Dither</option>
+                  </select>
+                </div>
+                <div class="im-field im-hidden" id="cfg-dither-fields">
+                  <label for="cfg-seed">Random seed</label>
+                  <input type="number" id="cfg-seed" value="42" min="0" step="1" inputmode="numeric">
+                </div>
+                <div class="im-field im-hidden" id="cfg-dither-exp-field">
+                  <label for="cfg-dither-exp">Dither sharpness <span class="im-hint-small">· higher = narrower</span></label>
+                  <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1" inputmode="numeric">
+                </div>
+                <div class="im-field">
+                  <label>Scale range
+                    <input type="checkbox" id="cfg-use-scale-range" checked style="margin-left:.4em;vertical-align:middle">
+                  </label>
+                  <div class="im-slider-row">
+                    <span class="im-rng-lbl">Min</span>
+                    <input type="range" id="cfg-min-scale" min="0.1" max="1" step="0.05" value="0.5">
+                    <span id="cfg-min-scale-val" class="im-rng-val">0.5×</span>
+                  </div>
+                  <div class="im-slider-row">
+                    <span class="im-rng-lbl">Max</span>
+                    <input type="range" id="cfg-max-scale" min="1" max="4" step="0.05" value="2">
+                    <span id="cfg-max-scale-val" class="im-rng-val">2.0×</span>
+                  </div>
+                </div>
+                <div class="im-field">
+                  <label for="cfg-sam-workers">SAM encoders <span class="im-hint-small">· reduce if OOM</span></label>
+                  <input type="number" id="cfg-sam-workers" value="4" min="1" max="8" step="1" inputmode="numeric">
+                </div>
+                <div class="im-field">
+                  <label><input type="checkbox" id="cfg-rotation" checked> Rotation lock</label>
+                </div>
+              </div>
+            </div>
+
+          </div><!-- /#paint-area -->
+
+        </div><!-- /.im-step-inner -->
+      </div><!-- /.im-step-bd -->
+    </section>
+
+    <!-- ── 02 Paint Masks ── -->
+    <section class="im-step im-step-locked" id="step-paint">
+      <button class="im-step-hd" type="button" data-num="02">
+        <span class="im-snum">02</span>
+        <div class="im-step-titles">
+          <span class="im-slbl">Paint Masks</span>
+          <span class="im-smeta" id="smeta-paint">Upload images first</span>
         </div>
-      </details>
+        <span class="im-sicon">▾</span>
+      </button>
+      <div class="im-step-bd">
+        <div class="im-step-inner im-painter-inner">
 
-      <!-- SAM controls — shown whenever SAM is enabled -->
-      <div class="im-hidden" id="sam-controls">
-        <div class="im-sam-controls-row">
-          <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>SAM: Off</button>
-          <span id="sam-worker-count" class="im-sam-worker-count"></span>
-          <span id="sam-status" class="im-sam-status"></span>
-        </div>
-      </div>
-
-      <!-- Rank list + painter — revealed once images are uploaded -->
-      <div id="paint-area" class="im-hidden">
-
-        <!-- Image order / rank list -->
-        <div class="im-rank-area">
-          <h3>Importance order <span class="im-hint-small">(drag to reorder — top = highest priority)</span></h3>
-          <ul id="rank-list" class="im-rank-list"></ul>
-        </div>
-
-        <!-- Painter -->
-        <div class="im-painter-controls">
-          <div class="im-field">
-            <label>Editing: <strong id="paint-image-name">—</strong></label>
-            <span class="im-hint">Click to place vertices · click near the first point to close · draw multiple polygons per image</span>
+          <!-- SAM bar -->
+          <div id="sam-controls" class="im-hidden im-sam-bar">
+            <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>SAM: Off</button>
+            <span id="sam-worker-count" class="im-sam-worker-count"></span>
+            <span id="sam-status" class="im-sam-status"></span>
           </div>
-          <div class="im-field im-field-row">
+
+          <!-- Image navigator -->
+          <div class="im-paint-nav">
+            <button class="im-btn im-btn-sm" id="btn-prev-img">← Prev</button>
+            <div class="im-paint-nav-c">
+              <span id="paint-image-name" class="im-paint-name">—</span>
+              <span id="paint-index-label" class="im-paint-idx">1 / 1</span>
+            </div>
+            <button class="im-btn im-btn-sm" id="btn-next-img">Next →</button>
+          </div>
+
+          <!-- Scale bar -->
+          <div class="im-scalebar">
+            <input type="checkbox" id="painter-scale-auto" checked>
+            <label for="painter-scale-auto" class="im-scale-auto-lbl">Auto scale</label>
+            <input type="number" id="painter-scale-inp" class="im-scale-input" min="0.05" max="20" step="0.05" value="1.00" disabled>
+            <span class="im-zoom-lbl">Zoom: <strong id="painter-zoom-val">—</strong></span>
+            <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray=output · Green=image at scale"></canvas>
+          </div>
+
+          <!-- Canvas -->
+          <div class="im-canvas-wrap" id="canvas-wrap">
+            <canvas id="paint-canvas"></canvas>
+            <canvas id="mask-canvas"></canvas>
+          </div>
+
+          <!-- Tools -->
+          <div class="im-paint-tools">
             <button class="im-btn im-btn-sm" id="btn-undo">↩ Undo</button>
-            <button class="im-btn im-btn-sm im-btn-danger" id="btn-clear-mask">Clear all</button>
+            <button class="im-btn im-btn-sm im-btn-danger" id="btn-clear-mask">Clear mask</button>
+            <span class="im-paint-hint">Click to place vertices · click start to close</span>
           </div>
-        </div>
 
-        <div class="im-painter-nav">
-          <button class="im-btn im-btn-sm" id="btn-prev-img">← Prev</button>
-          <span id="paint-index-label">1 / 1</span>
-          <button class="im-btn im-btn-sm" id="btn-next-img">Next →</button>
-        </div>
+        </div><!-- /.im-step-inner -->
+      </div><!-- /.im-step-bd -->
+    </section>
 
-        <!-- Per-image scale + zoom bar -->
-        <div class="im-scale-bar">
-          <label class="im-scale-bar-label">Output scale</label>
-          <input type="checkbox" id="painter-scale-auto" checked>
-          <label for="painter-scale-auto" class="im-scale-auto-lbl">Auto</label>
-          <input type="number" id="painter-scale-inp" class="im-scale-input" min="0.05" max="20" step="0.05" value="1.00" disabled>
-          <span class="im-zoom-label">Zoom: <strong id="painter-zoom-val">—</strong></span>
+    <!-- ── 03 Layout & Merge ── -->
+    <section class="im-step im-step-locked" id="step-sim-outer">
+      <button class="im-step-hd" type="button" data-num="03">
+        <span class="im-snum">03</span>
+        <div class="im-step-titles">
+          <span class="im-slbl">Layout &amp; Merge</span>
+          <span class="im-smeta" id="smeta-sim">Paint masks first</span>
         </div>
+        <span class="im-sicon">▾</span>
+      </button>
+      <div class="im-step-bd">
+        <div class="im-step-inner">
 
-        <div class="im-canvas-wrap" id="canvas-wrap">
-          <canvas id="paint-canvas"></canvas>
-          <canvas id="mask-canvas"></canvas>
-          <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray = output canvas · Green = image at target scale"></canvas>
-        </div>
-
-        <!-- Force-directed placement sim — live while painting -->
-        <div id="sim-wrap" class="im-hidden" style="margin-top:1em;">
-          <canvas id="sim-canvas"></canvas>
-          <div style="display:flex;align-items:center;gap:0.8em;margin-top:0.5em;flex-wrap:wrap;">
-            <span id="sim-status" class="im-sim-status">Initializing…</span>
-            <button class="im-btn im-btn-sm" id="btn-sim-reset">↺ Reset</button>
-            <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
-            <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
-            <label style="display:flex;align-items:center;gap:0.4em;font-size:0.82em;color:#aaa;cursor:pointer;">
-              <input type="checkbox" id="cfg-rotation"> Allow rotation
-            </label>
-            <button class="im-btn im-btn-sm im-hidden" id="btn-download">⬇ Download PNG</button>
+          <div id="sim-wrap" class="im-hidden">
+            <div id="sim-canvas-outer">
+              <canvas id="sim-canvas"></canvas>
+              <div class="sim-corner sc-nw" data-dir="nw"></div>
+              <div class="sim-corner sc-ne" data-dir="ne"></div>
+              <div class="sim-corner sc-sw" data-dir="sw"></div>
+              <div class="sim-corner sc-se" data-dir="se"></div>
+            </div>
           </div>
-        </div>
-      </div>
-    </div>
 
-    <div class="foot">
-      <div class="foot2">
-        <a href="../../../../index.html"><img class="icon clickable" src="../../../images/logo2.webp" alt="Mountain in frame"></a>
-      </div>
-    </div>
-  </div>
+          <div class="im-sim-controls">
+            <span id="sim-status" class="im-sim-status">—</span>
+            <div class="im-sim-btns">
+              <button class="im-btn im-btn-sm" id="btn-sim-reset">↺ Reset</button>
+              <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
+              <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
+              <button class="im-btn im-hidden" id="btn-download">⬇ Download PNG</button>
+            </div>
+          </div>
+
+        </div><!-- /.im-step-inner -->
+      </div><!-- /.im-step-bd -->
+    </section>
+
+  </div><!-- /.im-workflow -->
+
+</div><!-- /.im-app -->
 
   <!-- Worker source embedded so the page works from file:// without a server.
        The type attribute prevents the browser from executing it as a script. -->
@@ -700,7 +743,7 @@ function chamferDist(mask, W, H) {
 }
   </script>
 
-  <script src="imageMerge.js?v=5"></script>
+  <script src="imageMerge.js?v=13"></script>
 </body>
 
 </html>

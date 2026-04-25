@@ -26,6 +26,11 @@ const state = {
 
 };
 
+// ── Icon SVGs ─────────────────────────────────────────────────────────────────
+const EYE_OPEN   = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8c1.5-3.5 4-5 7-5s5.5 1.5 7 5c-1.5 3.5-4 5-7 5s-5.5-1.5-7-5z"/><circle cx="8" cy="8" r="2.2"/></svg>';
+const EYE_CLOSED = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8c1.5-3.5 4-5 7-5s5.5 1.5 7 5c-1.5 3.5-4 5-7 5s-5.5-1.5-7-5z"/><circle cx="8" cy="8" r="2.2"/><line x1="2" y1="2" x2="14" y2="14"/></svg>';
+const REMOVE_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="3" x2="13" y2="13"/><line x1="13" y1="3" x2="3" y2="13"/></svg>';
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const cfgUseSam          = document.getElementById('cfg-use-sam');
 const cfgSamWorkers      = document.getElementById('cfg-sam-workers');
@@ -245,8 +250,19 @@ cfgImages.addEventListener('change', () => {
     img.onload = () => {
       const idx = baseIdx + i;
       const w = img.naturalWidth, h = img.naturalHeight;
+
+      const THUMB_MAX = 256;
+      const ts  = Math.min(1, THUMB_MAX / Math.max(w, h));
+      const tW  = Math.max(1, Math.round(w * ts));
+      const tH  = Math.max(1, Math.round(h * ts));
+      const tc  = document.createElement('canvas');
+      tc.width  = tW; tc.height = tH;
+      tc.getContext('2d').drawImage(img, 0, 0, tW, tH);
+      const thumbUrl = tc.toDataURL('image/jpeg', 0.82);
+      URL.revokeObjectURL(url);
+
       state.images[idx] = {
-        file, name: file.name, img, thumbUrl: url, w, h,
+        file, name: file.name, img, thumbUrl, w, h,
         polygons:    [],
         currentPoly: [],
         scale:       null,
@@ -261,7 +277,10 @@ cfgImages.addEventListener('change', () => {
         }
         paintArea.classList.remove('im-hidden');
         buildRankList();
-        if (firstLoad) loadPainterImage(0);
+        loadPainterImage(firstLoad ? 0 : Math.min(state.paintIdx, state.images.length - 1));
+        unlockStep('step-paint');
+        const n = state.images.length;
+        updateStepMeta('step-images', n + ' image' + (n === 1 ? '' : 's'), true);
         // Start encoding if SAM is already checked and pool is live.
         if (state.useSam) {
           state.samWorkerCount = Math.max(1, parseInt(cfgSamWorkers.value) || 4);
@@ -353,11 +372,16 @@ function removeImage(imgIdx) {
 
   if (state.images.length === 0) {
     paintArea.classList.add('im-hidden');
+    lockStep('step-paint');
+    lockStep('step-sim-outer');
+    updateStepMeta('step-images', 'Upload to start', false);
     return;
   }
 
   state.paintIdx = Math.min(state.paintIdx, state.rankOrder.length - 1);
   buildRankList();
+  const n = state.images.length;
+  updateStepMeta('step-images', n + ' image' + (n === 1 ? '' : 's'), true);
   loadPainterImage(state.paintIdx);
 }
 
@@ -365,14 +389,18 @@ function createRankItem(imgIdx, rank) {
   const entry = state.images[imgIdx];
   const li = document.createElement('li');
   li.className = 'im-rank-item';
+  if (state.rankOrder[state.paintIdx] === imgIdx) li.classList.add('active-paint');
   li.dataset.imgIdx = imgIdx;
   li.draggable = true;
+
+  const thumb = document.createElement('img');
+  thumb.className = 'im-rank-thumb';
+  thumb.src = entry.thumbUrl;
+  thumb.alt = entry.name;
 
   const badge = document.createElement('span');
   badge.className = 'im-rank-badge';
   badge.textContent = '#' + (rank + 1);
-
-  li.appendChild(badge);
 
   // SAM encoding status dot — only visible when SAM is enabled
   if (state.useSam) {
@@ -385,31 +413,19 @@ function createRankItem(imgIdx, rank) {
     li.appendChild(dot);
   }
 
-  const thumb = document.createElement('img');
-  thumb.className = 'im-rank-thumb';
-  thumb.src = entry.thumbUrl;
-  thumb.alt = entry.name;
-
   const nameLbl = document.createElement('span');
+  nameLbl.className = 'im-rank-name';
   nameLbl.textContent = entry.name;
 
-  const editBtn = document.createElement('button');
-  editBtn.className = 'im-rank-edit-btn' + (state.rankOrder[state.paintIdx] === imgIdx ? ' active' : '');
-  editBtn.textContent = 'Edit mask';
-  editBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const newPaintIdx = state.rankOrder.indexOf(imgIdx);
-    loadPainterImage(newPaintIdx);
-  });
-
   const hideBtn = document.createElement('button');
-  hideBtn.className = 'im-rank-edit-btn';
-  hideBtn.textContent = entry.simHidden ? 'Show' : 'Hide';
-  hideBtn.title = 'Hide / show in sim';
+  hideBtn.className = 'im-rank-edit-btn im-film-hide';
+  hideBtn.innerHTML = entry.simHidden ? EYE_CLOSED : EYE_OPEN;
+  hideBtn.title = entry.simHidden ? 'Show in sim' : 'Hide in sim';
   hideBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     entry.simHidden = !entry.simHidden;
-    hideBtn.textContent = entry.simHidden ? 'Show' : 'Hide';
+    hideBtn.innerHTML = entry.simHidden ? EYE_CLOSED : EYE_OPEN;
+    hideBtn.title = entry.simHidden ? 'Show in sim' : 'Hide in sim';
     const g = simGroups[imgIdx];
     if (!g || !simEngine) return;
     if (entry.simHidden) {
@@ -426,8 +442,8 @@ function createRankItem(imgIdx, rank) {
   });
 
   const removeBtn = document.createElement('button');
-  removeBtn.className = 'im-rank-edit-btn im-btn-danger';
-  removeBtn.textContent = '✕';
+  removeBtn.className = 'im-rank-edit-btn im-btn-danger im-film-rm';
+  removeBtn.innerHTML = REMOVE_ICON;
   removeBtn.title = 'Remove image';
   removeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -436,12 +452,23 @@ function createRankItem(imgIdx, rank) {
 
   const btnGroup = document.createElement('div');
   btnGroup.className = 'im-rank-btn-group';
-  btnGroup.appendChild(editBtn);
   btnGroup.appendChild(hideBtn);
   btnGroup.appendChild(removeBtn);
 
+  const editBtn = document.createElement('button');
+  editBtn.className = 'im-rank-edit-btn im-rank-edit-overlay';
+  editBtn.textContent = 'Edit mask';
+  editBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const newPaintIdx = state.rankOrder.indexOf(imgIdx);
+    loadPainterImage(newPaintIdx);
+    openStep('step-paint');
+  });
+
   li.appendChild(thumb);
+  li.appendChild(badge);
   li.appendChild(nameLbl);
+  li.appendChild(editBtn);
   li.appendChild(btnGroup);
 
   // Drag events
@@ -542,9 +569,9 @@ function loadPainterImage(rankIdx) {
 
   updatePainterZoom(imgIdx);
 
-  // Update edit buttons in rank list
-  rankList.querySelectorAll('.im-rank-edit-btn').forEach((btn, i) => {
-    btn.classList.toggle('active', i === rankIdx);
+  // Update active-paint on rank list items
+  Array.from(rankList.children).forEach((li, i) => {
+    li.classList.toggle('active-paint', i === rankIdx);
   });
 
   updateUndoBtn(imgIdx);
@@ -586,6 +613,14 @@ function snapRadius() {
   return SNAP_RADIUS_PX * (paintCanvas.width / paintCanvas.getBoundingClientRect().width);
 }
 
+// Scale a desired CSS-pixel size into native canvas pixels so lines/dots are
+// always visible regardless of how much the image is scaled down for display.
+function canvasPx(cssPx) {
+  const cssW = paintCanvas.getBoundingClientRect().width;
+  if (!cssW) return cssPx;
+  return Math.max(cssPx, cssPx * paintCanvas.width / cssW);
+}
+
 function redrawPolyOverlay(imgIdx) {
   const entry = state.images[imgIdx];
   maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
@@ -597,15 +632,16 @@ function redrawPolyOverlay(imgIdx) {
 
   // In-progress polygon + rubber band
   if (currentPoly.length > 0) {
+    const lw = canvasPx(2);
     maskCtx.beginPath();
     maskCtx.moveTo(currentPoly[0].x, currentPoly[0].y);
     for (let i = 1; i < currentPoly.length; i++) {
       maskCtx.lineTo(currentPoly[i].x, currentPoly[i].y);
     }
     if (rubberBandPt) maskCtx.lineTo(rubberBandPt.x, rubberBandPt.y);
-    maskCtx.setLineDash([6, 4]);
+    maskCtx.setLineDash([canvasPx(6), canvasPx(4)]);
     maskCtx.strokeStyle = 'rgba(255,220,0,0.9)';
-    maskCtx.lineWidth   = 1.5;
+    maskCtx.lineWidth   = lw;
     maskCtx.stroke();
     maskCtx.setLineDash([]);
 
@@ -614,14 +650,14 @@ function redrawPolyOverlay(imgIdx) {
       maskCtx.beginPath();
       maskCtx.arc(currentPoly[0].x, currentPoly[0].y, snapRadius(), 0, Math.PI * 2);
       maskCtx.strokeStyle = 'rgba(255,255,80,0.45)';
-      maskCtx.lineWidth   = 1;
+      maskCtx.lineWidth   = lw;
       maskCtx.stroke();
     }
 
     // Vertex dots for in-progress poly
     currentPoly.forEach((v, i) => {
       maskCtx.beginPath();
-      maskCtx.arc(v.x, v.y, i === 0 ? 6 : 3, 0, Math.PI * 2);
+      maskCtx.arc(v.x, v.y, i === 0 ? canvasPx(7) : canvasPx(4), 0, Math.PI * 2);
       maskCtx.fillStyle = i === 0 ? '#ffee44' : '#ff3366';
       maskCtx.fill();
     });
@@ -630,6 +666,7 @@ function redrawPolyOverlay(imgIdx) {
 
 function drawPoly(poly, fillStyle, strokeStyle, closed) {
   if (poly.length < 2) return;
+  const lw = canvasPx(2);
   maskCtx.beginPath();
   maskCtx.moveTo(poly[0].x, poly[0].y);
   for (let i = 1; i < poly.length; i++) maskCtx.lineTo(poly[i].x, poly[i].y);
@@ -637,11 +674,11 @@ function drawPoly(poly, fillStyle, strokeStyle, closed) {
   maskCtx.fillStyle   = fillStyle;
   maskCtx.fill();
   maskCtx.strokeStyle = strokeStyle;
-  maskCtx.lineWidth   = 1.5;
+  maskCtx.lineWidth   = lw;
   maskCtx.stroke();
   poly.forEach(v => {
     maskCtx.beginPath();
-    maskCtx.arc(v.x, v.y, 3, 0, Math.PI * 2);
+    maskCtx.arc(v.x, v.y, canvasPx(4), 0, Math.PI * 2);
     maskCtx.fillStyle = strokeStyle;
     maskCtx.fill();
   });
@@ -1242,6 +1279,8 @@ let simSettled         = false;
 let _lastSimTs         = null;
 let simMergedImageData = null; // set when merge complete; cleared when sim re-activates
 let simLastPlacements  = null; // placements from last finishMerge — used for mask overlay
+let simResizeDrag      = null; // { oldW, oldH, newW, newH } while corner-drag active
+let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gesture
 
 // RDP simplification (mirrored from merge worker for main-thread use)
 function rdpSimplify(pts, eps) {
@@ -1323,7 +1362,7 @@ function buildSimGroup(imgIdx) {
     ? parts[0]
     : Body.create({ parts, frictionAir: 0.15, restitution: 0.05 });
   const originalInertia = body.inertia;
-  if (!cfgRotation.checked) Body.setInertia(body, Infinity);
+  if (cfgRotation.checked) Body.setInertia(body, Infinity);
 
   return {
     imgIdx,
@@ -1432,11 +1471,13 @@ function simTick(ts) {
   if (simMergedImageData && simSettled) {
     simCtx.putImageData(simMergedImageData, 0, 0);
     drawMergedMaskOverlay();
+    if (simResizeDrag) drawResizeOverlay();
     return;
   }
 
   simAlpha = Math.max(0, simAlpha * 0.995);
   drawSim();
+  if (simResizeDrag) drawResizeOverlay();
 
   if (!simSettled) {
     const bodies = simActiveBodies();
@@ -1500,41 +1541,46 @@ function drawSim() {
     const ang = g.body.angle;
     const cos = Math.cos(ang), sin = Math.sin(ang);
 
+    // Live scale factor during pinch gesture for this body
+    const pp = pinchPreview && pinchPreview.imgIdx === g.imgIdx ? pinchPreview : null;
+    const scaleFactor = pp ? pp.scale / g.scale : 1;
+
     for (const poly of g.polysInSim) {
       ctx.beginPath();
       for (let i = 0; i < poly.length; i++) {
-        const lx = poly[i].x - g.imgCentroidSim.x;
-        const ly = poly[i].y - g.imgCentroidSim.y;
+        const lx = (poly[i].x - g.imgCentroidSim.x) * scaleFactor;
+        const ly = (poly[i].y - g.imgCentroidSim.y) * scaleFactor;
         const rx = bx + lx * cos - ly * sin;
         const ry = by + lx * sin + ly * cos;
         if (i === 0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
       }
       ctx.closePath();
-      ctx.globalAlpha = 0.4;
+      ctx.globalAlpha = pp ? 0.6 : 0.4;
       ctx.fillStyle   = g.color;
       ctx.fill();
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = g.color;
-      ctx.lineWidth   = 1.5 * ds;
+      ctx.strokeStyle = pp ? 'springgreen' : g.color;
+      ctx.lineWidth   = (pp ? 2.5 : 1.5) * ds;
       ctx.stroke();
     }
 
     // Faint dashed rectangle showing full image bounds (rotation-aware)
     const entry = state.images[g.imgIdx];
+    const drawScale = g.scale * scaleFactor;
     const imgCorners = [
       { x: 0, y: 0 }, { x: entry.w, y: 0 },
       { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
     ].map(c => {
-      const lx = c.x * g.scale - g.imgCentroidSim.x;
-      const ly = c.y * g.scale - g.imgCentroidSim.y;
+      const lx = c.x * drawScale - g.imgCentroidSim.x * scaleFactor;
+      const ly = c.y * drawScale - g.imgCentroidSim.y * scaleFactor;
       return { x: bx + lx * cos - ly * sin, y: by + lx * sin + ly * cos };
     });
     ctx.beginPath();
     ctx.moveTo(imgCorners[0].x, imgCorners[0].y);
     for (let i = 1; i < 4; i++) ctx.lineTo(imgCorners[i].x, imgCorners[i].y);
     ctx.closePath();
-    ctx.globalAlpha = 0.18;
-    ctx.strokeStyle = g.color;
+    ctx.globalAlpha = pp ? 0.45 : 0.18;
+    ctx.strokeStyle = pp ? 'springgreen' : g.color;
     ctx.lineWidth   = ds;
     ctx.setLineDash([4 * ds, 4 * ds]);
     ctx.stroke();
@@ -1542,14 +1588,63 @@ function drawSim() {
     ctx.globalAlpha = 1;
 
     ctx.globalAlpha = 0.85;
-    ctx.fillStyle   = g.color;
-    ctx.fillText(
-      state.images[g.imgIdx].name.replace(/\.[^.]+$/, ''),
-      g.body.position.x,
-      g.body.position.y + fontSize / 3,
-    );
+    ctx.fillStyle   = pp ? 'springgreen' : g.color;
+    const label = pp
+      ? entry.name.replace(/\.[^.]+$/, '') + '  ' + pp.scale.toFixed(2) + '\xd7'
+      : entry.name.replace(/\.[^.]+$/, '');
+    ctx.fillText(label, bx, by + fontSize / 3);
     ctx.globalAlpha = 1;
   }
+}
+
+function drawResizeOverlay() {
+  const { oldW, oldH, newW, newH } = simResizeDrag;
+  const ctx = simCtx;
+  const CW = simCanvas.width, CH = simCanvas.height;
+  const PAD = 24;
+
+  // Both rects scaled to the same reference (old size fills the padded view)
+  const ref = Math.min((CW - PAD * 2) / oldW, (CH - PAD * 2) / oldH);
+
+  const oW = Math.round(oldW * ref), oH = Math.round(oldH * ref);
+  const ox = Math.round((CW - oW) / 2),  oy = Math.round((CH - oH) / 2);
+
+  const nW = Math.round(newW * ref), nH = Math.round(newH * ref);
+  const nx = Math.round((CW - nW) / 2),  ny = Math.round((CH - nH) / 2);
+
+  ctx.save();
+
+  // Darken existing content
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, CW, CH);
+
+  // Old size — dim white dashed outline
+  ctx.setLineDash([5, 5]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(ox + 0.5, oy + 0.5, oW, oH);
+
+  // Old label
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(oldW + ' \xd7 ' + oldH, ox + 4, oy + 14);
+
+  // New size — springgreen dashed outline
+  ctx.setLineDash([8, 4]);
+  ctx.strokeStyle = 'rgba(0,255,127,0.75)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(nx + 0.5, ny + 0.5, nW, nH);
+
+  // New label — outside the new rect if possible
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'springgreen';
+  ctx.font = 'bold 13px monospace';
+  ctx.textAlign = 'center';
+  const lblY = ny + nH + 20 < CH - 6 ? ny + nH + 20 : ny - 8;
+  ctx.fillText(newW + ' \xd7 ' + newH, CW / 2, lblY);
+
+  ctx.restore();
 }
 
 function drawMergedMaskOverlay() {
@@ -1650,7 +1745,7 @@ function resizeSim() {
     const s = saved[i];
     if (!g || !s) continue;
     Body.setPosition(g.body, { x: s.rx * newW, y: s.ry * newH });
-    if (cfgRotation.checked) Body.setAngle(g.body, s.angle);
+    Body.setAngle(g.body, s.angle);
     Body.setVelocity(g.body, { x: 0, y: 0 });
   }
 }
@@ -1680,7 +1775,7 @@ function simRefreshGroup(imgIdx) {
   if (old) {
     Matter.Body.setPosition(g.body, old.body.position);
     Matter.Body.setVelocity(g.body, { x: 0, y: 0 });
-    if (cfgRotation.checked) Matter.Body.setAngle(g.body, old.body.angle);
+    Matter.Body.setAngle(g.body, old.body.angle);
   } else {
     const rank = state.rankOrder.indexOf(imgIdx);
     const n    = simGroups.filter(Boolean).length + 1;
@@ -1699,6 +1794,8 @@ function simRefreshGroup(imgIdx) {
     updateSimStatus('Settling\u2026');
   }
   simWrap.classList.remove('im-hidden');
+  unlockStep('step-sim-outer');
+  updateStepMeta('step-sim-outer', 'Settle then merge', false);
 }
 
 cfgRotation.addEventListener('change', () => {
@@ -1707,10 +1804,9 @@ cfgRotation.addEventListener('change', () => {
   for (const g of simGroups) {
     if (!g) continue;
     if (cfgRotation.checked) {
-      Body.setInertia(g.body, g.originalInertia);
-    } else {
       Body.setInertia(g.body, Infinity);
-      Body.setAngle(g.body, 0);
+    } else {
+      Body.setInertia(g.body, g.originalInertia);
     }
   }
   simMergedImageData = null;
@@ -1856,6 +1952,7 @@ function finishMerge(placements, ownershipMap) {
       : `Merged (${placed}/${total} placed) \u2014 drag to re-arrange`
   );
   btnDownload.classList.remove('im-hidden');
+  updateStepMeta('step-sim-outer', 'Merged ✓', true);
 }
 
 // ── Download ──────────────────────────────────────────────────────────────────
@@ -1865,3 +1962,262 @@ btnDownload.addEventListener('click', () => {
   link.href = simCanvas.toDataURL('image/png');
   link.click();
 });
+
+// ── Accordion controller ──────────────────────────────────────────────────────
+
+function openStep(stepId) {
+  document.querySelectorAll('.im-step').forEach(s => {
+    s.classList.toggle('im-step-open', s.id === stepId);
+  });
+  const target = document.getElementById(stepId);
+  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function unlockStep(stepId) {
+  const el = document.getElementById(stepId);
+  if (el) el.classList.remove('im-step-locked');
+}
+
+function lockStep(stepId) {
+  const el = document.getElementById(stepId);
+  if (el) el.classList.add('im-step-locked');
+}
+
+function updateStepMeta(stepId, text, isOk) {
+  const el = document.getElementById(stepId);
+  if (!el) return;
+  const meta = el.querySelector('.im-smeta');
+  if (meta) { meta.textContent = text; meta.classList.toggle('im-ok', !!isOk); }
+}
+
+document.querySelectorAll('.im-step-hd').forEach(hd => {
+  hd.addEventListener('click', () => {
+    const step = hd.closest('.im-step');
+    if (!step || step.classList.contains('im-step-locked')) return;
+    const isOpen = step.classList.contains('im-step-open');
+    document.querySelectorAll('.im-step').forEach(s => s.classList.remove('im-step-open'));
+    if (!isOpen) step.classList.add('im-step-open');
+  });
+});
+
+const btnAdvToggle = document.getElementById('btn-adv-toggle');
+const advPanel     = document.getElementById('adv-panel');
+if (btnAdvToggle && advPanel) {
+  btnAdvToggle.addEventListener('click', () => {
+    const open = advPanel.classList.toggle('im-hidden');
+    btnAdvToggle.textContent = open ? '⋯ More' : '⋯ Less';
+  });
+}
+
+openStep('step-images');
+
+// ── Corner resize handles — press and hold to expand/contract (accelerating) ──
+(function () {
+  // Speed ramps from BASE up to MAX over RAMP_MS milliseconds
+  const BASE_PX  = 1;     // px/frame at start
+  const MAX_PX   = 8;     // px/frame at full speed
+  const RAMP_MS  = 2000;  // time to reach max speed
+
+  let rafId = null, holdDir = '', oldW = 0, oldH = 0, holdStart = 0;
+
+  function tick(ts) {
+    const held   = ts - holdStart;
+    const t      = Math.min(1, held / RAMP_MS);
+    const speed  = BASE_PX + (MAX_PX - BASE_PX) * t * t; // quadratic ramp
+    const delta  = Math.max(1, Math.round(speed));
+
+    const sx = (holdDir === 'ne' || holdDir === 'se') ?  1 : -1;
+    const sy = (holdDir === 'sw' || holdDir === 'se') ?  1 : -1;
+    const newW = Math.min(8000, Math.max(200, state.outW + sx * delta));
+    const newH = Math.min(8000, Math.max(200, state.outH + sy * delta));
+
+    state.outW = newW;
+    state.outH = newH;
+    cfgWidth.value  = newW;
+    cfgHeight.value = newH;
+    simResizeDrag = { oldW, oldH, newW, newH };
+
+    rafId = requestAnimationFrame(tick);
+  }
+
+  document.querySelectorAll('.sim-corner').forEach(corner => {
+    corner.addEventListener('pointerdown', (e) => {
+      if (!simEngine) return;
+      e.preventDefault();
+      e.stopPropagation();
+      corner.setPointerCapture(e.pointerId);
+      holdDir   = corner.dataset.dir;
+      oldW      = state.outW;
+      oldH      = state.outH;
+      holdStart = performance.now();
+      simResizeDrag = { oldW, oldH, newW: oldW, newH: oldH };
+      rafId = requestAnimationFrame(tick);
+    });
+
+    function finish() {
+      if (!rafId) return;
+      cancelAnimationFrame(rafId);
+      rafId = null;
+      simResizeDrag = null;
+      if (simEngine) resizeSim();
+    }
+    corner.addEventListener('pointerup',     finish);
+    corner.addEventListener('pointercancel', finish);
+  });
+}());
+
+// ── Pinch-to-zoom on sim canvas — scales the nearest image body ───────────────
+(function () {
+  let pinch = null; // { imgIdx, startDist, startScale }
+
+  simCanvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2 || !simEngine) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const t1 = e.touches[0], t2 = e.touches[1];
+    const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+    const rect = simCanvas.getBoundingClientRect();
+    const cx = ((t1.clientX + t2.clientX) / 2 - rect.left) / rect.width  * simCanvas.width;
+    const cy = ((t1.clientY + t2.clientY) / 2 - rect.top)  / rect.height * simCanvas.height;
+
+    let best = null, bestD = Infinity;
+    for (const g of simGroups) {
+      if (!g || !g.inWorld) continue;
+      const d = Math.hypot(g.body.position.x - cx, g.body.position.y - cy);
+      if (d < bestD) { bestD = d; best = g; }
+    }
+    if (!best) return;
+
+    const autoScale = computeAutoScales()[best.imgIdx].scale;
+    const cur = state.images[best.imgIdx].scale ?? autoScale;
+    const startAngle = Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX);
+    pinch = { imgIdx: best.imgIdx, startDist: dist, startScale: cur, startAngle, startBodyAngle: best.body.angle };
+    pinchPreview = { imgIdx: best.imgIdx, scale: cur };
+  }, { passive: false, capture: true });
+
+  simCanvas.addEventListener('touchmove', (e) => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const t1 = e.touches[0], t2 = e.touches[1];
+    const dist     = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+    const newScale = Math.max(0.05, Math.min(20, pinch.startScale * dist / pinch.startDist));
+    pinchPreview = { imgIdx: pinch.imgIdx, scale: Math.round(newScale * 100) / 100 };
+
+    const curAngle   = Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX);
+    let   angleDelta = curAngle - pinch.startAngle;
+    if (angleDelta >  Math.PI) angleDelta -= 2 * Math.PI;
+    if (angleDelta < -Math.PI) angleDelta += 2 * Math.PI;
+    let newBodyAngle = pinch.startBodyAngle + angleDelta;
+
+    // Snap to 0°, 90°, 180°, 270° within ±10°
+    const SNAP = 10 * Math.PI / 180;
+    const TWO_PI = 2 * Math.PI;
+    const norm = ((newBodyAngle % TWO_PI) + TWO_PI) % TWO_PI;
+    for (const s of [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2]) {
+      const diff = norm - s;
+      if (Math.abs(diff) < SNAP) { newBodyAngle -= diff; break; }
+    }
+
+    const gp = simGroups[pinch.imgIdx];
+    if (gp) Matter.Body.setAngle(gp.body, newBodyAngle);
+    const deg = Math.round(newBodyAngle * 180 / Math.PI);
+    updateSimStatus(pinchPreview.scale.toFixed(2) + '\xd7  ' + deg + '\xb0');
+  }, { passive: false, capture: true });
+
+  simCanvas.addEventListener('touchend', (e) => {
+    if (!pinch || e.touches.length >= 2) return;
+    if (pinchPreview) {
+      const entry = state.images[pinch.imgIdx];
+      entry.scale = pinchPreview.scale;
+      const ri = state.rankOrder.indexOf(pinch.imgIdx);
+      if (ri === state.paintIdx) {
+        painterScaleAuto.checked = false;
+        painterScaleInp.disabled = false;
+        painterScaleInp.value = entry.scale.toFixed(2);
+        updatePainterZoom(pinch.imgIdx);
+      }
+    }
+    pinchPreview = null;
+    simRefreshGroup(pinch.imgIdx);
+    pinch = null;
+  }, { passive: true });
+}());
+
+// ── Touch drag-to-reorder filmstrip ───────────────────────────────────────────
+// Long-press (380ms without movement) lifts the card; dragging horizontally
+// reorders it live; lifting the finger commits the new order.
+(function () {
+  const LONG_PRESS_MS = 380;
+  const MOVE_CANCEL   = 9; // px — cancel long-press if finger moves this far
+  let timer = null, drag = null, savedOrder = null;
+  let pressX = 0, pressY = 0;
+
+  rankList.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const li = e.target.closest('.im-rank-item');
+    if (!li) return;
+    // Don't start drag when tapping the hide/remove buttons
+    if (e.target.closest('.im-film-hide, .im-film-rm')) return;
+
+    const t = e.touches[0];
+    pressX = t.clientX;
+    pressY = t.clientY;
+
+    timer = setTimeout(() => {
+      timer = null;
+      savedOrder = [...state.rankOrder];
+      drag = { li };
+      li.classList.add('dragging');
+      if (navigator.vibrate) navigator.vibrate(28);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  rankList.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+
+    // Cancel pending long-press if finger moved too much
+    if (timer) {
+      if (Math.abs(t.clientX - pressX) > MOVE_CANCEL ||
+          Math.abs(t.clientY - pressY) > MOVE_CANCEL) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      return;
+    }
+
+    if (!drag) return;
+    e.preventDefault(); // stop page scroll while reordering
+
+    const over = document.elementFromPoint(t.clientX, t.clientY)
+                          ?.closest('.im-rank-item');
+    if (over && over !== drag.li) {
+      const children = Array.from(rankList.children);
+      const overIdx  = children.indexOf(over);
+      const dragIdx  = children.indexOf(drag.li);
+      if (overIdx < dragIdx) rankList.insertBefore(drag.li, over);
+      else                   rankList.insertBefore(drag.li, over.nextSibling);
+    }
+  }, { passive: false });
+
+  function finish(commit) {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (!drag) return;
+    drag.li.classList.remove('dragging');
+
+    if (commit) {
+      const newOrder      = Array.from(rankList.children).map(li => parseInt(li.dataset.imgIdx));
+      const curImgIdx     = state.rankOrder[state.paintIdx];
+      state.rankOrder     = newOrder;
+      state.paintIdx      = newOrder.indexOf(curImgIdx);
+    } else {
+      state.rankOrder = savedOrder;
+    }
+    buildRankList();
+    drag = null;
+    savedOrder = null;
+  }
+
+  rankList.addEventListener('touchend',   () => finish(true),  { passive: true });
+  rankList.addEventListener('touchcancel',() => finish(false), { passive: true });
+}());
