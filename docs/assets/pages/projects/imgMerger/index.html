@@ -86,7 +86,7 @@
               <span class="im-cfg-x">×</span>
               <input type="number" id="cfg-height" class="im-cfg-num" value="1920" min="1" inputmode="numeric">
               <span class="im-cfg-px">px</span>
-              <button class="im-btn im-btn-sm im-adv-toggle" id="btn-adv-toggle" type="button">⋯ More</button>
+              <button class="im-btn im-btn-sm im-adv-toggle" id="btn-adv-toggle" type="button">... More</button>
             </div>
 
             <!-- Advanced panel -->
@@ -164,12 +164,12 @@
 
           <!-- Image navigator -->
           <div class="im-paint-nav">
-            <button class="im-btn im-btn-sm" id="btn-prev-img">← Prev</button>
+            <button class="im-btn im-btn-sm" id="btn-prev-img">&lt; Prev</button>
             <div class="im-paint-nav-c">
-              <span id="paint-image-name" class="im-paint-name">—</span>
+              <span id="paint-image-name" class="im-paint-name">-</span>
               <span id="paint-index-label" class="im-paint-idx">1 / 1</span>
             </div>
-            <button class="im-btn im-btn-sm" id="btn-next-img">Next →</button>
+            <button class="im-btn im-btn-sm" id="btn-next-img">Next &gt;</button>
           </div>
 
           <!-- Scale bar -->
@@ -177,7 +177,7 @@
             <input type="checkbox" id="painter-scale-auto" checked>
             <label for="painter-scale-auto" class="im-scale-auto-lbl">Auto scale</label>
             <input type="number" id="painter-scale-inp" class="im-scale-input" min="0.05" max="20" step="0.05" value="1.00" disabled>
-            <span class="im-zoom-lbl">Zoom: <strong id="painter-zoom-val">—</strong></span>
+            <span class="im-zoom-lbl">Zoom: <strong id="painter-zoom-val">-</strong></span>
             <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray=output · Green=image at scale"></canvas>
           </div>
 
@@ -214,20 +214,16 @@
           <div id="sim-wrap" class="im-hidden">
             <div id="sim-canvas-outer">
               <canvas id="sim-canvas"></canvas>
-              <div class="sim-corner sc-nw" data-dir="nw"></div>
-              <div class="sim-corner sc-ne" data-dir="ne"></div>
-              <div class="sim-corner sc-sw" data-dir="sw"></div>
-              <div class="sim-corner sc-se" data-dir="se"></div>
             </div>
           </div>
 
           <div class="im-sim-controls">
-            <span id="sim-status" class="im-sim-status">—</span>
+            <span id="sim-status" class="im-sim-status">-</span>
             <div class="im-sim-btns">
-              <button class="im-btn im-btn-sm" id="btn-sim-reset">↺ Reset</button>
+              <button class="im-btn im-btn-sm" id="btn-sim-reset">Reset</button>
               <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
-              <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">✕ Cancel</button>
-              <button class="im-btn im-hidden" id="btn-download">⬇ Download PNG</button>
+              <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
+              <button class="im-btn im-hidden" id="btn-download">Download PNG</button>
             </div>
           </div>
 
