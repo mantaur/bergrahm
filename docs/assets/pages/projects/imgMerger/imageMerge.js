@@ -822,7 +822,7 @@ const samPool = {
 
   // Shared coordination
   samMode:        false,
-  embeddingCache: new Map(), // imgIdx → { embeddings, originalSizes, reshapedSizes }
+  embeddingCache: new Map(), // imgIdx → { embeddings, scale, newW, newH, origW, origH }
   dots:           new Map(), // imgIdx → dot span element (cached to avoid DOM queries)
   encodeQueue:      [],        // imgIdx[] awaiting dispatch
   encodeQueueBuilt: false,    // true once buildEncodeQueue() has been called
@@ -856,7 +856,7 @@ function initSamPool() {
     return;
   }
   for (let i = 0; i < SAM_WORKER_COUNT; i++) {
-    const w = new Worker('samWorker.js?v=2');
+    const w = new Worker('samWorker.js?v=3');
     w.onmessage = (e) => onWorkerMsg(i, e.data);
     samPool.workers.push(w);
     samPool.ready.push(false);
@@ -912,7 +912,7 @@ function onWorkerReady(wIdx) {
   drainEncodeQueue();
 }
 
-function onEncoded(wIdx, { imgIdx, embeddings, originalSizes, reshapedSizes }) {
+function onEncoded(wIdx, { imgIdx, embeddings, scale, newW, newH, origW, origH }) {
   samPool.busy[wIdx]     = false;
   samPool.encoding[wIdx] = null;
 
@@ -924,7 +924,7 @@ function onEncoded(wIdx, { imgIdx, embeddings, originalSizes, reshapedSizes }) {
   }
 
   // Store serialized embeddings in main-thread cache — permanent, no eviction.
-  samPool.embeddingCache.set(imgIdx, { embeddings, originalSizes, reshapedSizes });
+  samPool.embeddingCache.set(imgIdx, { embeddings, scale, newW, newH, origW, origH });
 
   // Flip the rank-list dot to green.
   const dot = samPool.dots.get(imgIdx);
@@ -1039,12 +1039,12 @@ function sendEncode(wIdx, imgIdx) {
 function sendDecode(wIdx, { imgIdx, x, y }) {
   samPool.busy[wIdx] = true;
   updateSamStatus('Segmenting\u2026');
-  const { embeddings, originalSizes, reshapedSizes } = samPool.embeddingCache.get(imgIdx);
+  const { embeddings, scale, origW, origH } = samPool.embeddingCache.get(imgIdx);
   // Structured-clone copies the ArrayBuffers — cache stays intact for future decodes.
   samPool.workers[wIdx].postMessage({
     type: 'decode', imgIdx, x, y,
     decodeSize: state.samDecodeSize,
-    embeddings, originalSizes, reshapedSizes,
+    embeddings, scale, origW, origH,
   });
 }
 
