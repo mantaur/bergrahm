@@ -1,14 +1,17 @@
-/* samWorker.js — MobileSAM via onnxruntime-web (stateless)
- * Uses Qualcomm's ONNX export of MobileSAM hosted on HuggingFace.
- * Workers are stateless between jobs. Encode serializes embeddings back to
- * the main thread for caching; any worker can decode any cached image.
+/* samWorker.js — SAM encode/decode worker (stateless)
+ * Workers are stateless between jobs. Encode serializes embeddings and returns
+ * them to the main thread for caching. Decode receives embeddings with each
+ * request so any worker can decode any image without re-encoding.
+ *
+ * Execution strategy:
+ *   WebGPU available → fp32 model on GPU (fast, avoids WASM heap)
+ *   WebGPU absent   → quantized int8 model on WASM CPU (half memory)
  */
 
-const ORT_CDN    = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.min.js';
-const ORT_WASM   = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
-const MODEL_BASE = 'https://huggingface.co/mantaur/mobile-sam-onnx/resolve/main/';
+const SAM_CDN      = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
+const SAM_MODEL_ID = 'Xenova/slimsam-50-uniform';
 
-let encoderSession = null, decoderSession = null;
+let lib = null, processor = null, model = null;
 
 self.onmessage = async ({ data: msg }) => {
   if (msg.type === 'init')   await doInit();
@@ -16,49 +19,26 @@ self.onmessage = async ({ data: msg }) => {
   if (msg.type === 'decode') await doDecode(msg);
 };
 
-async function fetchWithProgress(url, label) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(label + ' fetch failed: HTTP ' + res.status);
-  const total  = parseInt(res.headers.get('content-length') || '0');
-  const reader = res.body.getReader();
-  const chunks = [];
-  let received = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    if (total > 0)
-      self.postMessage({ type: 'progress', text: label + ' ' + Math.round(received / total * 100) + '%' });
-  }
-  const out = new Uint8Array(received);
-  let pos = 0;
-  for (const c of chunks) { out.set(c, pos); pos += c.length; }
-  return out.buffer;
-}
-
 async function doInit() {
   try {
-    if (!self.ort) importScripts(ORT_CDN);
-    const ort = self.ort;
-    ort.env.wasm.wasmPaths  = ORT_WASM;
-    ort.env.wasm.numThreads = 1;
+    lib = await import(SAM_CDN);
+    lib.env.allowLocalModels  = false;
+    lib.env.allowRemoteModels = true;
+    lib.env.useBrowserCache   = typeof caches !== 'undefined';
+    lib.env.backends.onnx.wasm.wasmPaths = SAM_CDN.replace('transformers.min.js', '');
 
-    const [encOnnx, encData, decOnnx, decData] = await Promise.all([
-      fetchWithProgress(MODEL_BASE + 'encoder.onnx', 'encoder graph'),
-      fetchWithProgress(MODEL_BASE + 'encoder.data', 'encoder weights'),
-      fetchWithProgress(MODEL_BASE + 'decoder.onnx', 'decoder graph'),
-      fetchWithProgress(MODEL_BASE + 'decoder.data', 'decoder weights'),
-    ]);
+    const prog = p => {
+      if (p.status === 'progress')
+        self.postMessage({ type: 'progress', text: p.file + ' ' + Math.round(p.progress || 0) + '%' });
+    };
 
-    encoderSession = await ort.InferenceSession.create(encOnnx, {
-      executionProviders: ['wasm'],
-      externalData: [{ path: 'encoder.data', data: encData }],
-    });
-    decoderSession = await ort.InferenceSession.create(decOnnx, {
-      executionProviders: ['wasm'],
-      externalData: [{ path: 'decoder.data', data: decData }],
-    });
+    const useWebGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
+    const opts = useWebGPU
+      ? { device: 'webgpu',                    progress_callback: prog }
+      : { quantized: true,  device: 'wasm',    progress_callback: prog };
+
+    processor = await lib.AutoProcessor.from_pretrained(SAM_MODEL_ID, { progress_callback: prog });
+    model     = await lib.SamModel.from_pretrained(SAM_MODEL_ID, opts);
 
     self.postMessage({ type: 'ready' });
   } catch (err) {
@@ -66,81 +46,76 @@ async function doInit() {
   }
 }
 
-// SAM preprocessing: resize longest edge to 1024, pad to 1024x1024 (top-left),
-// normalise with ImageNet mean/std, convert RGBA HWC -> RGB CHW float32.
-function preprocessImage(pixels, width, height) {
-  const scale = 1024 / Math.max(width, height);
-  const newW  = Math.round(width  * scale);
-  const newH  = Math.round(height * scale);
-
-  const padded = new OffscreenCanvas(1024, 1024);
-  const pCtx   = padded.getContext('2d');
-  const src    = new OffscreenCanvas(width, height);
-  src.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
-  pCtx.drawImage(src, 0, 0, newW, newH);
-
-  const rgba = pCtx.getImageData(0, 0, 1024, 1024).data;
-  const mean = [123.675, 116.28,  103.53];
-  const std  = [58.395,  57.12,   57.375];
-  const N    = 1024 * 1024;
-  const chw  = new Float32Array(3 * N);
-  for (let i = 0; i < N; i++) {
-    chw[i]         = (rgba[i * 4]     - mean[0]) / std[0];
-    chw[N + i]     = (rgba[i * 4 + 1] - mean[1]) / std[1];
-    chw[2 * N + i] = (rgba[i * 4 + 2] - mean[2]) / std[2];
-  }
-  return { chw, scale, newW, newH };
-}
-
 async function doEncode({ imgIdx, pixels, width, height }) {
   try {
-    const ort = self.ort;
-    const { chw, scale, newW, newH } = preprocessImage(pixels, width, height);
+    const raw       = new lib.RawImage(new Uint8ClampedArray(pixels), width, height, 4);
+    const processed = await processor(raw);
+    const embeddings = await model.get_image_embeddings(processed);
 
-    const { image_embeddings } = await encoderSession.run({
-      image: new ort.Tensor('float32', chw, [1, 3, 1024, 1024]),
-    });
+    const serialized = {};
+    const transfers  = [];
+    for (const [key, tensor] of Object.entries(embeddings)) {
+      const buf = tensor.data.buffer.slice(0);
+      serialized[key] = { type: tensor.type, dims: Array.from(tensor.dims), data: buf };
+      transfers.push(buf);
+    }
 
-    const buf = image_embeddings.data.buffer.slice(0);
     self.postMessage({
-      type: 'encoded', imgIdx,
-      embeddings: { data: buf, dims: Array.from(image_embeddings.dims) },
-      scale, newW, newH, origW: width, origH: height,
-    }, [buf]);
+      type:          'encoded',
+      imgIdx,
+      embeddings:    serialized,
+      originalSizes: processed.original_sizes,
+      reshapedSizes: processed.reshaped_input_sizes,
+    }, transfers);
   } catch (err) {
     self.postMessage({ type: 'error', message: 'Encode: ' + err.message });
   }
 }
 
-async function doDecode({ imgIdx, x, y, decodeSize, embeddings, scale, origW, origH }) {
+async function doDecode({ imgIdx, x, y, decodeSize, embeddings, originalSizes, reshapedSizes }) {
   try {
-    const ort = self.ort;
+    const { Tensor } = lib;
 
-    const { masks } = await decoderSession.run({
-      image_embeddings: new ort.Tensor('float32', new Float32Array(embeddings.data), embeddings.dims),
-      point_coords:     new ort.Tensor('float32', new Float32Array([x * scale, y * scale]), [1, 1, 2]),
-      point_labels:     new ort.Tensor('float32', new Float32Array([1]),                    [1, 1]),
-    });
-
-    // masks: Float32 logits [1,1,256,256] in 1024x1024 encoder space (stride 4).
-    // Sample into a capped-resolution output in original image coords.
-    const rawMask  = masks.data;
-    const capScale = Math.min(1, decodeSize / Math.max(origH, origW));
-    const outW     = Math.round(origW * capScale);
-    const outH     = Math.round(origH * capScale);
-    const out      = new Uint8Array(outW * outH);
-
-    for (let oy = 0; oy < outH; oy++) {
-      for (let ox = 0; ox < outW; ox++) {
-        const encX = (ox * origW / outW) * scale;
-        const encY = (oy * origH / outH) * scale;
-        const mx   = Math.min(255, Math.floor(encX / 4));
-        const my   = Math.min(255, Math.floor(encY / 4));
-        out[oy * outW + ox] = rawMask[my * 256 + mx] > 0 ? 1 : 0;
-      }
+    const typeMap = {
+      float32: Float32Array, float64: Float64Array,
+      int32: Int32Array, int64: BigInt64Array, uint8: Uint8Array,
+    };
+    const reconstructed = {};
+    for (const [key, { type, dims, data }] of Object.entries(embeddings)) {
+      const TypedArray = typeMap[type];
+      if (!TypedArray) throw new Error('Unsupported tensor type: ' + type);
+      reconstructed[key] = new Tensor(type, new TypedArray(data), dims);
     }
 
-    self.postMessage({ type: 'mask', imgIdx, mask: out, width: outW, height: outH }, [out.buffer]);
+    const [origH, origW] = originalSizes[0];
+    const [reshH, reshW] = reshapedSizes[0];
+    const px = (x / origW) * reshW;
+    const py = (y / origH) * reshH;
+
+    const input_points = new Tensor('float32', [px, py], [1, 1, 1, 2]);
+    const input_labels = new Tensor('int64',   [1n],     [1, 1, 1]);
+
+    const outputs = await model({ ...reconstructed, input_points, input_labels });
+
+    const capScale        = Math.min(1, decodeSize / Math.max(origH, origW));
+    const capH            = Math.round(origH * capScale);
+    const capW            = Math.round(origW * capScale);
+    const cappedOrigSizes = [[capH, capW]];
+
+    const masks = await processor.post_process_masks(
+      outputs.pred_masks, cappedOrigSizes, reshapedSizes
+    );
+
+    const scores  = Array.from(outputs.iou_scores.data);
+    const bestIdx = scores.indexOf(Math.max(...scores));
+    const t       = masks[0];
+    const dims    = t.dims;
+    const H = dims[dims.length - 2], W = dims[dims.length - 1];
+    const stride  = H * W;
+    const out     = new Uint8Array(stride);
+    for (let i = 0; i < stride; i++) out[i] = t.data[bestIdx * stride + i] ? 1 : 0;
+
+    self.postMessage({ type: 'mask', imgIdx, mask: out, width: W, height: H }, [out.buffer]);
   } catch (err) {
     self.postMessage({ type: 'error', message: 'Decode: ' + err.message });
   }
