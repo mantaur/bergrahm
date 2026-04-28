@@ -306,10 +306,10 @@ body > .wrapper { max-width: unset; padding: 0; margin: 0; background: transpare
   pointer-events: none;
 }
 
-/* SAM dot — top-right overlay */
+/* SAM dot — top-left overlay */
 .im-sam-dot {
   position: absolute;
-  top: 4px; right: 4px;
+  top: 4px; left: 4px;
   width: 7px; height: 7px;
   border-radius: 50%;
   background: #2a2a2a;

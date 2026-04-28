@@ -581,10 +581,9 @@ function loadPainterImage(rankIdx) {
   // On navigation, discard any stale pending decode and update the status text.
   // The encode queue is left untouched — it runs in filename order regardless.
   if (state.useSam && samPool.readyCount > 0) {
-    samPool.pendingDecode = null;
     updateSamStatus(samPool.embeddingCache.has(imgIdx)
-      ? (samPool.samMode ? 'Click a subject to segment' : 'SAM ready')
-      : 'Encoding\u2026');
+      ? (samPool.samMode ? 'Click a subject to segment' : 'YOLO ready')
+      : 'Encoding...');
   }
 }
 
@@ -690,7 +689,7 @@ canvasWrap.addEventListener('click', (e) => {
   const entry  = state.images[imgIdx];
   const pos    = getCanvasPos(e);
 
-  // SAM mode: use click as a segment prompt
+  // Seg mode: use click as a segment prompt
   if (samPool.samMode) {
     if (samPool.readyCount === 0) return;
     requestDecode(pos.x, pos.y);
@@ -804,11 +803,11 @@ btnNext.addEventListener('click', () => {
   if (state.paintIdx < state.images.length - 1) loadPainterImage(state.paintIdx + 1);
 });
 
-// ── SAM (Segment Anything) — worker pool ──────────────────────────────────────
-// Each worker runs @xenova/transformers in its own thread. Worker 0 downloads
+// ── YOLO seg — worker pool ────────────────────────────────────────────────────
+// Each worker runs onnxruntime-web with yolo11n-seg.onnx. Worker 0 downloads
 // the model on first use; subsequent workers load from the browser cache.
-// Workers are stateless: after encoding they serialize embeddings back to the
-// main-thread cache and forget them. Any free worker can decode any cached image.
+// Workers are stateless: after encoding they send all detected segments back to
+// the main thread. Click-to-mask lookup is instant on the main thread.
 // Worker count is set from state.samWorkerCount at init time; use this alias.
 let SAM_WORKER_COUNT = 4;
 
@@ -822,13 +821,12 @@ const samPool = {
 
   // Shared coordination
   samMode:        false,
-  embeddingCache: new Map(), // imgIdx → { embeddings, originalSizes, reshapedSizes }
+  embeddingCache: new Map(), // imgIdx → { segments, origW, origH }
   dots:           new Map(), // imgIdx → dot span element (cached to avoid DOM queries)
   encodeQueue:      [],        // imgIdx[] awaiting dispatch
   encodeQueueBuilt: false,    // true once buildEncodeQueue() has been called
   encodeRetries:    new Map(), // imgIdx → failure count (reset each session)
   staleEncodeSet:   new Set(), // old imgIdx values to discard in onEncoded after a remove
-  pendingDecode:  null,      // {imgIdx, x, y} | null — only one slot; last click wins
 };
 
 function updateSamStatus(text, warn) {
@@ -849,21 +847,21 @@ function initSamPool() {
   samPool.encodeQueueBuilt = false;
   if (location.protocol === 'file:') {
     updateSamStatus(
-      'SAM requires HTTP  -  open a terminal in docs/ and run: python3 -m http.server 8080, ' +
+      'Seg requires HTTP  -  open a terminal in docs/ and run: python3 -m http.server 8080, ' +
       'then visit http://localhost:8080/assets/pages/projects/imageMerge.html',
       true
     );
     return;
   }
   for (let i = 0; i < SAM_WORKER_COUNT; i++) {
-    const w = new Worker('samWorker.js?v=5');
+    const w = new Worker('samWorker.js?v=6');
     w.onmessage = (e) => onWorkerMsg(i, e.data);
     samPool.workers.push(w);
     samPool.ready.push(false);
     samPool.busy.push(false);
     samPool.encoding.push(null);
   }
-  updateSamStatus('Downloading SAM model\u2026');
+  updateSamStatus('Downloading YOLO model...');
   // Only start worker 0 now; the rest start after it reports ready so they
   // benefit from the browser cache the first worker populates.
   samPool.workers[0].postMessage({ type: 'init' });
@@ -876,9 +874,6 @@ function onWorkerMsg(wIdx, msg) {
       break;
     case 'encoded':
       onEncoded(wIdx, msg);
-      break;
-    case 'mask':
-      onMask(wIdx, msg);
       break;
     case 'progress':
       if (samPool.readyCount === 0) updateSamStatus(msg.text);
@@ -906,13 +901,13 @@ function onWorkerReady(wIdx) {
 
   const all = samPool.readyCount === SAM_WORKER_COUNT;
   updateSamStatus(all
-    ? (samPool.samMode ? 'Click a subject to segment' : 'SAM ready  -  toggle on then click a subject')
-    : ('SAM loading (' + samPool.readyCount + '/' + SAM_WORKER_COUNT + ')\u2026')
+    ? (samPool.samMode ? 'Click a subject to segment' : 'YOLO ready  -  toggle on then click a subject')
+    : ('YOLO loading (' + samPool.readyCount + '/' + SAM_WORKER_COUNT + ')...')
   );
   drainEncodeQueue();
 }
 
-function onEncoded(wIdx, { imgIdx, embeddings, originalSizes, reshapedSizes }) {
+function onEncoded(wIdx, { imgIdx, segments, origW, origH }) {
   samPool.busy[wIdx]     = false;
   samPool.encoding[wIdx] = null;
 
@@ -923,30 +918,16 @@ function onEncoded(wIdx, { imgIdx, embeddings, originalSizes, reshapedSizes }) {
     return;
   }
 
-  // Store serialized embeddings in main-thread cache — permanent, no eviction.
-  samPool.embeddingCache.set(imgIdx, { embeddings, originalSizes, reshapedSizes });
+  samPool.embeddingCache.set(imgIdx, { segments, origW, origH });
 
   // Flip the rank-list dot to green.
   const dot = samPool.dots.get(imgIdx);
   if (dot) { dot.classList.remove('im-sam-encoding'); dot.classList.add('im-sam-encoded'); dot.title = 'Encoded'; }
 
   if (imgIdx === state.rankOrder[state.paintIdx]) {
-    updateSamStatus(samPool.samMode ? 'Click a subject to segment' : 'SAM ready');
+    updateSamStatus(samPool.samMode ? 'Click a subject to segment' : 'YOLO ready');
   }
   drainEncodeQueue();
-}
-
-function onMask(wIdx, { imgIdx, mask, width, height }) {
-  samPool.busy[wIdx] = false;
-  applyMaskAsPolygon(new Uint8Array(mask), width, height, imgIdx);
-  // Fire any decode that arrived while all workers were busy.
-  if (samPool.pendingDecode) {
-    const pd = samPool.pendingDecode;
-    samPool.pendingDecode = null;
-    sendDecode(wIdx, pd);
-  } else {
-    drainEncodeQueue();
-  }
 }
 
 // ── Worker coordination ───────────────────────────────────────────────────────
@@ -1005,7 +986,7 @@ function onEncodeError(wIdx, message) {
     if (attempts <= 2) {
       // Re-queue at the front so it's picked up by the next free worker.
       samPool.encodeQueue.unshift(imgIdx);
-      updateSamStatus('SAM worker failed  -  retrying with fewer workers\u2026', true);
+      updateSamStatus('YOLO worker failed  -  retrying with fewer workers...', true);
     } else {
       const failDot = samPool.dots.get(imgIdx);
       if (failDot) { failDot.classList.remove('im-sam-encoding'); failDot.classList.add('im-sam-failed'); failDot.title = 'Encoding failed'; }
@@ -1013,7 +994,7 @@ function onEncodeError(wIdx, message) {
     }
   } else {
     // Failure during decode or init (imgIdx null) — just report it.
-    updateSamStatus('SAM error: ' + message, true);
+    updateSamStatus('YOLO error: ' + message, true);
   }
 
   drainEncodeQueue();
@@ -1036,18 +1017,6 @@ function sendEncode(wIdx, imgIdx) {
   );
 }
 
-function sendDecode(wIdx, { imgIdx, x, y }) {
-  samPool.busy[wIdx] = true;
-  updateSamStatus('Segmenting\u2026');
-  const { embeddings, originalSizes, reshapedSizes } = samPool.embeddingCache.get(imgIdx);
-  // Structured-clone copies the ArrayBuffers — cache stays intact for future decodes.
-  samPool.workers[wIdx].postMessage({
-    type: 'decode', imgIdx, x, y,
-    decodeSize: state.samDecodeSize,
-    embeddings, originalSizes, reshapedSizes,
-  });
-}
-
 // Build the encode queue once, in filename order. Called when the first worker
 // is ready. Navigation never clears or rebuilds this queue — encoding proceeds
 // steadily through all images regardless of where the user is painting.
@@ -1064,20 +1033,42 @@ function buildEncodeQueue() {
   drainEncodeQueue();
 }
 
-// Handle a user click in SAM mode.
+// Return the YOLO segment whose bbox contains (x,y) and whose mask pixel is 1,
+// preferring the segment with the smallest bbox area (most specific).
+// x,y are in original image coordinates.
+function findBestSegmentAt(segments, x, y, origW, origH) {
+  const DECODE_SIZE = 512;
+  const capScale = Math.min(1, DECODE_SIZE / Math.max(origH, origW));
+  const outW = Math.round(origW * capScale);
+  const outH = Math.round(origH * capScale);
+  const mx = Math.min(outW - 1, Math.round(x * capScale));
+  const my = Math.min(outH - 1, Math.round(y * capScale));
+
+  let best = null, bestArea = Infinity;
+  for (const seg of segments) {
+    const [bx1, by1, bx2, by2] = seg.bbox;
+    if (x < bx1 || x > bx2 || y < by1 || y > by2) continue;
+    if (seg.mask[my * seg.maskW + mx] !== 1) continue;
+    const area = (bx2 - bx1) * (by2 - by1);
+    if (area < bestArea) { bestArea = area; best = seg; }
+  }
+  return best;
+}
+
+// Handle a user click in seg mode -- instant lookup, no worker call needed.
 function requestDecode(x, y) {
   const imgIdx = state.rankOrder[state.paintIdx];
   if (!samPool.embeddingCache.has(imgIdx)) {
     updateSamStatus('Not encoded yet  -  wait for the dot to turn green', true);
     return;
   }
-  const wIdx = freeWorkerIdx();
-  if (wIdx !== -1) {
-    sendDecode(wIdx, { imgIdx, x, y });
-  } else {
-    // All workers busy encoding — store and fire when one becomes free.
-    samPool.pendingDecode = { imgIdx, x, y };
+  const { segments, origW, origH } = samPool.embeddingCache.get(imgIdx);
+  const seg = findBestSegmentAt(segments, x, y, origW, origH);
+  if (!seg) {
+    updateSamStatus('No segment found  -  try clicking on a recognized object.', true);
+    return;
   }
+  applyMaskAsPolygon(seg.mask, seg.maskW, seg.maskH, imgIdx);
 }
 
 function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
@@ -1161,14 +1152,14 @@ function rdpSimplify(pts, eps) {
 btnSamToggle.addEventListener('click', () => {
   samPool.samMode = !samPool.samMode;
   btnSamToggle.classList.toggle('im-sam-active', samPool.samMode);
-  btnSamToggle.textContent = samPool.samMode ? 'SAM: On' : 'SAM: Off';
+  btnSamToggle.textContent = samPool.samMode ? 'Seg: On' : 'Seg: Off';
   if (samPool.samMode) {
     const imgIdx = state.rankOrder[state.paintIdx];
     updateSamStatus(samPool.embeddingCache.has(imgIdx)
       ? 'Click a subject to segment'
       : 'Not encoded yet  -  wait for the dot to turn green');
   } else {
-    updateSamStatus('SAM ready');
+    updateSamStatus('YOLO ready');
   }
 });
 

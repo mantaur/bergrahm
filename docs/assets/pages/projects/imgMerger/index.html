@@ -55,11 +55,11 @@
       <div class="im-step-bd">
         <div class="im-step-inner" id="section-paint">
 
-          <!-- SAM toggle (mobile only) -->
+          <!-- Seg toggle (mobile only) -->
           <div id="cfg-use-sam-row" class="im-sam-toggle-row im-hidden">
             <input type="checkbox" id="cfg-use-sam">
-            <label for="cfg-use-sam">Enable SAM auto-segmentation
-              <span class="im-hint-small">(~100 MB · needs internet)</span>
+            <label for="cfg-use-sam">Enable auto-segmentation
+              <span class="im-hint-small">(~11 MB · needs internet)</span>
             </label>
           </div>
 
@@ -127,7 +127,7 @@
                   </div>
                 </div>
                 <div class="im-field">
-                  <label for="cfg-sam-workers">SAM encoders <span class="im-hint-small">· reduce if OOM</span></label>
+                  <label for="cfg-sam-workers">YOLO encoders <span class="im-hint-small">· reduce if OOM</span></label>
                   <input type="number" id="cfg-sam-workers" value="4" min="1" max="8" step="1" inputmode="numeric">
                 </div>
                 <div class="im-field">
@@ -155,9 +155,9 @@
       <div class="im-step-bd">
         <div class="im-step-inner im-painter-inner">
 
-          <!-- SAM bar -->
+          <!-- Seg bar -->
           <div id="sam-controls" class="im-hidden im-sam-bar">
-            <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>SAM: Off</button>
+            <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>Seg: Off</button>
             <span id="sam-worker-count" class="im-sam-worker-count"></span>
             <span id="sam-status" class="im-sam-status"></span>
           </div>
