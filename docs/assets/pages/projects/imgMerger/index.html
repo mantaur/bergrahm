@@ -211,16 +211,11 @@
       <div class="im-step-bd">
         <div class="im-step-inner">
 
-          <div id="sim-wrap" class="im-hidden">
-            <div id="sim-canvas-outer">
-              <canvas id="sim-canvas"></canvas>
-            </div>
-          </div>
-
           <div class="im-sim-controls">
             <span id="sim-status" class="im-sim-status">-</span>
             <div class="im-sim-btns">
               <button class="im-btn im-btn-sm" id="btn-sim-reset">Reset</button>
+              <button class="im-btn im-btn-sm im-hidden" id="btn-sim-open">View layout</button>
               <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
               <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
               <button class="im-btn im-hidden" id="btn-download">Download PNG</button>
@@ -232,6 +227,14 @@
     </section>
 
   </div><!-- /.im-workflow -->
+
+<!-- Fullscreen layout overlay — outside accordion so position:fixed is unclipped -->
+<div id="sim-wrap" class="im-hidden">
+  <div id="sim-canvas-outer">
+    <canvas id="sim-canvas"></canvas>
+  </div>
+  <button id="btn-sim-close" class="im-sim-close-btn" title="Close layout view">&#x2715;</button>
+</div>
 
 </div><!-- /.im-app -->
 
@@ -282,6 +285,10 @@ self.onmessage = function (e) {
 function postLog(text, cls) {
   if (gSilent) return;
   self.postMessage({ type: 'log', text, cls: cls || '' });
+}
+
+function postProgress(pct) {
+  self.postMessage({ type: 'progress', pct: Math.round(pct) });
 }
 
 function runMerge(images, rankOrder, W, H, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp) {
@@ -545,10 +552,15 @@ function computeVoronoiMap(images, placements, W, H) {
   const ownerMap = new Int16Array(W * H).fill(-1);
   const minDist  = new Float32Array(W * H).fill(Infinity);
   const mask     = new Uint8Array(W * H);
+  const N = placements.length;
 
-  for (const p of placements) {
+  for (let k = 0; k < N; k++) {
+    const p = placements[k];
     const entry = images[p.imgIdx];
-    if (!entry.polygons || entry.polygons.length === 0) continue;
+    if (!entry.polygons || entry.polygons.length === 0) {
+      postProgress(Math.round((k + 1) / Math.max(N, 1) * 100));
+      continue;
+    }
 
     // Transform polygons from source space to output space
     const outPolys = entry.polygons.map(poly =>
@@ -565,6 +577,7 @@ function computeVoronoiMap(images, placements, W, H) {
         ownerMap[i] = p.imgIdx;
       }
     }
+    postProgress(Math.round((k + 1) / Math.max(N, 1) * 100));
   }
 
   return ownerMap;
@@ -586,7 +599,10 @@ function computeDitherMap(images, placements, W, H, seed, exp) {
   for (let k = 0; k < N; k++) {
     const p     = placements[k];
     const entry = images[p.imgIdx];
-    if (!entry.polygons || entry.polygons.length === 0) continue;
+    if (!entry.polygons || entry.polygons.length === 0) {
+      postProgress(Math.round((k + 1) / N * 40));
+      continue;
+    }
 
     const outPolys = entry.polygons.map(poly =>
       poly.map(v => transformPolyVert(v, p))
@@ -606,6 +622,7 @@ function computeDitherMap(images, placements, W, H, seed, exp) {
       x1: Math.min(W - 1, Math.ceil(Math.max(...cxs))),
       y1: Math.min(H - 1, Math.ceil(Math.max(...cys))),
     };
+    postProgress(Math.round((k + 1) / N * 40));
   }
 
   // Indices of placements that have polygon data
@@ -613,9 +630,11 @@ function computeDitherMap(images, placements, W, H, seed, exp) {
   for (let k = 0; k < N; k++) { if (distMaps[k] !== null) active.push(k); }
   if (active.length === 0) return ownerMap;
 
-  const covering = new Int32Array(active.length); // reused per pixel
+  const covering   = new Int32Array(active.length); // reused per pixel
+  const reportStep = Math.max(1, Math.round(H / 20)); // ~20 progress updates
 
   for (let y = 0; y < H; y++) {
+    if (y % reportStep === 0) postProgress(40 + Math.round(y / H * 60));
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
 

@@ -73,15 +73,17 @@ const painterScaleInp     = document.getElementById('painter-scale-inp');
 const painterZoomVal      = document.getElementById('painter-zoom-val');
 const scalePreviewCanvas  = document.getElementById('painter-scale-preview');
 
-const simWrap     = document.getElementById('sim-wrap');
-const simCanvas   = document.getElementById('sim-canvas');
-const simCtx      = simCanvas.getContext('2d');
-const btnSimReset = document.getElementById('btn-sim-reset');
-const btnMerge    = document.getElementById('btn-merge');
-const btnCancel   = document.getElementById('btn-cancel');
-const btnDownload = document.getElementById('btn-download');
-const simStatusEl = document.getElementById('sim-status');
-const cfgRotation = document.getElementById('cfg-rotation');
+const simWrap      = document.getElementById('sim-wrap');
+const simCanvas    = document.getElementById('sim-canvas');
+const simCtx       = simCanvas.getContext('2d');
+const btnSimReset  = document.getElementById('btn-sim-reset');
+const btnSimOpen   = document.getElementById('btn-sim-open');
+const btnSimClose  = document.getElementById('btn-sim-close');
+const btnMerge     = document.getElementById('btn-merge');
+const btnCancel    = document.getElementById('btn-cancel');
+const btnDownload  = document.getElementById('btn-download');
+const simStatusEl  = document.getElementById('sim-status');
+const cfgRotation  = document.getElementById('cfg-rotation');
 
 const paintCtx = paintCanvas.getContext('2d');
 const maskCtx  = maskCanvas.getContext('2d');
@@ -406,11 +408,9 @@ function createRankItem(imgIdx, rank) {
   if (state.useSam) {
     const encoded  = samPool.embeddingCache.has(imgIdx);
     const encoding = !encoded && samPool.encoding.includes(imgIdx);
-    const dot = document.createElement('span');
-    dot.className = 'im-sam-dot' + (encoded ? ' im-sam-encoded' : encoding ? ' im-sam-encoding' : '');
-    dot.title = encoded ? 'Encoded' : encoding ? 'Encoding\u2026' : 'Pending encoding';
-    samPool.dots.set(imgIdx, dot);
-    li.appendChild(dot);
+    thumb.classList.add(encoded ? 'im-sam-encoded' : encoding ? 'im-sam-encoding' : 'im-sam-pending');
+    thumb.title = encoded ? 'Encoded' : encoding ? 'Encoding...' : 'Pending encoding';
+    samPool.dots.set(imgIdx, thumb);
   }
 
   const nameLbl = document.createElement('span');
@@ -922,7 +922,7 @@ function onEncoded(wIdx, { imgIdx, segments, origW, origH }) {
 
   // Flip the rank-list dot to green.
   const dot = samPool.dots.get(imgIdx);
-  if (dot) { dot.classList.remove('im-sam-encoding'); dot.classList.add('im-sam-encoded'); dot.title = 'Encoded'; }
+  if (dot) { dot.classList.remove('im-sam-encoding', 'im-sam-pending'); dot.classList.add('im-sam-encoded'); dot.title = 'Encoded'; }
 
   if (imgIdx === state.rankOrder[state.paintIdx]) {
     updateSamStatus(samPool.samMode ? 'Click a subject to segment' : 'YOLO ready');
@@ -977,7 +977,7 @@ function onEncodeError(wIdx, message) {
 
   if (imgIdx !== null) {
     const dot = samPool.dots.get(imgIdx);
-    if (dot) { dot.classList.remove('im-sam-encoding'); dot.title = 'Pending encoding'; }
+    if (dot) { dot.classList.remove('im-sam-encoding'); dot.classList.add('im-sam-pending'); dot.title = 'Pending encoding'; }
   }
 
   if (imgIdx !== null && !samPool.embeddingCache.has(imgIdx)) {
@@ -989,7 +989,7 @@ function onEncodeError(wIdx, message) {
       updateSamStatus('YOLO worker failed  -  retrying with fewer workers...', true);
     } else {
       const failDot = samPool.dots.get(imgIdx);
-      if (failDot) { failDot.classList.remove('im-sam-encoding'); failDot.classList.add('im-sam-failed'); failDot.title = 'Encoding failed'; }
+      if (failDot) { failDot.classList.remove('im-sam-encoding', 'im-sam-pending'); failDot.classList.add('im-sam-failed'); failDot.title = 'Encoding failed'; }
       updateSamStatus('Could not encode [' + (state.images[imgIdx]?.name ?? imgIdx) + ']  -  skipping.', true);
     }
   } else {
@@ -1004,7 +1004,7 @@ function sendEncode(wIdx, imgIdx) {
   samPool.busy[wIdx]     = true;
   samPool.encoding[wIdx] = imgIdx;
   const dot = samPool.dots.get(imgIdx);
-  if (dot) { dot.classList.add('im-sam-encoding'); dot.title = 'Encoding\u2026'; }
+  if (dot) { dot.classList.remove('im-sam-pending'); dot.classList.add('im-sam-encoding'); dot.title = 'Encoding...'; }
   const entry = state.images[imgIdx];
   const tmp   = document.createElement('canvas');
   tmp.width   = entry.w;
@@ -1055,9 +1055,37 @@ function findBestSegmentAt(segments, x, y, origW, origH) {
   return best;
 }
 
+// Ray-casting point-in-polygon test.
+function pointInPoly(poly, x, y) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
 // Handle a user click in seg mode -- instant lookup, no worker call needed.
+// If the click lands inside an existing polygon, remove it instead.
 function requestDecode(x, y) {
   const imgIdx = state.rankOrder[state.paintIdx];
+  const entry  = state.images[imgIdx];
+
+  // Deselect: remove the first polygon that contains the click point.
+  for (let i = 0; i < entry.polygons.length; i++) {
+    if (pointInPoly(entry.polygons[i], x, y)) {
+      pushPolyUndo(imgIdx);
+      entry.polygons.splice(i, 1);
+      redrawPolyOverlay(imgIdx);
+      updateUndoBtn(imgIdx);
+      simRefreshGroup(imgIdx);
+      updateSamStatus('Segment removed. Click to add or click an object to segment.');
+      return;
+    }
+  }
+
   if (!samPool.embeddingCache.has(imgIdx)) {
     updateSamStatus('Not encoded yet  -  wait for the dot to turn green', true);
     return;
@@ -1220,6 +1248,8 @@ function startMerge() {
     if (msg.type === 'done') {
       cleanupWorker();
       finishMerge(msg.placements, msg.ownershipMap);
+    } else if (msg.type === 'progress') {
+      updateSimStatus('Merging... ' + msg.pct + '%');
     } else if (msg.type === 'error') {
       cleanupWorker();
       updateSimStatus('Worker error: ' + msg.text);
@@ -1510,22 +1540,27 @@ function finishCornerResize() {
 }
 
 function initSim() {
+  const wasOpen = !simWrap.classList.contains('im-hidden');
   teardownSim();
   const { Engine, Bodies, Body, World, Events, Mouse, MouseConstraint } = Matter;
 
   const W = state.outW, H = state.outH;
 
-  const maxSide  = Math.max(window.screen.width, window.screen.height) * (window.devicePixelRatio || 1);
-  simDispScale   = Math.min(1, maxSide / Math.max(W, H));
-  const dispW    = Math.max(1, Math.round(W * simDispScale));
-  const dispH    = Math.max(1, Math.round(H * simDispScale));
-  simCanvas.width  = dispW;
-  simCanvas.height = dispH;
+  // Canvas = full viewport; physics world is letterboxed inside it
+  const dpr    = Math.min(window.devicePixelRatio || 1, 2);
+  const canvasW = Math.round(window.innerWidth  * dpr);
+  const canvasH = Math.round(window.innerHeight * dpr);
+  simCanvas.width  = canvasW;
+  simCanvas.height = canvasH;
   simPhysW = W; simPhysH = H;
   simMergedImageData = null;
   mergeCanvas = null;
+
+  simDispScale  = Math.min(canvasW / W, canvasH / H);
+  const padX    = (canvasW - W * simDispScale) / 2;
+  const padY    = (canvasH - H * simDispScale) / 2;
   simViewScale  = 1;
-  simViewOffset = { x: 0, y: 0 };
+  simViewOffset = { x: -padX / simDispScale, y: -padY / simDispScale };
 
   const engine = Engine.create({ gravity: { x: 0, y: 0 } });
   engine.enableSleeping = false;
@@ -1577,7 +1612,13 @@ function initSim() {
     updateSimStatus('Settling\u2026');
   });
 
-  simWrap.classList.remove('im-hidden');
+  if (wasOpen) {
+    simWrap.classList.remove('im-hidden');
+    btnSimOpen.classList.add('im-hidden');
+    document.body.style.overflow = 'hidden';
+  } else {
+    btnSimOpen.classList.remove('im-hidden');
+  }
   updateSimStatus('Settling\u2026');
   simRafId = requestAnimationFrame(simTick);
 }
@@ -1591,6 +1632,8 @@ function teardownSim() {
   _lastSimTs = null;
   btnMerge.classList.add('im-hidden');
   simWrap.classList.add('im-hidden');
+  btnSimOpen.classList.add('im-hidden');
+  document.body.style.overflow = '';
 }
 
 function simGridPos(rank, n, W, H) {
@@ -1637,7 +1680,9 @@ function simTick(ts) {
     if (simAlpha < 0.08 && ke < 0.04 * n) {
       simSettled = true;
       btnMerge.classList.remove('im-hidden');
-      updateSimStatus('Settled done  -  drag to adjust, then click Merge');
+      updateSimStatus('Settled  -  drag to adjust, then click Merge');
+    } else {
+      updateSimStatus('Settling... ' + Math.min(99, Math.round((1 - simAlpha) / 0.92 * 100)) + '%');
     }
   }
 }
@@ -1827,6 +1872,18 @@ function extractPlacements() {
 
 btnSimReset.addEventListener('click', () => { if (simEngine) initSim(); });
 
+btnSimClose.addEventListener('click', () => {
+  simWrap.classList.add('im-hidden');
+  document.body.style.overflow = '';
+  btnSimOpen.classList.remove('im-hidden');
+});
+
+btnSimOpen.addEventListener('click', () => {
+  simWrap.classList.remove('im-hidden');
+  document.body.style.overflow = 'hidden';
+  btnSimOpen.classList.add('im-hidden');
+});
+
 let _resizeSimTimer = null;
 function scheduleResizeSim() {
   if (!simEngine) return;
@@ -1926,7 +1983,7 @@ function simRefreshGroup(imgIdx) {
     btnMerge.classList.add('im-hidden');
     updateSimStatus('Settling\u2026');
   }
-  simWrap.classList.remove('im-hidden');
+  if (simWrap.classList.contains('im-hidden')) btnSimOpen.classList.remove('im-hidden');
   unlockStep('step-sim-outer');
   updateStepMeta('step-sim-outer', 'Settle then merge', false);
 }
