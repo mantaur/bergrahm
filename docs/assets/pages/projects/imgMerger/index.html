@@ -17,7 +17,7 @@
   <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
 
   <link rel="stylesheet" href="../../../main.css">
-  <link rel="stylesheet" href="imageMerge.css?v=6">
+  <link rel="stylesheet" href="imageMerge.css?v=7">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/poly-decomp/0.3.0/poly-decomp.min.js"></script>
@@ -39,6 +39,15 @@
     <span class="im-apptitle">Image Merger</span>
   </header>
 
+  <!-- Panel toggle FAB -->
+  <button id="btn-panel-toggle" aria-label="Toggle settings">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <polyline points="15 18 9 12 15 6"/>
+    </svg>
+  </button>
+
+  <!-- Settings panel -->
+  <div id="panel-wrap">
   <!-- ── Workflow accordion ── -->
   <div class="im-workflow">
 
@@ -69,6 +78,20 @@
             <span class="im-uz-label">Tap to add images</span>
             <span class="im-uz-hint">JPG · PNG · WebP · multiple OK</span>
             <input type="file" id="cfg-images" accept="image/*" multiple>
+          </div>
+
+          <!-- Session export / import -->
+          <div class="im-session-row">
+            <button class="im-btn im-btn-sm" id="btn-export-session" disabled>Export session</button>
+            <label class="im-btn im-btn-sm" for="inp-import-session">Import session</label>
+            <input type="file" id="inp-import-session" accept=".zip" style="display:none">
+          </div>
+          <div id="session-status" class="im-session-status im-hidden"></div>
+          <div id="session-confirm" class="im-session-confirm im-hidden">
+            <span>Session active.</span>
+            <button class="im-btn im-btn-sm" id="btn-sess-replace">Replace</button>
+            <button class="im-btn im-btn-sm" id="btn-sess-add">Add images</button>
+            <button class="im-btn im-btn-sm" id="btn-sess-cancel">Cancel</button>
           </div>
 
           <!-- Filmstrip + config — hidden until images loaded -->
@@ -198,42 +221,24 @@
       </div><!-- /.im-step-bd -->
     </section>
 
-    <!-- ── 03 Layout & Merge ── -->
-    <section class="im-step im-step-locked" id="step-sim-outer">
-      <button class="im-step-hd" type="button" data-num="03">
-        <span class="im-snum">03</span>
-        <div class="im-step-titles">
-          <span class="im-slbl">Layout &amp; Merge</span>
-          <span class="im-smeta" id="smeta-sim">Paint masks first</span>
-        </div>
-        <span class="im-sicon">▾</span>
-      </button>
-      <div class="im-step-bd">
-        <div class="im-step-inner">
-
-          <div class="im-sim-controls">
-            <span id="sim-status" class="im-sim-status">-</span>
-            <div class="im-sim-btns">
-              <button class="im-btn im-btn-sm" id="btn-sim-reset">Reset</button>
-              <button class="im-btn im-btn-sm im-hidden" id="btn-sim-open">View layout</button>
-              <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
-              <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
-              <button class="im-btn im-hidden" id="btn-download">Download PNG</button>
-            </div>
-          </div>
-
-        </div><!-- /.im-step-inner -->
-      </div><!-- /.im-step-bd -->
-    </section>
-
   </div><!-- /.im-workflow -->
+  </div><!-- /#panel-wrap -->
 
-<!-- Fullscreen layout overlay — outside accordion so position:fixed is unclipped -->
-<div id="sim-wrap" class="im-hidden">
+<!-- Sim canvas — always-visible background -->
+<div id="sim-wrap">
   <div id="sim-canvas-outer">
     <canvas id="sim-canvas"></canvas>
   </div>
-  <button id="btn-sim-close" class="im-sim-close-btn" title="Close layout view">&#x2715;</button>
+  <div id="sim-hud">
+    <span id="sim-status" class="im-sim-status">-</span>
+    <div class="im-sim-btns">
+      <button class="im-btn im-btn-sm" id="btn-sim-reset">Reset</button>
+      <button class="im-btn im-btn-sm" id="btn-sim-freeze">Freeze</button>
+      <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
+      <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
+      <button class="im-btn im-hidden" id="btn-download" title="Download PNG"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+    </div>
+  </div>
 </div>
 
 </div><!-- /.im-app -->
@@ -758,7 +763,8 @@ function chamferDist(mask, W, H) {
 }
   </script>
 
-  <script src="imageMerge.js?v=13"></script>
+  <script src="sessionIO.js?v=1"></script>
+  <script src="imageMerge.js?v=15"></script>
 </body>
 
 </html>

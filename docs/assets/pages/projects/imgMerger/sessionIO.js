@@ -1,0 +1,224 @@
+/* sessionIO.js — session export / import via ZIP + web worker */
+
+const JSZIP_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+
+// ── Inline worker ─────────────────────────────────────────────────────────────
+
+function _sessionWorkerBody() {
+  const CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+
+  function maskToBase64(mask) {
+    let str = '';
+    for (let i = 0; i < mask.length; i += 8192)
+      str += String.fromCharCode(...mask.subarray(i, i + 8192));
+    return btoa(str);
+  }
+
+  self.onmessage = async ({ data: msg }) => {
+    try {
+      if (!self.JSZip) importScripts(CDN);
+      if (msg.type === 'export') await doExport(msg);
+      if (msg.type === 'import') await doImport(msg);
+    } catch (err) {
+      self.postMessage({ type: 'error', message: err.message });
+    }
+  };
+
+  async function doExport({ session, images, encodings }) {
+    const zip = new JSZip();
+    const n = images.length;
+
+    // Encode each image to JPEG via OffscreenCanvas
+    for (let i = 0; i < n; i++) {
+      const { pixels, w, h } = images[i];
+      const oc = new OffscreenCanvas(w, h);
+      oc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), w, h), 0, 0);
+      const blob = await oc.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+      zip.file('images/' + i + '.jpg', await blob.arrayBuffer());
+      self.postMessage({ type: 'progress', pct: Math.round((i + 1) / n * 65) });
+    }
+
+    // Encode encodings
+    for (let i = 0; i < encodings.length; i++) {
+      if (!encodings[i]) continue;
+      const enc = encodings[i];
+      const out = {
+        origW: enc.origW, origH: enc.origH,
+        segments: enc.segments.map(s => ({
+          classId: s.classId, className: s.className, score: s.score, bbox: s.bbox,
+          maskW: s.maskW, maskH: s.maskH, mask: maskToBase64(s.mask),
+        })),
+      };
+      zip.file('encodings/' + i + '.json', JSON.stringify(out));
+      session.images[i].hasEncoding = true;
+    }
+    self.postMessage({ type: 'progress', pct: 72 });
+
+    zip.file('session.json', JSON.stringify(session));
+
+    const buf = await zip.generateAsync(
+      { type: 'arraybuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } },
+      meta => self.postMessage({ type: 'progress', pct: 72 + Math.round(meta.percent * 0.28) })
+    );
+    self.postMessage({ type: 'done', buffer: buf }, [buf]);
+  }
+
+  async function doImport({ buffer }) {
+    const zip = await JSZip.loadAsync(buffer);
+    const session = JSON.parse(await zip.file('session.json').async('string'));
+    const n = session.images.length;
+
+    const imageBuffers = [];
+    for (let i = 0; i < n; i++) {
+      const f = zip.file('images/' + i + '.jpg');
+      imageBuffers.push(f ? await f.async('arraybuffer') : null);
+      self.postMessage({ type: 'progress', pct: Math.round((i + 1) / n * 75) });
+    }
+
+    const encodings = [];
+    for (let i = 0; i < n; i++) {
+      const f = zip.file('encodings/' + i + '.json');
+      encodings.push(f ? JSON.parse(await f.async('string')) : null);
+    }
+    self.postMessage({ type: 'progress', pct: 95 });
+
+    const transfers = imageBuffers.filter(Boolean);
+    self.postMessage({ type: 'done', session, imageBuffers, encodings }, transfers);
+  }
+}
+
+let _workerBlobUrl = null;
+function _makeSessionWorker() {
+  if (!_workerBlobUrl) {
+    const src = '(' + _sessionWorkerBody.toString() + ')();';
+    _workerBlobUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  }
+  return new Worker(_workerBlobUrl);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function _base64ToMask(b64) {
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+const SessionIO = {
+
+  // exportData: { state, simGroups, samPool, cfg: { blendMode, seed, ditherExp, useScaleRange, rotationLock } }
+  // onProgress: (pct, text) => void
+  export(exportData, onProgress) {
+    const { state, simGroups, samPool, cfg } = exportData;
+
+    // Collect ImageData on main thread (canvas access not available in worker)
+    const images = state.images.map(entry => {
+      const c = document.createElement('canvas');
+      c.width = entry.w; c.height = entry.h;
+      c.getContext('2d').drawImage(entry.img, 0, 0);
+      const pixels = c.getContext('2d').getImageData(0, 0, entry.w, entry.h).data;
+      return { pixels, w: entry.w, h: entry.h };
+    });
+
+    // Build session JSON (hasEncoding filled by worker)
+    const session = {
+      version: 1,
+      outW: state.outW, outH: state.outH,
+      fillColor: state.fillColor,
+      blendMode: cfg.blendMode,
+      seed: cfg.seed, ditherExp: cfg.ditherExp,
+      useScaleRange: cfg.useScaleRange,
+      minScale: state.minScale, maxScale: state.maxScale,
+      rotationLock: cfg.rotationLock,
+      rankOrder: state.rankOrder.slice(),
+      paintIdx: state.paintIdx,
+      simViewScale: cfg.simViewScale,
+      simViewOffset: { x: cfg.simViewOffset.x, y: cfg.simViewOffset.y },
+      simFrozen: cfg.simFrozen,
+      images: state.images.map((entry, i) => {
+        const g = simGroups[i];
+        return {
+          name: entry.name,
+          w: entry.w, h: entry.h,
+          scale: entry.scale,
+          scaleFixed: entry.scaleFixed || false,
+          simHidden: entry.simHidden || false,
+          polygons: entry.polygons,
+          currentPoly: entry.currentPoly || [],
+          simPos: g ? { x: g.body.position.x, y: g.body.position.y } : null,
+          simAngle: g ? g.body.angle : 0,
+          hasEncoding: false,
+        };
+      }),
+    };
+
+    // Collect encodings (masks transferred as-is — worker encodes to base64)
+    const encodings = state.images.map((_, i) => {
+      const cached = samPool.embeddingCache.get(i);
+      if (!cached) return null;
+      return {
+        origW: cached.origW, origH: cached.origH,
+        segments: cached.segments.map(s => ({
+          classId: s.classId, className: s.className, score: s.score,
+          bbox: s.bbox, maskW: s.maskW, maskH: s.maskH, mask: s.mask,
+        })),
+      };
+    });
+
+    const transfers = images.map(im => im.pixels.buffer);
+
+    return new Promise((resolve, reject) => {
+      const worker = _makeSessionWorker();
+      worker.onmessage = ({ data: msg }) => {
+        if (msg.type === 'progress') onProgress(msg.pct, 'Exporting... ' + msg.pct + '%');
+        if (msg.type === 'done') {
+          worker.terminate();
+          const blob = new Blob([msg.buffer], { type: 'application/zip' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'merger-session.zip';
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+          resolve();
+        }
+        if (msg.type === 'error') { worker.terminate(); reject(new Error(msg.message)); }
+      };
+      worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'Worker error')); };
+      worker.postMessage({ type: 'export', session, images, encodings }, transfers);
+    });
+  },
+
+  // Returns Promise<{ session, imgs: HTMLImageElement[], encodings: Array<Object|null> }>
+  import(file, onProgress) {
+    return file.arrayBuffer().then(buffer => new Promise((resolve, reject) => {
+      const worker = _makeSessionWorker();
+      worker.onmessage = ({ data: msg }) => {
+        if (msg.type === 'progress') onProgress(msg.pct, 'Importing... ' + msg.pct + '%');
+        if (msg.type === 'done') {
+          worker.terminate();
+          const { session, imageBuffers, encodings } = msg;
+          const imgPromises = imageBuffers.map(buf => {
+            if (!buf) return Promise.resolve(null);
+            return new Promise(res => {
+              const url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
+              const img = new Image();
+              img.onload = () => { URL.revokeObjectURL(url); res(img); };
+              img.onerror = () => { URL.revokeObjectURL(url); res(null); };
+              img.src = url;
+            });
+          });
+          Promise.all(imgPromises).then(imgs => {
+            onProgress(100, 'Done');
+            resolve({ session, imgs, encodings });
+          });
+        }
+        if (msg.type === 'error') { worker.terminate(); reject(new Error(msg.message)); }
+      };
+      worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'Worker error')); };
+      worker.postMessage({ type: 'import', buffer }, [buffer]);
+    }));
+  },
+};
