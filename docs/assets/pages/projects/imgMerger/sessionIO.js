@@ -112,9 +112,19 @@ const SessionIO = {
   // exportData: { state, simGroups, samPool, cfg: { blendMode, seed, ditherExp, useScaleRange, rotationLock } }
   // onProgress: (pct, text) => void
   export(exportData, onProgress) {
+    return this.exportBlob(exportData, onProgress).then(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'merger-session.zip';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    });
+  },
+
+  // Same as export() but resolves with Blob instead of triggering a download.
+  exportBlob(exportData, onProgress) {
     const { state, simGroups, samPool, cfg } = exportData;
 
-    // Collect ImageData on main thread (canvas access not available in worker)
     const images = state.images.map(entry => {
       const c = document.createElement('canvas');
       c.width = entry.w; c.height = entry.h;
@@ -123,7 +133,6 @@ const SessionIO = {
       return { pixels, w: entry.w, h: entry.h };
     });
 
-    // Build session JSON (hasEncoding filled by worker)
     const session = {
       version: 1,
       outW: state.outW, outH: state.outH,
@@ -137,17 +146,16 @@ const SessionIO = {
       paintIdx: state.paintIdx,
       simViewScale: cfg.simViewScale,
       simViewOffset: { x: cfg.simViewOffset.x, y: cfg.simViewOffset.y },
+      simOutX: cfg.simOutX,
+      simOutY: cfg.simOutY,
       simFrozen: cfg.simFrozen,
       images: state.images.map((entry, i) => {
         const g = simGroups[i];
         return {
-          name: entry.name,
-          w: entry.w, h: entry.h,
-          scale: entry.scale,
-          scaleFixed: entry.scaleFixed || false,
+          name: entry.name, w: entry.w, h: entry.h,
+          scale: entry.scale, scaleFixed: entry.scaleFixed || false,
           simHidden: entry.simHidden || false,
-          polygons: entry.polygons,
-          currentPoly: entry.currentPoly || [],
+          polygons: entry.polygons, currentPoly: entry.currentPoly || [],
           simPos: g ? { x: g.body.position.x, y: g.body.position.y } : null,
           simAngle: g ? g.body.angle : 0,
           hasEncoding: false,
@@ -155,7 +163,6 @@ const SessionIO = {
       }),
     };
 
-    // Collect encodings (masks transferred as-is — worker encodes to base64)
     const encodings = state.images.map((_, i) => {
       const cached = samPool.embeddingCache.get(i);
       if (!cached) return null;
@@ -176,13 +183,7 @@ const SessionIO = {
         if (msg.type === 'progress') onProgress(msg.pct, 'Exporting... ' + msg.pct + '%');
         if (msg.type === 'done') {
           worker.terminate();
-          const blob = new Blob([msg.buffer], { type: 'application/zip' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = 'merger-session.zip';
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-          resolve();
+          resolve(new Blob([msg.buffer], { type: 'application/zip' }));
         }
         if (msg.type === 'error') { worker.terminate(); reject(new Error(msg.message)); }
       };

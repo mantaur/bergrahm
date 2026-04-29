@@ -125,24 +125,40 @@ cfgBlendMode.addEventListener('change', () => {
   const isDither = cfgBlendMode.value === 'dither';
   cfgDitherFields.classList.toggle('im-hidden', !isDither);
   cfgDitherExpField.classList.toggle('im-hidden', !isDither);
+  if (!window._collabApplyingRemote) _broadcastSettings();
 });
 
 cfgWidth.addEventListener('input', () => {
   state.outW = parseInt(cfgWidth.value) || 1080;
   if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
   scheduleResizeSim();
+  if (!window._collabApplyingRemote) _broadcastSettings();
 });
 
 cfgHeight.addEventListener('input', () => {
   state.outH = parseInt(cfgHeight.value) || 1920;
   if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
   scheduleResizeSim();
+  if (!window._collabApplyingRemote) _broadcastSettings();
 });
 
 cfgFill.addEventListener('input', () => {
   state.fillColor = cfgFill.value;
   if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
+  if (!window._collabApplyingRemote) _broadcastSettings();
 });
+
+let _broadcastSettingsTimer = null;
+function _broadcastSettings() {
+  if (_broadcastSettingsTimer) clearTimeout(_broadcastSettingsTimer);
+  _broadcastSettingsTimer = setTimeout(() => {
+    _broadcastSettingsTimer = null;
+    window.dispatchEvent(new CustomEvent('collab:settings-changed', {
+      detail: { outW: state.outW, outH: state.outH, fillColor: state.fillColor, blendMode: cfgBlendMode.value,
+                simOutX, simOutY },
+    }));
+  }, 200);
+}
 
 cfgMinScale.addEventListener('input', () => {
   let v = parseFloat(cfgMinScale.value);
@@ -258,6 +274,20 @@ function updateScalePreview(imgIdx) {
   ctx.strokeRect(1.5, 1.5, Math.round(imgW * fit), Math.round(imgH * fit));
 }
 
+function buildThumb(img, w, h) {
+  const ts = Math.min(1, 256 / Math.max(w, h));
+  const tW = Math.max(1, Math.round(w * ts));
+  const tH = Math.max(1, Math.round(h * ts));
+  const tc = document.createElement('canvas');
+  tc.width = tW; tc.height = tH;
+  tc.getContext('2d').drawImage(img, 0, 0, tW, tH);
+  return tc.toDataURL('image/jpeg', 0.82);
+}
+
+function imageCountLabel(n) {
+  return n + ' image' + (n === 1 ? '' : 's');
+}
+
 cfgImages.addEventListener('change', () => {
   const files = Array.from(cfgImages.files);
   if (!files.length) return;
@@ -275,14 +305,7 @@ cfgImages.addEventListener('change', () => {
       const idx = baseIdx + i;
       const w = img.naturalWidth, h = img.naturalHeight;
 
-      const THUMB_MAX = 256;
-      const ts  = Math.min(1, THUMB_MAX / Math.max(w, h));
-      const tW  = Math.max(1, Math.round(w * ts));
-      const tH  = Math.max(1, Math.round(h * ts));
-      const tc  = document.createElement('canvas');
-      tc.width  = tW; tc.height = tH;
-      tc.getContext('2d').drawImage(img, 0, 0, tW, tH);
-      const thumbUrl = tc.toDataURL('image/jpeg', 0.82);
+      const thumbUrl = buildThumb(img, w, h);
       URL.revokeObjectURL(url);
 
       state.images[idx] = {
@@ -301,11 +324,14 @@ cfgImages.addEventListener('change', () => {
         }
         paintArea.classList.remove('im-hidden');
         buildRankList();
+        window.dispatchEvent(new CustomEvent('collab:images-added', {
+          detail: { indices: Array.from({ length: files.length }, (_, i) => baseIdx + i) },
+        }));
         loadPainterImage(firstLoad ? 0 : Math.min(state.paintIdx, state.images.length - 1));
         unlockStep('step-paint');
         panelSetOpen(true);
         const n = state.images.length;
-        updateStepMeta('step-images', n + ' image' + (n === 1 ? '' : 's'), true);
+        updateStepMeta('step-images', imageCountLabel(n), true);
         // Start encoding if SAM is already checked and pool is live.
         if (state.useSam) {
           state.samWorkerCount = Math.max(1, parseInt(cfgSamWorkers.value) || 4);
@@ -406,7 +432,7 @@ function removeImage(imgIdx) {
   state.paintIdx = Math.min(state.paintIdx, state.rankOrder.length - 1);
   buildRankList();
   const n = state.images.length;
-  updateStepMeta('step-images', n + ' image' + (n === 1 ? '' : 's'), true);
+  updateStepMeta('step-images', imageCountLabel(n), true);
   loadPainterImage(state.paintIdx);
 }
 
@@ -534,6 +560,7 @@ function onDrop(e) {
   const currentImgIdx = state.rankOrder[state.paintIdx];
   buildRankList();
   state.paintIdx = state.rankOrder.indexOf(currentImgIdx);
+  window.dispatchEvent(new CustomEvent('collab:rank-order-changed', { detail: { order: state.rankOrder.slice() } }));
 }
 
 function onDragEnd(e) {
@@ -942,6 +969,7 @@ function onEncoded(wIdx, { imgIdx, segments, origW, origH }) {
   }
 
   samPool.embeddingCache.set(imgIdx, { segments, origW, origH });
+  window.dispatchEvent(new CustomEvent('collab:encoding-ready', { detail: { imgIdx } }));
 
   // Flip the rank-list dot to green.
   const dot = samPool.dots.get(imgIdx);
@@ -1323,13 +1351,15 @@ let simSettled         = false;
 let simFrozen          = false;
 let _lastSimTs         = null;
 let simMergedImageData = null; // set when merge complete; cleared when sim re-activates
+let _simViewDirty      = true;
 let simLastPlacements  = null; // placements from last finishMerge — used for mask overlay
-let simCornerDrag      = null; // { dir, id, startPx, startW, startH, fixedCanvas, startViewOffset }
-let simDragBodyOffset  = { x: 0, y: 0 }; // visual body offset while corner drag pans viewport
+let simCornerDrag      = null; // { dir, id, startPx, startW, startH, startOutX, startOutY }
 let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gesture
-let simDispScale       = 1;    // display px per physics px (< 1 when output > screen)
-let simPhysW           = 0;    // physics world width at last initSim
-let simPhysH           = 0;    // physics world height at last initSim
+let simDispScale       = 1;    // display px per physics px (fixed; based on SIM_WORLD)
+const SIM_WORLD        = 10000; // fixed physics world size, independent of output canvas
+let simOutX            = 0;    // output canvas top-left x in world space
+let simOutY            = 0;    // output canvas top-left y in world space
+let _simOutExplicit    = false; // set when simOutX/Y are set by remote; suppresses resizeSim re-center
 let mergeCanvas        = null; // offscreen full-res canvas -- used for download
 let simViewScale       = 1;          // viewport zoom (1 = no zoom)
 let simViewOffset      = { x: 0, y: 0 }; // viewport pan offset in physics coords
@@ -1428,14 +1458,6 @@ function buildSimGroup(imgIdx) {
   };
 }
 
-function getFixedCornerRel(dir) {
-  // Relative [0,1] position of the OPPOSITE (anchored) corner
-  return {
-    rx: (dir === 'ne' || dir === 'se') ? 0 : 1,
-    ry: (dir === 'sw' || dir === 'se') ? 0 : 1,
-  };
-}
-
 function canvasToPhysics(clientX, clientY) {
   const rect = simCanvas.getBoundingClientRect();
   const px = (clientX - rect.left) / rect.width  * simCanvas.width;
@@ -1449,8 +1471,10 @@ function canvasToPhysics(clientX, clientY) {
 function updateMouseViewport() {
   if (!simMouse) return;
   const { Mouse } = Matter;
-  Mouse.setScale(simMouse,  { x: simDispScale * simViewScale, y: simDispScale * simViewScale });
+  const ts = simDispScale * simViewScale;
+  Mouse.setScale(simMouse,  { x: 1 / ts, y: 1 / ts });
   Mouse.setOffset(simMouse, { x: simViewOffset.x, y: simViewOffset.y });
+  _simViewDirty = true;
 }
 
 function clientToCanvasPx(clientX, clientY) {
@@ -1463,11 +1487,12 @@ function clientToCanvasPx(clientX, clientY) {
 
 function getCornerHandlePositions() {
   const ts = simDispScale * simViewScale;
+  const ox = simOutX, oy = simOutY, W = state.outW, H = state.outH;
   return [
-    { dir: 'nw', cx: (0        - simViewOffset.x) * ts, cy: (0        - simViewOffset.y) * ts },
-    { dir: 'ne', cx: (simPhysW - simViewOffset.x) * ts, cy: (0        - simViewOffset.y) * ts },
-    { dir: 'sw', cx: (0        - simViewOffset.x) * ts, cy: (simPhysH - simViewOffset.y) * ts },
-    { dir: 'se', cx: (simPhysW - simViewOffset.x) * ts, cy: (simPhysH - simViewOffset.y) * ts },
+    { dir: 'nw', cx: (ox     - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
+    { dir: 'ne', cx: (ox + W - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
+    { dir: 'sw', cx: (ox     - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
+    { dir: 'se', cx: (ox + W - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
   ];
 }
 
@@ -1487,13 +1512,14 @@ function drawCornerHandles() {
   if (!simEngine) return;
   const ctx = simCtx;
   const ts  = simDispScale * simViewScale;
-  const W   = simCornerDrag ? state.outW : simPhysW;
-  const H   = simCornerDrag ? state.outH : simPhysH;
+  const W   = state.outW;
+  const H   = state.outH;
+  const ox  = simOutX, oy = simOutY;
   const handles = [
-    { dir: 'nw', cx: (0 - simViewOffset.x) * ts, cy: (0 - simViewOffset.y) * ts },
-    { dir: 'ne', cx: (W - simViewOffset.x) * ts,  cy: (0 - simViewOffset.y) * ts },
-    { dir: 'sw', cx: (0 - simViewOffset.x) * ts,  cy: (H - simViewOffset.y) * ts },
-    { dir: 'se', cx: (W - simViewOffset.x) * ts,  cy: (H - simViewOffset.y) * ts },
+    { dir: 'nw', cx: (ox     - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
+    { dir: 'ne', cx: (ox + W - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
+    { dir: 'sw', cx: (ox     - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
+    { dir: 'se', cx: (ox + W - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
   ];
 
   ctx.save();
@@ -1546,21 +1572,16 @@ function updateCornerResize(canvasPx) {
   state.outH = newH;
   cfgWidth.value  = newW;
   cfgHeight.value = newH;
-  // Keep the opposite corner pinned at its original canvas position
-  const fixed = simCornerDrag.fixedCanvas;
-  const rel   = getFixedCornerRel(dir);
-  simViewOffset.x = rel.rx * newW - fixed.cx / ts;
-  simViewOffset.y = rel.ry * newH - fixed.cy / ts;
-  // Track how much the viewport panned so drawSim can visually hold bodies still
-  simDragBodyOffset.x = simViewOffset.x - simCornerDrag.startViewOffset.x;
-  simDragBodyOffset.y = simViewOffset.y - simCornerDrag.startViewOffset.y;
-  updateMouseViewport();
+  // Move the output rect's anchored corner: opposite side stays fixed in world space
+  simOutX = simCornerDrag.startOutX + (sx > 0 ? 0 : dX);
+  simOutY = simCornerDrag.startOutY + (sy > 0 ? 0 : dY);
 }
 
 function finishCornerResize() {
-  if (simEngine) resizeSim(); // reads simCornerDrag for anchor before nulling
-  simCornerDrag     = null;
-  simDragBodyOffset = { x: 0, y: 0 };
+  if (simEngine) resizeSim(); // simCornerDrag still set here; guards re-center in resizeSim
+  simCornerDrag = null;
+  _broadcastSettings();
+  window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
 }
 
 function initSim(savedPositions = null) {
@@ -1575,15 +1596,21 @@ function initSim(savedPositions = null) {
   const canvasH = Math.round(window.innerHeight * dpr);
   simCanvas.width  = canvasW;
   simCanvas.height = canvasH;
-  simPhysW = W; simPhysH = H;
   simMergedImageData = null;
   mergeCanvas = null;
 
-  simDispScale  = Math.min(canvasW / W, canvasH / H);
-  const padX    = (canvasW - W * simDispScale) / 2;
-  const padY    = (canvasH - H * simDispScale) / 2;
-  simViewScale  = 1;
-  simViewOffset = { x: -padX / simDispScale, y: -padY / simDispScale };
+  // Center output canvas in the fixed world
+  simOutX = (SIM_WORLD - state.outW) / 2;
+  simOutY = (SIM_WORLD - state.outH) / 2;
+
+  // Fixed dispScale based on world size; viewScale zooms to fit output canvas initially
+  simDispScale = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
+  const fitTotal = Math.min(canvasW / state.outW, canvasH / state.outH) * 0.82;
+  simViewScale  = fitTotal / simDispScale;
+  simViewOffset = {
+    x: simOutX + state.outW / 2 - canvasW / 2 / (simDispScale * simViewScale),
+    y: simOutY + state.outH / 2 - canvasH / 2 / (simDispScale * simViewScale),
+  };
 
   const engine = Engine.create({ gravity: { x: 0, y: 0 } });
   engine.enableSleeping = false;
@@ -1591,10 +1618,10 @@ function initSim(savedPositions = null) {
 
   const T = 60; // wall thickness
   World.add(engine.world, [
-    Bodies.rectangle(W / 2,    -T / 2,   W + T * 2, T,          { isStatic: true, friction: 0, restitution: 0.3 }),
-    Bodies.rectangle(W / 2,    H + T / 2, W + T * 2, T,          { isStatic: true, friction: 0, restitution: 0.3 }),
-    Bodies.rectangle(-T / 2,    H / 2,   T,          H + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
-    Bodies.rectangle(W + T / 2, H / 2,   T,          H + T * 2,  { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(SIM_WORLD / 2,         -T / 2,            SIM_WORLD + T * 2, T,                { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(SIM_WORLD / 2,         SIM_WORLD + T / 2, SIM_WORLD + T * 2, T,                { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(-T / 2,                SIM_WORLD / 2,     T,                 SIM_WORLD + T * 2, { isStatic: true, friction: 0, restitution: 0.3 }),
+    Bodies.rectangle(SIM_WORLD + T / 2,     SIM_WORLD / 2,     T,                 SIM_WORLD + T * 2, { isStatic: true, friction: 0, restitution: 0.3 }),
   ]);
 
   simGroups = [];
@@ -1632,10 +1659,22 @@ function initSim(savedPositions = null) {
     constraint: { stiffness: 0.3, render: { visible: false } },
   });
   World.add(engine.world, mc);
-  Events.on(mc, 'enddrag', () => {
+  Events.on(mc, 'startdrag', (event) => {
+    if (!event.body) return;
+    const g = simGroups.find(sg => sg && sg.body && (sg.body === event.body || sg.body === event.body.parent));
+    if (g) dispatchBodyLift(g);
+  });
+
+  Events.on(mc, 'enddrag', (event) => {
     simMergedImageData = null;
     simLastPlacements  = null;
     btnDownload.classList.add('im-hidden');
+
+    const g = event.body
+      ? simGroups.find(sg => sg && sg.body && (sg.body === event.body || sg.body === event.body.parent))
+      : null;
+    if (g) dispatchBodyMoved(g);
+
     if (simFrozen) {
       simSettled = true;
       btnMerge.classList.remove('im-hidden');
@@ -1650,6 +1689,49 @@ function initSim(savedPositions = null) {
 
   updateSimStatus('Settling\u2026');
   simRafId = requestAnimationFrame(simTick);
+}
+
+function placeBody(body, x, y, angle) {
+  const { Body } = Matter;
+  Body.setPosition(body, { x, y });
+  Body.setAngle(body, angle);
+  Body.setVelocity(body, { x: 0, y: 0 });
+  Body.setAngularVelocity(body, 0);
+  _simViewDirty = true;
+}
+
+function dispatchBodyLift(g) {
+  window.dispatchEvent(new CustomEvent('collab:body-lift', {
+    detail: { imgIdx: g.imgIdx, prevX: g.body.position.x, prevY: g.body.position.y, prevAngle: g.body.angle },
+  }));
+}
+
+function dispatchBodyMoved(g) {
+  window.dispatchEvent(new CustomEvent('collab:body-moved', {
+    detail: { imgIdx: g.imgIdx, x: g.body.position.x, y: g.body.position.y,
+              angle: g.body.angle, scale: state.images[g.imgIdx].scale },
+  }));
+}
+
+function _setFrozen(frozen) {
+  simFrozen = frozen;
+  _simViewDirty = true;
+  btnSimFreeze.classList.toggle('im-sim-frozen', frozen);
+  _setSimSensors(frozen);
+  simMergedImageData = null;
+  if (frozen) {
+    simLastPlacements = null;
+    btnDownload.classList.add('im-hidden');
+    simSettled = true;
+    btnMerge.classList.remove('im-hidden');
+    updateSimStatus('Frozen');
+  } else {
+    simAlpha = 1.0;
+    simSettled = false;
+    btnMerge.classList.add('im-hidden');
+    btnDownload.classList.add('im-hidden');
+    updateSimStatus('Settling…');
+  }
 }
 
 function teardownSim() {
@@ -1668,7 +1750,7 @@ function teardownSim() {
 function simGridPos(rank, n, W, H) {
   const cols = Math.max(1, Math.ceil(Math.sqrt(n * W / H)));
   const cw = W / cols, ch = H / Math.ceil(n / cols);
-  return { x: (rank % cols + 0.5) * cw, y: (Math.floor(rank / cols) + 0.5) * ch };
+  return { x: simOutX + (rank % cols + 0.5) * cw, y: simOutY + (Math.floor(rank / cols) + 0.5) * ch };
 }
 
 function simActiveBodies() {
@@ -1697,7 +1779,7 @@ function simTick(ts) {
       simCtx.save();
       simCtx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
       simCtx.translate(-simViewOffset.x, -simViewOffset.y);
-      simCtx.drawImage(mergeCanvas, 0, 0, simPhysW, simPhysH);
+      simCtx.drawImage(mergeCanvas, simOutX, simOutY, state.outW, state.outH);
       simCtx.restore();
     }
     drawMergedMaskOverlay();
@@ -1706,7 +1788,10 @@ function simTick(ts) {
   }
 
   simAlpha = Math.max(0, simAlpha * 0.995);
-  drawSim();
+  if (!simSettled || !simFrozen || _simViewDirty) {
+    _simViewDirty = false;
+    drawSim();
+  }
   drawCornerHandles();
 
   if (!simSettled) {
@@ -1733,8 +1818,8 @@ function applySimForces() {
   if (simFrozen) return;
   const bodies = simActiveBodies();
   if (bodies.length === 0) return;
-  const cx = simPhysW / 2;
-  const cy = simPhysH / 2;
+  const cx = simOutX + state.outW / 2;
+  const cy = simOutY + state.outH / 2;
   const kc = 0.00002 * simAlpha;
   const kr = 80      * simAlpha;
 
@@ -1768,12 +1853,40 @@ function drawSim() {
   ctx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
   ctx.translate(-simViewOffset.x, -simViewOffset.y);
 
-  const W = simPhysW, H = simPhysH;
-  const ds = Math.max(1, Math.round(W / 400)); // draw-scale relative to 400px base
+  const W  = state.outW;
+  const H  = state.outH;
+  const ds = Math.max(1, Math.round(Math.max(W, H) / 400));
+
+  const totalScale = simDispScale * simViewScale;
+  const vx0 = simViewOffset.x;
+  const vy0 = simViewOffset.y;
+  const vx1 = vx0 + DW / totalScale;
+  const vy1 = vy0 + DH / totalScale;
+  const visW     = vx1 - vx0;
+  const rawStep  = visW / 8;
+  const mag      = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const norm     = rawStep / mag;
+  const gridStep = mag * (norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10);
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.lineWidth   = ds * 0.5;
+  ctx.beginPath();
+  const gx0 = Math.floor(vx0 / gridStep) * gridStep;
+  const gy0 = Math.floor(vy0 / gridStep) * gridStep;
+  for (let x = gx0; x <= vx1; x += gridStep) { ctx.moveTo(x, vy0); ctx.lineTo(x, vy1); }
+  for (let y = gy0; y <= vy1; y += gridStep) { ctx.moveTo(vx0, y); ctx.lineTo(vx1, y); }
+  ctx.stroke();
+  const gridLabelSize = Math.max(8, Math.round(8 * ds));
+  ctx.font      = `${gridLabelSize}px sans-serif`;
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.textBaseline = 'top';
+  ctx.textAlign    = 'left';
+  for (let x = gx0; x <= vx1; x += gridStep) if (x !== 0) ctx.fillText(x, x + ds, vy0 + ds);
+  ctx.textAlign = 'right';
+  for (let y = gy0; y <= vy1; y += gridStep) if (y !== 0) ctx.fillText(y, vx0 - ds, y + ds);
 
   ctx.strokeStyle = '#555';
   ctx.lineWidth   = ds;
-  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+  ctx.strokeRect(simOutX + 0.5, simOutY + 0.5, W - 1, H - 1);
 
   const fontSize = Math.max(9, Math.round(11 * ds));
   ctx.font      = `${fontSize}px sans-serif`;
@@ -1781,8 +1894,8 @@ function drawSim() {
 
   for (const g of simGroups) {
     if (!g || !g.inWorld) continue;
-    const bx  = g.body.position.x + simDragBodyOffset.x;
-    const by  = g.body.position.y + simDragBodyOffset.y;
+    const bx  = g.body.position.x;
+    const by  = g.body.position.y;
     const ang = g.body.angle;
     const cos = Math.cos(ang), sin = Math.sin(ang);
 
@@ -1847,7 +1960,7 @@ function drawSim() {
 function drawMergedMaskOverlay() {
   if (!simLastPlacements) return;
   const ctx = simCtx;
-  const W   = simPhysW;
+  const W   = state.outW;
   const ds  = Math.max(1, Math.round(W / 400));
   const N   = state.images.length;
 
@@ -1925,24 +2038,8 @@ btnSimReset.addEventListener('click', () => { if (simEngine) initSim(); });
 
 btnSimFreeze.addEventListener('click', () => {
   if (!simEngine) return;
-  simFrozen = !simFrozen;
-  btnSimFreeze.classList.toggle('im-sim-frozen', simFrozen);
-  _setSimSensors(simFrozen);
-  if (simFrozen) {
-    simMergedImageData = null;
-    simLastPlacements  = null;
-    btnDownload.classList.add('im-hidden');
-    simSettled = true;
-    btnMerge.classList.remove('im-hidden');
-    updateSimStatus('Frozen');
-  } else {
-    simMergedImageData = null;
-    simAlpha   = 1.0;
-    simSettled = false;
-    btnMerge.classList.add('im-hidden');
-    btnDownload.classList.add('im-hidden');
-    updateSimStatus('Settling…');
-  }
+  _setFrozen(!simFrozen);
+  window.dispatchEvent(new CustomEvent('collab:freeze-changed', { detail: { frozen: simFrozen } }));
 });
 
 
@@ -1958,48 +2055,13 @@ function scheduleResizeSim() {
 
 function resizeSim() {
   if (!simEngine) return;
-  const oldW = simPhysW, oldH = simPhysH;
-  const newW = state.outW, newH = state.outH;
-  if (oldW === newW && oldH === newH) return;
-
-  // Save viewport and body positions before teardown.
-  // For corner drag: save compensated (visual) positions so bodies don't jump on release.
-  // For other resizes: save proportional positions.
-  const savedViewScale  = simViewScale;
-  const savedViewOffset = { x: simViewOffset.x, y: simViewOffset.y };
-  const isDrag = !!simCornerDrag;
-  const saved = simGroups.map(g => g ? {
-    x:     isDrag ? g.body.position.x + simDragBodyOffset.x : g.body.position.x * newW / oldW,
-    y:     isDrag ? g.body.position.y + simDragBodyOffset.y : g.body.position.y * newH / oldH,
-    angle: g.body.angle,
-  } : null);
-
-  initSim(); // rebuilds shapes, walls, canvas; resets viewport to 1/{0,0}
-
-  simViewScale = savedViewScale;
-  if (isDrag) {
-    // Keep the opposite corner at the same canvas position as during drag
-    const ts  = simDispScale * simViewScale; // simDispScale updated by initSim
-    const rel = getFixedCornerRel(simCornerDrag.dir);
-    simViewOffset.x = rel.rx * newW - simCornerDrag.fixedCanvas.cx / ts;
-    simViewOffset.y = rel.ry * newH - simCornerDrag.fixedCanvas.cy / ts;
-  } else {
-    simViewOffset.x = savedViewOffset.x * newW / oldW;
-    simViewOffset.y = savedViewOffset.y * newH / oldH;
+  // Physics world (SIM_WORLD) and body shapes are independent of output canvas size.
+  // Re-center only for local text-input resize; corner drag and remote sync set simOutX/Y themselves.
+  if (!simCornerDrag && !_simOutExplicit) {
+    simOutX = (SIM_WORLD - state.outW) / 2;
+    simOutY = (SIM_WORLD - state.outH) / 2;
   }
-  simDragBodyOffset = { x: 0, y: 0 };
-  updateMouseViewport();
-
-  // Place bodies at saved positions (absolute for drag, proportional for other)
-  const { Body } = Matter;
-  for (let i = 0; i < simGroups.length; i++) {
-    const g = simGroups[i];
-    const s = saved[i];
-    if (!g || !s) continue;
-    Body.setPosition(g.body, { x: s.x, y: s.y });
-    Body.setAngle(g.body, s.angle);
-    Body.setVelocity(g.body, { x: 0, y: 0 });
-  }
+  _simOutExplicit = false;
 }
 
 function simRefreshGroup(imgIdx) {
@@ -2021,6 +2083,7 @@ function simRefreshGroup(imgIdx) {
   if (!hasPolys) return;
 
   simMergedImageData = null;
+  _simViewDirty = true;
   btnDownload.classList.add('im-hidden');
   const g = buildSimGroup(imgIdx);
   if (!g) return;
@@ -2273,11 +2336,9 @@ function _onSimCanvasResize() {
   const canvasH = Math.round(window.innerHeight * dpr);
   simCanvas.width  = canvasW;
   simCanvas.height = canvasH;
-  simDispScale = Math.min(canvasW / simPhysW, canvasH / simPhysH);
-  const padX   = (canvasW - simPhysW * simDispScale) / 2;
-  const padY   = (canvasH - simPhysH * simDispScale) / 2;
-  simViewScale  = 1;
-  simViewOffset = { x: -padX / simDispScale, y: -padY / simDispScale };
+  const oldDisp = simDispScale;
+  simDispScale  = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
+  simViewScale  = simViewScale * oldDisp / simDispScale; // keep visual zoom constant
   updateMouseViewport();
 }
 
@@ -2295,15 +2356,11 @@ window.addEventListener('resize', () => {
 
   function _commitHold(h) {
     _hold = null;
-    const fcRel = getFixedCornerRel(h.corner.dir);
-    const fcTs  = simDispScale * simViewScale;
     simCornerDrag = {
       dir: h.corner.dir, id: h.pointerId,
       startPx: h.startPx, startW: state.outW, startH: state.outH,
-      startViewOffset: { x: simViewOffset.x, y: simViewOffset.y },
-      fixedCanvas: { cx: (fcRel.rx * simPhysW - simViewOffset.x) * fcTs, cy: (fcRel.ry * simPhysH - simViewOffset.y) * fcTs },
+      startOutX: simOutX, startOutY: simOutY,
     };
-    simDragBodyOffset = { x: 0, y: 0 };
   }
 
   function _cancelHold() {
@@ -2421,6 +2478,7 @@ window.addEventListener('resize', () => {
     liftedGroup  = g;
     liftedOffset = { x: g.body.position.x - fingerPhys.x, y: g.body.position.y - fingerPhys.y };
     mode = 'lifted';
+    dispatchBodyLift(g);
     if (navigator.vibrate) navigator.vibrate(28);
     const autoScale = computeAutoScales()[g.imgIdx].scale;
     pinchPreview = { imgIdx: g.imgIdx, scale: state.images[g.imgIdx].scale ?? autoScale };
@@ -2429,15 +2487,11 @@ window.addEventListener('resize', () => {
   function triggerCornerResize() {
     lpTimer = null;
     if (!simEngine || !lpCorner || !lpStartCPx) return;
-    const fcRel = getFixedCornerRel(lpCorner.dir);
-    const fcTs  = simDispScale * simViewScale;
     simCornerDrag = {
       dir: lpCorner.dir, id: liftedId,
       startPx: lpStartCPx, startW: state.outW, startH: state.outH,
-      startViewOffset: { x: simViewOffset.x, y: simViewOffset.y },
-      fixedCanvas: { cx: (fcRel.rx * simPhysW - simViewOffset.x) * fcTs, cy: (fcRel.ry * simPhysH - simViewOffset.y) * fcTs },
+      startOutX: simOutX, startOutY: simOutY,
     };
-    simDragBodyOffset = { x: 0, y: 0 };
     mode = 'resize';
     if (navigator.vibrate) navigator.vibrate(28);
   }
@@ -2495,7 +2549,10 @@ window.addEventListener('resize', () => {
 
   function releaseGroup() {
     commitScale();
-    if (liftedGroup) simRefreshGroup(liftedGroup.imgIdx);
+    if (liftedGroup) {
+      simRefreshGroup(liftedGroup.imgIdx);
+      dispatchBodyMoved(liftedGroup);
+    }
     liftedGroup  = null;
     liftedOffset = { x: 0, y: 0 };
     pinchPreview = null;
@@ -2692,6 +2749,30 @@ window.addEventListener('resize', () => {
   simCanvas.addEventListener('touchcancel', () => reset(), { passive: true });
 }());
 
+// ── Mouse wheel: two-finger trackpad pan + Ctrl/pinch zoom ────────────────────
+simCanvas.addEventListener('wheel', (e) => {
+  if (!simEngine) return;
+  e.preventDefault();
+  const rect       = simCanvas.getBoundingClientRect();
+  const cssToCanvas = simCanvas.width / rect.width;
+  const ts          = simDispScale * simViewScale;
+
+  if (e.ctrlKey) {
+    // Pinch-to-zoom (trackpad) or Ctrl+scroll: zoom around cursor
+    const zoomFactor = Math.exp(-e.deltaY * 0.01);
+    const newScale   = Math.max(0.1, Math.min(10, simViewScale * zoomFactor));
+    const cursorPx   = clientToCanvasPx(e.clientX, e.clientY);
+    simViewOffset.x  = simViewOffset.x + cursorPx.x / ts - cursorPx.x / (simDispScale * newScale);
+    simViewOffset.y  = simViewOffset.y + cursorPx.y / ts - cursorPx.y / (simDispScale * newScale);
+    simViewScale     = newScale;
+  } else {
+    // Two-finger pan
+    simViewOffset.x += e.deltaX * cssToCanvas / ts;
+    simViewOffset.y += e.deltaY * cssToCanvas / ts;
+  }
+  updateMouseViewport();
+}, { passive: false });
+
 // ── Touch drag-to-reorder filmstrip ───────────────────────────────────────────
 // Long-press (380ms without movement) lifts the card; dragging horizontally
 // reorders it live; lifting the finger commits the new order.
@@ -2771,8 +2852,6 @@ window.addEventListener('resize', () => {
 }());
 
 // ── Session export / import ───────────────────────────────────────────────────
-
-const THUMB_MAX_SESS = 256;
 
 function _sessionStatus(text) {
   sessionStatusEl.textContent = text;
@@ -2903,7 +2982,7 @@ function _applyImportReplace(session, imgs, encodings) {
   if (state.images.length > 0) loadPainterImage(state.paintIdx);
   unlockStep('step-paint');
   panelSetOpen(true);
-  updateStepMeta('step-images', state.images.length + ' image' + (state.images.length === 1 ? '' : 's'), true);
+  updateStepMeta('step-images', imageCountLabel(state.images.length), true);
 
   // Build saved positions and init sim
   const savedPositions = {};
@@ -2912,22 +2991,18 @@ function _applyImportReplace(session, imgs, encodings) {
   });
   initSim(savedPositions);
 
-  // Restore viewport after initSim resets it
+  // Restore viewport and output position after initSim resets them
   if (session.simViewScale) {
     simViewScale  = session.simViewScale;
     simViewOffset = { x: session.simViewOffset.x, y: session.simViewOffset.y };
     updateMouseViewport();
   }
-
-  // Restore frozen state
-  if (session.simFrozen) {
-    simFrozen = true;
-    btnSimFreeze.classList.add('im-sim-frozen');
-    _setSimSensors(true);
-    simSettled = true;
-    btnMerge.classList.remove('im-hidden');
-    updateSimStatus('Frozen');
+  if (session.simOutX != null) {
+    simOutX = session.simOutX;
+    simOutY = session.simOutY;
   }
+
+  if (session.simFrozen) _setFrozen(true);
 
   // Queue YOLO encoding for images without cached encodings
   if (state.useSam && samPool.workers.length > 0 && samPool.readyCount > 0) {
@@ -2953,7 +3028,7 @@ function _applyImportAdd(session, imgs, encodings) {
   }
 
   buildRankList();
-  updateStepMeta('step-images', state.images.length + ' image' + (state.images.length === 1 ? '' : 's'), true);
+  updateStepMeta('step-images', imageCountLabel(state.images.length), true);
 
   // Add groups to running sim at their saved positions
   for (let i = 0; i < (session.images || []).length; i++) {
@@ -2963,9 +3038,7 @@ function _applyImportAdd(session, imgs, encodings) {
     if (simEngine) {
       simRefreshGroup(ni);
       if (si.simPos && simGroups[ni]) {
-        Matter.Body.setPosition(simGroups[ni].body, si.simPos);
-        Matter.Body.setAngle(simGroups[ni].body, si.simAngle || 0);
-        Matter.Body.setVelocity(simGroups[ni].body, { x: 0, y: 0 });
+        placeBody(simGroups[ni].body, si.simPos.x, si.simPos.y, si.simAngle || 0);
       }
     }
   }
@@ -2983,13 +3056,7 @@ function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
 
     const w = si.w || img.naturalWidth;
     const h = si.h || img.naturalHeight;
-    const ts  = Math.min(1, THUMB_MAX_SESS / Math.max(w, h));
-    const tW  = Math.max(1, Math.round(w * ts));
-    const tH  = Math.max(1, Math.round(h * ts));
-    const tc  = document.createElement('canvas');
-    tc.width = tW; tc.height = tH;
-    tc.getContext('2d').drawImage(img, 0, 0, tW, tH);
-    const thumbUrl = tc.toDataURL('image/jpeg', 0.82);
+    const thumbUrl = buildThumb(img, w, h);
 
     state.images[newIdx] = {
       file: null, name: si.name, img, thumbUrl, w, h,
@@ -3002,6 +3069,65 @@ function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
     state.undoStack[newIdx] = [];
   });
 }
+
+// ── Collaboration remote-event handlers ───────────────────────────────────────
+
+let _collabAutoFrozen = false;
+
+window.addEventListener('collab:peer-count', ({ detail: { count } }) => {
+  if (!simEngine) return;
+  if (count > 0 && !simFrozen) {
+    _setFrozen(true);
+    _collabAutoFrozen = true;
+  } else if (count === 0 && _collabAutoFrozen) {
+    _setFrozen(false);
+    _collabAutoFrozen = false;
+  }
+});
+
+window.addEventListener('collab:remote-session', async (e) => {
+  await _doImportReplace(e.detail.blob);
+});
+
+window.addEventListener('collab:remote-image', async (e) => {
+  const { name, w, h, jpegBase64, encoding, polygons, simPos, simAngle } = e.detail;
+  const img = new Image();
+  await new Promise(res => {
+    img.onload = res;
+    img.src = jpegBase64;
+  });
+  const thumbUrl = buildThumb(img, w, h);
+
+  const idx = state.images.length;
+  state.images.push({ file: null, name, img, thumbUrl, w, h,
+    polygons: polygons || [], currentPoly: [], scale: null, simHidden: false });
+  state.undoStack.push([]);
+  state.rankOrder.push(idx);
+
+  if (encoding) _restoreEncodings([encoding], idx);
+
+  buildRankList();
+  simRefreshGroup(idx);
+  if (simPos && simGroups[idx]) placeBody(simGroups[idx].body, simPos.x, simPos.y, simAngle || 0);
+  const n = state.images.length;
+  updateStepMeta('step-images', imageCountLabel(n), true);
+  paintArea.classList.remove('im-hidden');
+  unlockStep('step-paint');
+});
+
+window.addEventListener('collab:remote-positions', (e) => {
+  if (!simEngine) return;
+  for (const [idxStr, { x, y, angle }] of Object.entries(e.detail.positions)) {
+    const g = simGroups[Number(idxStr)];
+    if (g && g.body) placeBody(g.body, x, y, angle);
+  }
+});
+
+window.addEventListener('collab:undo-body-move', (e) => {
+  const { imgIdx, x, y, angle } = e.detail;
+  const g = simGroups[imgIdx];
+  if (g && g.body) placeBody(g.body, x, y, angle);
+});
 
 function _restoreEncodings(encodings, baseIdx, remapIdx) {
   if (!encodings) return;
@@ -3019,3 +3145,16 @@ function _restoreEncodings(encodings, baseIdx, remapIdx) {
     });
   });
 }
+
+window.addEventListener('collab:remote-encoding', (e) => {
+  const { imgName, encoding } = e.detail;
+  const idx = state.images.findIndex(im => im.name === imgName);
+  if (idx < 0 || samPool.embeddingCache.has(idx)) return;
+  _restoreEncodings([encoding], idx);
+  const dot = samPool.dots.get(idx);
+  if (dot) {
+    dot.classList.remove('im-sam-encoding', 'im-sam-pending');
+    dot.classList.add('im-sam-encoded');
+    dot.title = 'Encoded';
+  }
+});
