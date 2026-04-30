@@ -143,12 +143,13 @@ function upsertCursorEl(peerId, cursorState) {
     label.className = 'collab-cursor-label';
     el.appendChild(label);
     cursorLayer.appendChild(el);
-    entry = { el, label };
+    entry = { el, label, path: el.querySelector('svg path') };
     peerEls.set(peerId, entry);
   }
-  entry.label.textContent       = cursorState.name  || 'Anonymous';
-  entry.label.style.background  = cursorState.color;
-  entry.el.querySelector('svg path').setAttribute('fill', cursorState.color);
+  const name = cursorState.name || 'Anonymous';
+  if (entry.label.textContent !== name)  entry.label.textContent      = name;
+  if (entry.label.style.background !== cursorState.color) entry.label.style.background = cursorState.color;
+  if (entry.path.getAttribute('fill')  !== cursorState.color) entry.path.setAttribute('fill', cursorState.color);
   return entry.el;
 }
 
@@ -243,8 +244,7 @@ function handleMsg(msg, fromPeerId) {
 
 // ── Data connection setup ─────────────────────────────────────────────────────
 
-function setupConn(conn, role) {
-  // role: 'guest-side' (host receiving from guest) | 'host-side' (guest's conn to host)
+function setupConn(conn, isGuestSide) {
   let receiving = null;
 
   conn.on('data', data => {
@@ -277,7 +277,7 @@ function setupConn(conn, role) {
   });
 
   conn.on('close', () => {
-    if (role === 'guest-side') {
+    if (isGuestSide) {
       guestConns.delete(conn.peer);
       removeCursorEl(conn.peer);
       updatePeerCount();
@@ -323,7 +323,7 @@ function joinAsHost(roomCode, retries = 0) {
   peer.on('connection', conn => {
     conn.on('open', () => {
       guestConns.set(conn.peer, conn);
-      setupConn(conn, 'guest-side');
+      setupConn(conn, true);
 
       // Send current session to the new guest if we have images
       const cs = window.getCollabState ? window.getCollabState() : null;
@@ -372,7 +372,7 @@ function joinAsGuest(roomCode, retries = 0) {
       if (!cs || cs.imageCount === 0) showGuestPrompt('Waiting for session from host...');
     });
 
-    setupConn(hostConn, 'host-side');
+    setupConn(hostConn, false);
 
     peer.on('error', err => {
       if (err.type === 'peer-unavailable' && retries < 4) {
@@ -456,10 +456,9 @@ window.addEventListener('collab:rank-order-changed', ({ detail: { order } }) => 
 
 window.addEventListener('collab:images-added', async ({ detail: { indices } }) => {
   if (!localPeerId) return;
-  for (const idx of indices) {
-    const packet = await window.getImagePacket(idx);
-    if (!packet) continue;
-    broadcast({ type: 'image', ...packet });
+  const packets = await Promise.all(indices.map(idx => window.getImagePacket(idx)));
+  for (const packet of packets) {
+    if (packet) broadcast({ type: 'image', ...packet });
   }
 });
 
@@ -522,8 +521,9 @@ btnJoin.addEventListener('click', () => {
 btnLeave.addEventListener('click', leaveRoom);
 
 btnCopy.addEventListener('click', () => {
+  const code = roomInp.value.trim() || randomRoomCode();
+  setRoomParam(code);
   const u = new URL(window.location.href);
-  u.searchParams.set('room', roomInp.value.trim() || randomRoomCode());
   navigator.clipboard.writeText(u.toString()).then(() => {
     btnCopy.textContent = 'Copied!';
     setTimeout(() => { btnCopy.textContent = 'Copy link'; }, 1800);

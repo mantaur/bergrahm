@@ -1060,8 +1060,9 @@ function sendEncode(wIdx, imgIdx) {
   const tmp   = document.createElement('canvas');
   tmp.width   = entry.w;
   tmp.height  = entry.h;
-  tmp.getContext('2d').drawImage(entry.img, 0, 0);
-  const id = tmp.getContext('2d').getImageData(0, 0, entry.w, entry.h);
+  const tmpCtx = tmp.getContext('2d');
+  tmpCtx.drawImage(entry.img, 0, 0);
+  const id = tmpCtx.getImageData(0, 0, entry.w, entry.h);
   samPool.workers[wIdx].postMessage(
     { type: 'encode', imgIdx, pixels: id.data.buffer, width: entry.w, height: entry.h },
     [id.data.buffer]
@@ -1510,17 +1511,10 @@ function nearestCornerHandle(canvasPx) {
 
 function drawCornerHandles() {
   if (!simEngine) return;
-  const ctx = simCtx;
-  const ts  = simDispScale * simViewScale;
-  const W   = state.outW;
-  const H   = state.outH;
-  const ox  = simOutX, oy = simOutY;
-  const handles = [
-    { dir: 'nw', cx: (ox     - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
-    { dir: 'ne', cx: (ox + W - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
-    { dir: 'sw', cx: (ox     - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
-    { dir: 'se', cx: (ox + W - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
-  ];
+  const ctx     = simCtx;
+  const ts      = simDispScale * simViewScale;
+  const W       = state.outW, H = state.outH;
+  const handles = getCornerHandlePositions();
 
   ctx.save();
 
@@ -1708,8 +1702,7 @@ function dispatchBodyLift(g) {
 
 function dispatchBodyMoved(g) {
   window.dispatchEvent(new CustomEvent('collab:body-moved', {
-    detail: { imgIdx: g.imgIdx, x: g.body.position.x, y: g.body.position.y,
-              angle: g.body.angle, scale: state.images[g.imgIdx].scale },
+    detail: { imgIdx: g.imgIdx, x: g.body.position.x, y: g.body.position.y, angle: g.body.angle },
   }));
 }
 
@@ -1775,15 +1768,18 @@ function simTick(ts) {
   }
 
   if (simMergedImageData && simSettled) {
-    if (mergeCanvas) {
-      simCtx.save();
-      simCtx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
-      simCtx.translate(-simViewOffset.x, -simViewOffset.y);
-      simCtx.drawImage(mergeCanvas, simOutX, simOutY, state.outW, state.outH);
-      simCtx.restore();
+    if (_simViewDirty) {
+      _simViewDirty = false;
+      if (mergeCanvas) {
+        simCtx.save();
+        simCtx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
+        simCtx.translate(-simViewOffset.x, -simViewOffset.y);
+        simCtx.drawImage(mergeCanvas, simOutX, simOutY, state.outW, state.outH);
+        simCtx.restore();
+      }
+      drawMergedMaskOverlay();
+      drawCornerHandles();
     }
-    drawMergedMaskOverlay();
-    drawCornerHandles();
     return;
   }
 
@@ -1791,8 +1787,8 @@ function simTick(ts) {
   if (!simSettled || !simFrozen || _simViewDirty) {
     _simViewDirty = false;
     drawSim();
+    drawCornerHandles();
   }
-  drawCornerHandles();
 
   if (!simSettled) {
     if (simFrozen) {
@@ -2164,7 +2160,6 @@ function finishMerge(placements, ownershipMap) {
   resetMergeUI();
 
   const W = state.outW, H = state.outH;
-  const simCtx = simCanvas.getContext('2d');
 
   // Pre-render each placed image into a clipped canvas and capture its pixels.
   // The temp canvas is only as large as the region that overlaps the output,
