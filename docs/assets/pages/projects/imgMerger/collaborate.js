@@ -364,11 +364,9 @@ function joinAsHost(roomCode, retries = 0) {
     conn.on('open', () => {
       guestConns.set(conn.peer, conn);
       setupConn(conn, true);
-
-      // Send current session to the new guest if we have images
+      updatePeerCount(); // freeze host before building session blob so simFrozen is captured correctly
       const cs = window.getCollabState ? window.getCollabState() : null;
       if (cs && cs.imageCount > 0) sendSessionTo(conn);
-      updatePeerCount();
     });
   });
 

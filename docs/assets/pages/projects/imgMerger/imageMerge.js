@@ -1779,7 +1779,7 @@ function initSim(savedPositions = null) {
   updateSimStatus('Settling\u2026');
   simRafId = requestAnimationFrame(simTick);
   if (active.length === 0) { simSettled = true; simAlpha = 0; updateSimStatus('-'); }
-  if (wasFrozen) _setFrozen(true);
+  if (wasFrozen || _collabAutoFrozen) _setFrozen(true);
 }
 
 function placeBody(body, x, y, angle) {
@@ -3232,13 +3232,12 @@ function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
 let _collabAutoFrozen = false;
 
 window.addEventListener('collab:peer-count', ({ detail: { count } }) => {
-  if (!simEngine) return;
-  if (count > 0 && !simFrozen) {
-    _setFrozen(true);
+  if (count > 0) {
     _collabAutoFrozen = true;
-  } else if (count === 0 && _collabAutoFrozen) {
-    _setFrozen(false);
+    if (simEngine && !simFrozen) _setFrozen(true);
+  } else if (_collabAutoFrozen) {
     _collabAutoFrozen = false;
+    if (simEngine && simFrozen) _setFrozen(false);
   }
 });
 
