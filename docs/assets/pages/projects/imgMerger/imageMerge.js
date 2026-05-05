@@ -3235,9 +3235,11 @@ window.addEventListener('collab:peer-count', ({ detail: { count } }) => {
   if (count > 0) {
     _collabAutoFrozen = true;
     if (simEngine && !simFrozen) _setFrozen(true);
+    btnSimFreeze.classList.add('im-hidden');
   } else if (_collabAutoFrozen) {
     _collabAutoFrozen = false;
     if (simEngine && simFrozen) _setFrozen(false);
+    btnSimFreeze.classList.remove('im-hidden');
   }
 });
 
