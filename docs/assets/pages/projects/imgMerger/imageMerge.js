@@ -764,6 +764,7 @@ canvasWrap.addEventListener('click', (e) => {
       redrawPolyOverlay(imgIdx);
       updateUndoBtn(imgIdx);
       simRefreshGroup(imgIdx);
+      window.dispatchEvent(new CustomEvent('collab:polygon-changed', { detail: { imgIdx, polygons: entry.polygons } }));
       return;
     }
   }
@@ -834,6 +835,7 @@ btnUndo.addEventListener('click', () => {
   redrawPolyOverlay(imgIdx);
   updateUndoBtn(imgIdx);
   simRefreshGroup(imgIdx);
+  window.dispatchEvent(new CustomEvent('collab:polygon-changed', { detail: { imgIdx, polygons: entry.polygons } }));
 });
 
 btnClearMask.addEventListener('click', () => {
@@ -847,6 +849,7 @@ btnClearMask.addEventListener('click', () => {
   redrawPolyOverlay(imgIdx);
   updateUndoBtn(imgIdx);
   simRefreshGroup(imgIdx);
+  window.dispatchEvent(new CustomEvent('collab:polygon-changed', { detail: { imgIdx, polygons: [] } }));
 });
 
 btnPrev.addEventListener('click', () => {
@@ -1178,6 +1181,7 @@ function requestDecode(x, y) {
       redrawPolyOverlay(imgIdx);
       updateUndoBtn(imgIdx);
       simRefreshGroup(imgIdx);
+      window.dispatchEvent(new CustomEvent('collab:polygon-changed', { detail: { imgIdx, polygons: entry.polygons } }));
       updateYoloStatus('Segment removed. Click to add or click an object to segment.');
       return;
     }
@@ -1226,6 +1230,7 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   redrawPolyOverlay(forImgIdx);
   updateUndoBtn(forImgIdx);
   simRefreshGroup(forImgIdx);
+  window.dispatchEvent(new CustomEvent('collab:polygon-changed', { detail: { imgIdx: forImgIdx, polygons: entry.polygons } }));
   updateYoloStatus('Segment added. Click for another or switch to manual mode.');
 }
 
@@ -1411,6 +1416,9 @@ let simLastPlacements  = null; // placements from last finishMerge — used for 
 let simCornerDrag      = null; // { dir, id, startPx, startX1, startY1, startX2, startY2 }
 let simBodyDragging    = false; // true while a body is held by MouseConstraint
 let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gesture
+let _activeDragIdx     = -1;   // imgIdx currently being dragged locally; -1 if none
+let _lastDragBroadcast = 0;    // timestamp of last collab:body-dragging dispatch
+const _remoteGrabs     = new Map(); // imgIdx -> { color } for bodies grabbed by peers
 let simDispScale       = 1;    // display px per physics px (fixed; based on SIM_WORLD)
 const SIM_WORLD        = 10000; // fixed physics world size, independent of output canvas
 let simX1              = 0;    // output rect TL x in world space
@@ -1729,19 +1737,32 @@ function initSim(savedPositions = null) {
   World.add(engine.world, mc);
   Events.on(mc, 'startdrag', (event) => {
     if (!event.body) return;
+    const g = simGroups.find(sg => sg && sg.body && (sg.body === event.body || sg.body === event.body.parent));
+    if (g && _remoteGrabs.has(g.imgIdx)) {
+      mc.constraint.bodyB   = null;
+      mc.constraint.pointB  = { x: 0, y: 0 };
+      return;
+    }
     simBodyDragging = true;
     _clearMergedImage();
-    const g = simGroups.find(sg => sg && sg.body && (sg.body === event.body || sg.body === event.body.parent));
-    if (g) dispatchBodyLift(g);
+    if (g) {
+      dispatchBodyLift(g);
+      _activeDragIdx = g.imgIdx;
+      window.dispatchEvent(new CustomEvent('collab:body-grabbing', { detail: { imgIdx: g.imgIdx } }));
+    }
   });
 
   Events.on(mc, 'enddrag', (event) => {
     simBodyDragging = false;
+    _activeDragIdx  = -1;
 
     const g = event.body
       ? simGroups.find(sg => sg && sg.body && (sg.body === event.body || sg.body === event.body.parent))
       : null;
-    if (g) dispatchBodyMoved(g);
+    if (g) {
+      dispatchBodyMoved(g);
+      window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: g.imgIdx } }));
+    }
 
     if (simFrozen) {
       simSettled = true;
@@ -1841,6 +1862,19 @@ function simTick(ts) {
     for (const b of simActiveBodies()) {
       Matter.Body.setVelocity(b, { x: 0, y: 0 });
       Matter.Body.setAngularVelocity(b, 0);
+    }
+  }
+
+  if (_activeDragIdx >= 0) {
+    const now = performance.now();
+    if (now - _lastDragBroadcast > 33) {
+      const dg = simGroups[_activeDragIdx];
+      if (dg?.body) {
+        window.dispatchEvent(new CustomEvent('collab:body-dragging', {
+          detail: { imgIdx: _activeDragIdx, x: dg.body.position.x, y: dg.body.position.y, angle: dg.body.angle },
+        }));
+      }
+      _lastDragBroadcast = now;
     }
   }
 
@@ -2027,6 +2061,36 @@ function drawSim() {
     ctx.fillText(label, bx, by + fontSize / 3);
     ctx.globalAlpha = 1;
   }
+
+  // Draw dashed colored border around bodies grabbed by remote peers
+  for (const [imgIdx, { color }] of _remoteGrabs) {
+    const g = simGroups[imgIdx];
+    if (!g || !g.inWorld) continue;
+    const bx  = g.body.position.x, by = g.body.position.y;
+    const ang = g.body.angle;
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    const entry = state.images[imgIdx];
+    const corners = [
+      { x: 0, y: 0 }, { x: entry.w, y: 0 },
+      { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
+    ].map(c => {
+      const lx = c.x * g.scale - g.imgCentroidSim.x;
+      const ly = c.y * g.scale - g.imgCentroidSim.y;
+      return { x: bx + lx * cos - ly * sin, y: by + lx * sin + ly * cos };
+    });
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(corners[i].x, corners[i].y);
+    ctx.closePath();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 2.5 * ds;
+    ctx.setLineDash([6 * ds, 4 * ds]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+
   ctx.restore();
 }
 
@@ -3220,6 +3284,30 @@ window.addEventListener('collab:undo-body-move', (e) => {
   const { imgIdx, x, y, angle } = e.detail;
   const g = simGroups[imgIdx];
   if (g && g.body) placeBody(g.body, x, y, angle);
+});
+
+window.addEventListener('collab:remote-drag', ({ detail: { imgIdx, x, y, angle } }) => {
+  if (!simEngine) return;
+  const g = simGroups[imgIdx];
+  if (g?.body) placeBody(g.body, x, y, angle);
+});
+
+window.addEventListener('collab:remote-grab', ({ detail: { imgIdx, color } }) => {
+  _remoteGrabs.set(imgIdx, { color });
+  _simViewDirty = true;
+});
+
+window.addEventListener('collab:remote-release', ({ detail: { imgIdx } }) => {
+  _remoteGrabs.delete(imgIdx);
+  _simViewDirty = true;
+});
+
+window.addEventListener('collab:remote-polygon', ({ detail: { imgIdx, polygons } }) => {
+  const entry = state.images[imgIdx];
+  if (!entry) return;
+  entry.polygons = polygons;
+  if (imgIdx === state.rankOrder[state.paintIdx]) redrawPolyOverlay(imgIdx);
+  simRefreshGroup(imgIdx);
 });
 
 function _restoreEncodings(encodings, baseIdx, remapIdx) {

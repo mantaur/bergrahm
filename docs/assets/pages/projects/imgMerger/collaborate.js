@@ -11,7 +11,12 @@
 //   { type: 'settings',      settings }
 //   { type: 'rank-order',    order }
 //   { type: 'positions',     positions }
+//   { type: 'drag',          imgIdx, x, y, angle }
+//   { type: 'grab',          imgIdx, color }
+//   { type: 'release',       imgIdx }
 //   { type: 'image',         ...imagePacketFields }
+//   { type: 'encoding',      imgName, encoding }
+//   { type: 'polygon',       imgIdx, polygons }
 //   { type: 'session-start', totalBytes }
 //   [ArrayBuffer chunks...]
 //   { type: 'session-end' }
@@ -60,10 +65,11 @@ let rafId = null;
 const peerEls       = new Map(); // peerId -> { el, label }
 const remoteCursors = new Map(); // peerId -> { x, y, name, color }
 
-// ── Sim undo ──────────────────────────────────────────────────────────────────
+// ── Sim undo + grab tracking ──────────────────────────────────────────────────
 
-const simUndoStack = [];
-const preLiftState = new Map();
+const simUndoStack  = [];
+const preLiftState  = new Map();
+const grabbedByPeer = new Map(); // imgIdx -> peerId (for cleanup on disconnect)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -230,6 +236,27 @@ function handleMsg(msg, fromPeerId) {
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
+    case 'drag':
+      window.dispatchEvent(new CustomEvent('collab:remote-drag', {
+        detail: { imgIdx: msg.imgIdx, x: msg.x, y: msg.y, angle: msg.angle },
+      }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'grab':
+      grabbedByPeer.set(msg.imgIdx, fromPeerId);
+      window.dispatchEvent(new CustomEvent('collab:remote-grab', {
+        detail: { imgIdx: msg.imgIdx, color: msg.color },
+      }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'release':
+      grabbedByPeer.delete(msg.imgIdx);
+      window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx: msg.imgIdx } }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
     case 'image':
       window.dispatchEvent(new CustomEvent('collab:remote-image', { detail: msg }));
       if (isHost) broadcast(msg, fromPeerId);
@@ -237,6 +264,13 @@ function handleMsg(msg, fromPeerId) {
 
     case 'encoding':
       window.dispatchEvent(new CustomEvent('collab:remote-encoding', { detail: msg }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'polygon':
+      window.dispatchEvent(new CustomEvent('collab:remote-polygon', {
+        detail: { imgIdx: msg.imgIdx, polygons: msg.polygons },
+      }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
   }
@@ -280,6 +314,12 @@ function setupConn(conn, isGuestSide) {
     if (isGuestSide) {
       guestConns.delete(conn.peer);
       removeCursorEl(conn.peer);
+      for (const [imgIdx, peerId] of grabbedByPeer) {
+        if (peerId === conn.peer) {
+          grabbedByPeer.delete(imgIdx);
+          window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx } }));
+        }
+      }
       updatePeerCount();
     } else {
       hostConn = null;
@@ -428,6 +468,10 @@ function leaveRoom() {
   peerEls.forEach((_, id) => removeCursorEl(id));
   peerEls.clear();
   remoteCursors.clear();
+  for (const imgIdx of grabbedByPeer.keys()) {
+    window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx } }));
+  }
+  grabbedByPeer.clear();
   hideGuestPrompt();
 
   btnJoin.classList.remove('im-hidden');
@@ -473,6 +517,26 @@ window.addEventListener('collab:encoding-ready', ({ detail: { imgIdx } }) => {
   const packet = window.getEncodingPacket ? window.getEncodingPacket(imgIdx) : null;
   if (!packet) return;
   broadcast({ type: 'encoding', ...packet });
+});
+
+window.addEventListener('collab:body-dragging', ({ detail }) => {
+  if (!localPeerId) return;
+  broadcast({ type: 'drag', imgIdx: detail.imgIdx, x: detail.x, y: detail.y, angle: detail.angle });
+});
+
+window.addEventListener('collab:body-grabbing', ({ detail: { imgIdx } }) => {
+  if (!localPeerId) return;
+  broadcast({ type: 'grab', imgIdx, color: getLocalColor() });
+});
+
+window.addEventListener('collab:body-releasing', ({ detail: { imgIdx } }) => {
+  if (!localPeerId) return;
+  broadcast({ type: 'release', imgIdx });
+});
+
+window.addEventListener('collab:polygon-changed', ({ detail: { imgIdx, polygons } }) => {
+  if (!localPeerId) return;
+  broadcast({ type: 'polygon', imgIdx, polygons });
 });
 
 // ── Sim undo ──────────────────────────────────────────────────────────────────
