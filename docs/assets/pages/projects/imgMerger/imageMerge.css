@@ -379,10 +379,10 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 }
 
 /* Encoding state on the thumbnail itself */
-.im-rank-thumb.im-sam-pending  { filter: grayscale(1) brightness(0.45); transition: filter .3s; }
-.im-rank-thumb.im-sam-encoding { animation: thumb-encode 1.1s ease-in-out infinite; }
-.im-rank-thumb.im-sam-encoded  { filter: none; transition: filter .3s; animation: none; }
-.im-rank-thumb.im-sam-failed   { filter: sepia(1) saturate(3) hue-rotate(300deg) brightness(0.6); animation: none; }
+.im-rank-thumb.im-yolo-pending  { filter: grayscale(1) brightness(0.45); transition: filter .3s; }
+.im-rank-thumb.im-yolo-encoding { animation: thumb-encode 1.1s ease-in-out infinite; }
+.im-rank-thumb.im-yolo-encoded  { filter: none; transition: filter .3s; animation: none; }
+.im-rank-thumb.im-yolo-failed   { filter: sepia(1) saturate(3) hue-rotate(300deg) brightness(0.6); animation: none; }
 
 @keyframes thumb-encode {
   0%, 100% { filter: grayscale(1) brightness(0.45); }
@@ -501,8 +501,8 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   border-radius: .5em;
 }
 
-/* ── SAM mobile toggle row ── */
-.im-sam-toggle-row {
+/* ── YOLO toggle row ── */
+.im-yolo-toggle-row {
   display: flex;
   align-items: center;
   gap: .5em;
@@ -511,7 +511,7 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   color: #888;
 }
 
-.im-sam-toggle-row label { cursor: pointer; }
+.im-yolo-toggle-row label { cursor: pointer; }
 
 /* ── General inputs ── */
 .im-field {
@@ -596,7 +596,7 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   flex-direction: column;
 }
 
-.im-sam-bar {
+.im-yolo-bar {
   display: flex;
   align-items: center;
   gap: .65em;
@@ -605,10 +605,10 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   flex-wrap: wrap;
 }
 
-.im-sam-worker-count { font-size: .73em; color: #3c3c3c; }
-.im-sam-status       { font-size: .76em; color: #484848; }
+.im-yolo-worker-count { font-size: .73em; color: #3c3c3c; }
+.im-yolo-status       { font-size: .76em; color: #484848; }
 
-.im-btn.im-sam-active { color: springgreen; border-color: rgba(0,255,127,.4); }
+.im-btn.im-yolo-active { color: springgreen; border-color: rgba(0,255,127,.4); }
 .im-btn.im-sim-frozen { color: springgreen; border-color: rgba(0,255,127,.4); }
 
 .im-paint-nav {

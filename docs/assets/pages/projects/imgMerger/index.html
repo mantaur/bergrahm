@@ -65,14 +65,6 @@
       <div class="im-step-bd">
         <div class="im-step-inner" id="section-paint">
 
-          <!-- Seg toggle (mobile only) -->
-          <div id="cfg-use-sam-row" class="im-sam-toggle-row im-hidden">
-            <input type="checkbox" id="cfg-use-sam">
-            <label for="cfg-use-sam">Enable auto-segmentation
-              <span class="im-hint-small">(~11 MB · needs internet)</span>
-            </label>
-          </div>
-
           <!-- Upload zone -->
           <div class="im-upload-zone">
             <span class="im-uz-icon">⊕</span>
@@ -151,8 +143,11 @@
                   </div>
                 </div>
                 <div class="im-field">
-                  <label for="cfg-sam-workers">YOLO encoders <span class="im-hint-small">· reduce if OOM</span></label>
-                  <input type="number" id="cfg-sam-workers" value="4" min="1" max="8" step="1" inputmode="numeric">
+                  <label for="cfg-yolo-workers">YOLO encoders <span class="im-hint-small">· reduce if OOM</span></label>
+                  <input type="number" id="cfg-yolo-workers" value="4" min="1" max="8" step="1" inputmode="numeric">
+                </div>
+                <div class="im-field im-yolo-toggle-row">
+                  <label><input type="checkbox" id="cfg-use-yolo"> Enable auto-segmentation <span class="im-hint-small">(~11 MB · needs internet)</span></label>
                 </div>
                 <div class="im-field">
                   <label><input type="checkbox" id="cfg-rotation" checked> Rotation lock</label>
@@ -180,10 +175,10 @@
         <div class="im-step-inner im-painter-inner">
 
           <!-- Seg bar -->
-          <div id="sam-controls" class="im-hidden im-sam-bar">
-            <button class="im-btn im-btn-sm" id="btn-sam-toggle" disabled>Seg: Off</button>
-            <span id="sam-worker-count" class="im-sam-worker-count"></span>
-            <span id="sam-status" class="im-sam-status"></span>
+          <div id="yolo-controls" class="im-hidden im-yolo-bar">
+            <button class="im-btn im-btn-sm" id="btn-yolo-toggle" disabled>Seg: Off</button>
+            <span id="yolo-worker-count" class="im-yolo-worker-count"></span>
+            <span id="yolo-status" class="im-yolo-status"></span>
           </div>
 
           <!-- Image navigator -->
@@ -805,6 +800,7 @@ function chamferDist(mask, W, H) {
 }
   </script>
 
+  <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=1"></script>
   <script src="imageMerge.js?v=15"></script>
   <script>
@@ -854,7 +850,7 @@ function chamferDist(mask, W, H) {
       c.width = entry.w; c.height = entry.h;
       c.getContext('2d').drawImage(entry.img, 0, 0);
       var jpegBase64 = c.toDataURL('image/jpeg', 0.92);
-      var enc = samPool.embeddingCache.get(imgIdx);
+      var enc = yoloPool.embeddingCache.get(imgIdx);
       var encoding = enc
         ? { origW: enc.origW, origH: enc.origH, segments: _encodeSegments(enc.segments) }
         : null;
@@ -870,7 +866,7 @@ function chamferDist(mask, W, H) {
 
     window.getEncodingPacket = function(imgIdx) {
       var entry = state.images[imgIdx];
-      var enc = samPool.embeddingCache.get(imgIdx);
+      var enc = yoloPool.embeddingCache.get(imgIdx);
       if (!entry || !enc) return null;
       return {
         imgName: entry.name,
@@ -882,7 +878,7 @@ function chamferDist(mask, W, H) {
       return SessionIO.exportBlob({
         state: state,
         simGroups: simGroups,
-        samPool: samPool,
+        yoloPool: yoloPool,
         cfg: {
           blendMode:    cfgBlendMode.value,
           seed:         parseInt(cfgSeed.value) || 42,
@@ -891,8 +887,8 @@ function chamferDist(mask, W, H) {
           rotationLock: cfgRotation.checked,
           simViewScale:  simViewScale,
           simViewOffset: simViewOffset,
-          simOutX:       simOutX,
-          simOutY:       simOutY,
+          simX1: simX1, simY1: simY1,
+          simX2: simX2, simY2: simY2,
           simFrozen:     simFrozen,
         },
       }, onProgress || function() {});
@@ -906,7 +902,8 @@ function chamferDist(mask, W, H) {
       if (s.blendMode) { cfgBlendMode.value = s.blendMode; cfgBlendMode.dispatchEvent(new Event('change')); }
       if (s.minScale != null) state.minScale = +s.minScale;
       if (s.maxScale != null) state.maxScale = +s.maxScale;
-      if (s.simOutX != null) { simOutX = +s.simOutX; simOutY = +s.simOutY; _simOutExplicit = true; }
+      if (s.simX1 != null) { simX1 = +s.simX1; simY1 = +s.simY1; simX2 = +s.simX2; simY2 = +s.simY2; _simOutExplicit = true; }
+      else if (s.simOutX != null) { simX1 = +s.simOutX; simY1 = +s.simOutY; simX2 = simX1 + state.outW; simY2 = simY1 + state.outH; _simOutExplicit = true; }
       window._collabApplyingRemote = false;
     };
 

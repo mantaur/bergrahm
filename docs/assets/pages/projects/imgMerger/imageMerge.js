@@ -10,9 +10,9 @@ const state = {
   minScale: 0.5,
   maxScale: 2.0,
   fillColor: '#181a1b',
-  useSam: false,
-  samDecodeSize:  512,
-  samWorkerCount: 4,
+  useYolo: false,
+  yoloDecodeSize:  512,
+  yoloWorkerCount: 4,
 
   // images[i] = { file, name, img, thumbUrl, w, h, polygons, currentPoly }
   images: [],
@@ -32,8 +32,8 @@ const EYE_CLOSED = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" 
 const REMOVE_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="3" x2="13" y2="13"/><line x1="13" y1="3" x2="3" y2="13"/></svg>';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const cfgUseSam          = document.getElementById('cfg-use-sam');
-const cfgSamWorkers      = document.getElementById('cfg-sam-workers');
+const cfgUseYolo          = document.getElementById('cfg-use-yolo');
+const cfgYoloWorkers      = document.getElementById('cfg-yolo-workers');
 const cfgBlendMode       = document.getElementById('cfg-blend-mode');
 const cfgDitherFields    = document.getElementById('cfg-dither-fields');
 const cfgDitherExpField  = document.getElementById('cfg-dither-exp-field');
@@ -63,10 +63,10 @@ const canvasWrap    = document.getElementById('canvas-wrap');
 const paintCanvas   = document.getElementById('paint-canvas');
 const maskCanvas    = document.getElementById('mask-canvas');
 
-const samControls   = document.getElementById('sam-controls');
-const btnSamToggle      = document.getElementById('btn-sam-toggle');
-const samStatus         = document.getElementById('sam-status');
-const samWorkerCountEl  = document.getElementById('sam-worker-count');
+const yoloControls   = document.getElementById('yolo-controls');
+const btnYoloToggle      = document.getElementById('btn-yolo-toggle');
+const yoloStatus         = document.getElementById('yolo-status');
+const yoloWorkerCountEl  = document.getElementById('yolo-worker-count');
 
 const painterScaleAuto    = document.getElementById('painter-scale-auto');
 const painterScaleInp     = document.getElementById('painter-scale-inp');
@@ -112,14 +112,16 @@ panelSetOpen(false); // start closed
 
 // ── Config step ───────────────────────────────────────────────────────────────
 
-if (isMobile) {
-  document.getElementById('cfg-use-sam-row').classList.remove('im-hidden');
-} else {
-  // Desktop: SAM always on, no need to expose the toggle.
-  cfgUseSam.checked = true;
-  state.useSam = true;
-  samControls.classList.remove('im-hidden');
-}
+// Detect GPU capability and set encoding default. The toggle lives in "More" settings.
+detectEncodingCapability().then(({ tier }) => {
+  const enable = tier === 'fast';
+  cfgUseYolo.checked = enable;
+  state.useYolo = enable;
+  if (enable) {
+    yoloControls.classList.remove('im-hidden');
+    if (state.images.length > 0 && yoloPool.workers.length === 0) initYoloPool();
+  }
+});
 
 cfgBlendMode.addEventListener('change', () => {
   const isDither = cfgBlendMode.value === 'dither';
@@ -155,7 +157,7 @@ function _broadcastSettings() {
     _broadcastSettingsTimer = null;
     window.dispatchEvent(new CustomEvent('collab:settings-changed', {
       detail: { outW: state.outW, outH: state.outH, fillColor: state.fillColor, blendMode: cfgBlendMode.value,
-                simOutX, simOutY },
+                simX1, simY1, simX2, simY2 },
     }));
   }, 200);
 }
@@ -186,14 +188,14 @@ cfgUseScaleRange.addEventListener('change', () => {
   cfgMaxScale.disabled = !on;
 });
 
-cfgUseSam.addEventListener('change', () => {
-  state.useSam = cfgUseSam.checked;
-  samControls.classList.toggle('im-hidden', !state.useSam);
-  if (state.useSam && state.images.length > 0) {
-    state.samWorkerCount = Math.max(1, parseInt(cfgSamWorkers.value) || 4);
-    if (samPool.workers.length === 0) {
-      initSamPool();
-    } else if (samPool.readyCount > 0) {
+cfgUseYolo.addEventListener('change', () => {
+  state.useYolo = cfgUseYolo.checked;
+  yoloControls.classList.toggle('im-hidden', !state.useYolo);
+  if (state.useYolo && state.images.length > 0) {
+    state.yoloWorkerCount = Math.max(1, parseInt(cfgYoloWorkers.value) || 4);
+    if (yoloPool.workers.length === 0) {
+      initYoloPool();
+    } else if (yoloPool.readyCount > 0) {
       buildEncodeQueue();
     }
   }
@@ -333,19 +335,20 @@ cfgImages.addEventListener('change', () => {
         const n = state.images.length;
         updateStepMeta('step-images', imageCountLabel(n), true);
         // Start encoding if SAM is already checked and pool is live.
-        if (state.useSam) {
-          state.samWorkerCount = Math.max(1, parseInt(cfgSamWorkers.value) || 4);
-          if (samPool.workers.length === 0) {
-            initSamPool(); // pool not started yet — it will call buildEncodeQueue when ready
-          } else if (samPool.readyCount > 0) {
+        if (state.useYolo) {
+          state.yoloWorkerCount = Math.max(1, parseInt(cfgYoloWorkers.value) || 4);
+          if (yoloPool.workers.length === 0) {
+            initYoloPool(); // pool not started yet — it will call buildEncodeQueue when ready
+          } else if (yoloPool.readyCount > 0) {
             if (firstLoad) {
               buildEncodeQueue(); // full sorted queue build
             } else {
               // Append only — don't re-queue images already being encoded.
               for (let j = baseIdx; j < baseIdx + files.length; j++) {
-                if (!samPool.embeddingCache.has(j)) samPool.encodeQueue.push(j);
+                if (!yoloPool.embeddingCache.has(j)) yoloPool.encodeQueue.push(j);
               }
-              samPool.encodeQueueBuilt = true;
+              yoloPool.encodeQueueBuilt = true;
+              _respawnWorkersForEncoding(); // re-spawn any surplus workers killed after last batch
               drainEncodeQueue();
             }
           }
@@ -359,7 +362,7 @@ cfgImages.addEventListener('change', () => {
 // ── Rank list (drag-to-reorder) ───────────────────────────────────────────────
 function buildRankList() {
   rankList.innerHTML = '';
-  samPool.dots.clear();
+  yoloPool.dots.clear();
   state.rankOrder.forEach((imgIdx, rank) => {
     const item = createRankItem(imgIdx, rank);
     rankList.appendChild(item);
@@ -387,26 +390,26 @@ function removeImage(imgIdx) {
 
   // Remap SAM embedding cache.
   const newCache = new Map();
-  samPool.embeddingCache.forEach((val, key) => {
+  yoloPool.embeddingCache.forEach((val, key) => {
     if (remap[key] !== undefined) newCache.set(remap[key], val);
   });
-  samPool.embeddingCache = newCache;
-  samPool.encodeQueue    = samPool.encodeQueue
+  yoloPool.embeddingCache = newCache;
+  yoloPool.encodeQueue    = yoloPool.encodeQueue
     .filter(i => i !== imgIdx)
     .map(i => remap[i] ?? i);
-  samPool.encodeRetries.clear();
+  yoloPool.encodeRetries.clear();
 
   // Workers mid-encode will return old indices — discard those results and
   // re-queue surviving images under their new indices so they get re-encoded.
-  for (let wi = 0; wi < samPool.encoding.length; wi++) {
-    const oldEnc = samPool.encoding[wi];
+  for (let wi = 0; wi < yoloPool.encoding.length; wi++) {
+    const oldEnc = yoloPool.encoding[wi];
     if (oldEnc === null) continue;
-    samPool.staleEncodeSet.add(oldEnc); // onEncoded will discard this result
+    yoloPool.staleEncodeSet.add(oldEnc); // onEncoded will discard this result
     if (oldEnc !== imgIdx && remap[oldEnc] !== undefined) {
       const newEnc = remap[oldEnc];
-      if (!samPool.embeddingCache.has(newEnc)) samPool.encodeQueue.push(newEnc);
+      if (!yoloPool.embeddingCache.has(newEnc)) yoloPool.encodeQueue.push(newEnc);
     }
-    samPool.encoding[wi] = null;
+    yoloPool.encoding[wi] = null;
   }
 
   // Remap simGroups to match the new image indices
@@ -454,12 +457,12 @@ function createRankItem(imgIdx, rank) {
   badge.textContent = '#' + (rank + 1);
 
   // SAM encoding status dot — only visible when SAM is enabled
-  if (state.useSam) {
-    const encoded  = samPool.embeddingCache.has(imgIdx);
-    const encoding = !encoded && samPool.encoding.includes(imgIdx);
-    thumb.classList.add(encoded ? 'im-sam-encoded' : encoding ? 'im-sam-encoding' : 'im-sam-pending');
+  if (state.useYolo) {
+    const encoded  = yoloPool.embeddingCache.has(imgIdx);
+    const encoding = !encoded && yoloPool.encoding.includes(imgIdx);
+    thumb.classList.add(encoded ? 'im-yolo-encoded' : encoding ? 'im-yolo-encoding' : 'im-yolo-pending');
     thumb.title = encoded ? 'Encoded' : encoding ? 'Encoding...' : 'Pending encoding';
-    samPool.dots.set(imgIdx, thumb);
+    yoloPool.dots.set(imgIdx, thumb);
   }
 
   const nameLbl = document.createElement('span');
@@ -560,6 +563,7 @@ function onDrop(e) {
   const currentImgIdx = state.rankOrder[state.paintIdx];
   buildRankList();
   state.paintIdx = state.rankOrder.indexOf(currentImgIdx);
+  _resortEncodeQueue();
   window.dispatchEvent(new CustomEvent('collab:rank-order-changed', { detail: { order: state.rankOrder.slice() } }));
 }
 
@@ -630,9 +634,9 @@ function loadPainterImage(rankIdx) {
 
   // On navigation, discard any stale pending decode and update the status text.
   // The encode queue is left untouched — it runs in filename order regardless.
-  if (state.useSam && samPool.readyCount > 0) {
-    updateSamStatus(samPool.embeddingCache.has(imgIdx)
-      ? (samPool.samMode ? 'Click a subject to segment' : 'YOLO ready')
+  if (state.useYolo && yoloPool.readyCount > 0) {
+    updateYoloStatus(yoloPool.embeddingCache.has(imgIdx)
+      ? (yoloPool.yoloMode ? 'Click a subject to segment' : 'YOLO ready')
       : 'Encoding...');
   }
 }
@@ -740,8 +744,8 @@ canvasWrap.addEventListener('click', (e) => {
   const pos    = getCanvasPos(e);
 
   // Seg mode: use click as a segment prompt
-  if (samPool.samMode) {
-    if (samPool.readyCount === 0) return;
+  if (yoloPool.yoloMode) {
+    if (yoloPool.readyCount === 0) return;
     requestDecode(pos.x, pos.y);
     return;
   }
@@ -858,11 +862,11 @@ btnNext.addEventListener('click', () => {
 // the model on first use; subsequent workers load from the browser cache.
 // Workers are stateless: after encoding they send all detected segments back to
 // the main thread. Click-to-mask lookup is instant on the main thread.
-// Worker count is set from state.samWorkerCount at init time; use this alias.
-let SAM_WORKER_COUNT = 4;
+// Worker count is set from state.yoloWorkerCount at init time; use this alias.
+let YOLO_WORKER_COUNT = 4;
 
-// Per-worker arrays (indexed 0..SAM_WORKER_COUNT-1)
-const samPool = {
+// Per-worker arrays (indexed 0..YOLO_WORKER_COUNT-1)
+const yoloPool = {
   workers:   [],   // Worker instances
   ready:     [],   // bool — model loaded
   busy:      [],   // bool — currently processing a job
@@ -870,51 +874,72 @@ const samPool = {
   readyCount: 0,
 
   // Shared coordination
-  samMode:        false,
+  yoloMode:        false,
   embeddingCache: new Map(), // imgIdx → { segments, origW, origH }
   dots:           new Map(), // imgIdx → dot span element (cached to avoid DOM queries)
   encodeQueue:      [],        // imgIdx[] awaiting dispatch
   encodeQueueBuilt: false,    // true once buildEncodeQueue() has been called
   encodeRetries:    new Map(), // imgIdx → failure count (reset each session)
   staleEncodeSet:   new Set(), // old imgIdx values to discard in onEncoded after a remove
+  initSent:         new Set(), // worker indices init'd by _respawnWorkersForEncoding (skip cascade)
+  decodeWorkerIdx:  -1,        // worker slot reserved for on-demand encoding
 };
 
-function updateSamStatus(text, warn) {
-  samStatus.textContent = text;
-  samStatus.className   = 'im-sam-status' + (warn ? ' im-log-warn' : '');
+function updateYoloStatus(text, warn) {
+  yoloStatus.textContent = text;
+  yoloStatus.className   = 'im-yolo-status' + (warn ? ' im-log-warn' : '');
 }
 
-function updateSamWorkerCount() {
-  const live  = samPool.ready.filter(Boolean).length;
-  const total = SAM_WORKER_COUNT;
-  samWorkerCountEl.textContent = live + '/' + total + ' workers';
-  samWorkerCountEl.className   = 'im-sam-worker-count' + (live < total ? ' im-log-warn' : '');
+function updateYoloWorkerCount() {
+  const live  = yoloPool.ready.filter(Boolean).length;
+  const total = YOLO_WORKER_COUNT;
+  yoloWorkerCountEl.textContent = live + '/' + total + ' workers';
+  yoloWorkerCountEl.className   = 'im-yolo-worker-count' + (live < total ? ' im-log-warn' : '');
 }
 
-function initSamPool() {
-  if (samPool.workers.length > 0) return; // already initialised
-  SAM_WORKER_COUNT = state.samWorkerCount;
-  samPool.encodeQueueBuilt = false;
+function initYoloPool() {
+  if (yoloPool.workers.length > 0) return; // already initialised
+  YOLO_WORKER_COUNT = state.yoloWorkerCount;
+  yoloPool.encodeQueueBuilt = false;
   if (location.protocol === 'file:') {
-    updateSamStatus(
+    updateYoloStatus(
       'Seg requires HTTP  -  open a terminal in docs/ and run: python3 -m http.server 8080, ' +
       'then visit http://localhost:8080/assets/pages/projects/imageMerge.html',
       true
     );
     return;
   }
-  for (let i = 0; i < SAM_WORKER_COUNT; i++) {
-    const w = new Worker('samWorker.js?v=6');
+  for (let i = 0; i < YOLO_WORKER_COUNT; i++) {
+    const w = new Worker('yoloWorker.js?v=6');
     w.onmessage = (e) => onWorkerMsg(i, e.data);
-    samPool.workers.push(w);
-    samPool.ready.push(false);
-    samPool.busy.push(false);
-    samPool.encoding.push(null);
+    yoloPool.workers.push(w);
+    yoloPool.ready.push(false);
+    yoloPool.busy.push(false);
+    yoloPool.encoding.push(null);
   }
-  updateSamStatus('Downloading YOLO model...');
+  updateYoloStatus('Downloading YOLO model...');
   // Only start worker 0 now; the rest start after it reports ready so they
   // benefit from the browser cache the first worker populates.
-  samPool.workers[0].postMessage({ type: 'init' });
+  yoloPool.workers[0].postMessage({ type: 'init' });
+}
+
+// Respawn dead worker slots up to YOLO_WORKER_COUNT for a new batch of images.
+// Skips live slots. Each respawned worker sends its own init (model already cached).
+function _respawnWorkersForEncoding() {
+  if (location.protocol === 'file:') return;
+  for (let i = 0; i < YOLO_WORKER_COUNT; i++) {
+    if (yoloPool.ready[i]) continue;         // slot alive
+    if (yoloPool.initSent.has(i)) continue;  // already being re-initialised
+    const wi = i;
+    const w = new Worker('yoloWorker.js?v=6');
+    w.onmessage = (e) => onWorkerMsg(wi, e.data);
+    yoloPool.workers[i]  = w;
+    yoloPool.ready[i]    = false;
+    yoloPool.busy[i]     = false;
+    yoloPool.encoding[i] = null;
+    yoloPool.initSent.add(i);
+    w.postMessage({ type: 'init' });
+  }
 }
 
 function onWorkerMsg(wIdx, msg) {
@@ -926,7 +951,7 @@ function onWorkerMsg(wIdx, msg) {
       onEncoded(wIdx, msg);
       break;
     case 'progress':
-      if (samPool.readyCount === 0) updateSamStatus(msg.text);
+      if (yoloPool.readyCount === 0) updateYoloStatus(msg.text);
       break;
     case 'error':
       onEncodeError(wIdx, msg.message);
@@ -935,48 +960,48 @@ function onWorkerMsg(wIdx, msg) {
 }
 
 function onWorkerReady(wIdx) {
-  samPool.ready[wIdx] = true;
-  samPool.busy[wIdx]  = false;
-  samPool.readyCount++;
-  updateSamWorkerCount();
+  yoloPool.ready[wIdx] = true;
+  yoloPool.busy[wIdx]  = false;
+  yoloPool.readyCount++;
+  yoloPool.initSent.delete(wIdx);
+  updateYoloWorkerCount();
 
-  if (samPool.readyCount === 1) {
-    // Model now in browser cache — start the remaining workers.
-    for (let i = 1; i < SAM_WORKER_COUNT; i++) samPool.workers[i].postMessage({ type: 'init' });
-    btnSamToggle.disabled = false;
-    // Only build queue now if images are already loaded; otherwise cfgImages
-    // listener will call buildEncodeQueue() once images arrive.
+  btnYoloToggle.disabled = false;
+
+  // Only cascade-start remaining workers on the very first pool init (not re-spawns,
+  // which already sent their own init messages and tracked them via initSent).
+  if (yoloPool.readyCount === 1 && yoloPool.initSent.size === 0) {
+    for (let i = 1; i < YOLO_WORKER_COUNT; i++) yoloPool.workers[i].postMessage({ type: 'init' });
     if (state.images.length > 0) buildEncodeQueue();
   }
 
-  const all = samPool.readyCount === SAM_WORKER_COUNT;
-  updateSamStatus(all
-    ? (samPool.samMode ? 'Click a subject to segment' : 'YOLO ready  -  toggle on then click a subject')
-    : ('YOLO loading (' + samPool.readyCount + '/' + SAM_WORKER_COUNT + ')...')
+  const all = yoloPool.readyCount === YOLO_WORKER_COUNT;
+  updateYoloStatus(all
+    ? (yoloPool.yoloMode ? 'Click a subject to segment' : 'YOLO ready  -  toggle on then click a subject')
+    : ('YOLO loading (' + yoloPool.readyCount + '/' + YOLO_WORKER_COUNT + ')...')
   );
   drainEncodeQueue();
 }
 
 function onEncoded(wIdx, { imgIdx, segments, origW, origH }) {
-  samPool.busy[wIdx]     = false;
-  samPool.encoding[wIdx] = null;
+  yoloPool.busy[wIdx]     = false;
+  yoloPool.encoding[wIdx] = null;
 
   // Result from before a remove — index is stale, discard it.
-  if (samPool.staleEncodeSet.has(imgIdx)) {
-    samPool.staleEncodeSet.delete(imgIdx);
+  if (yoloPool.staleEncodeSet.has(imgIdx)) {
+    yoloPool.staleEncodeSet.delete(imgIdx);
     drainEncodeQueue();
     return;
   }
 
-  samPool.embeddingCache.set(imgIdx, { segments, origW, origH });
+  yoloPool.embeddingCache.set(imgIdx, { segments, origW, origH });
   window.dispatchEvent(new CustomEvent('collab:encoding-ready', { detail: { imgIdx } }));
 
-  // Flip the rank-list dot to green.
-  const dot = samPool.dots.get(imgIdx);
-  if (dot) { dot.classList.remove('im-sam-encoding', 'im-sam-pending'); dot.classList.add('im-sam-encoded'); dot.title = 'Encoded'; }
+  const dot = yoloPool.dots.get(imgIdx);
+  if (dot) { dot.classList.remove('im-yolo-encoding', 'im-yolo-pending'); dot.classList.add('im-yolo-encoded'); dot.title = 'Encoded'; }
 
   if (imgIdx === state.rankOrder[state.paintIdx]) {
-    updateSamStatus(samPool.samMode ? 'Click a subject to segment' : 'YOLO ready');
+    updateYoloStatus(yoloPool.yoloMode ? 'Click a subject to segment' : 'YOLO ready');
   }
   drainEncodeQueue();
 }
@@ -984,78 +1009,89 @@ function onEncoded(wIdx, { imgIdx, segments, origW, origH }) {
 // ── Worker coordination ───────────────────────────────────────────────────────
 
 function freeWorkerIdx() {
-  for (let i = 0; i < SAM_WORKER_COUNT; i++) {
-    if (samPool.ready[i] && !samPool.busy[i]) return i;
+  const liveCount = yoloPool.ready.filter(Boolean).length;
+  for (let i = 0; i < YOLO_WORKER_COUNT; i++) {
+    if (!yoloPool.ready[i] || yoloPool.busy[i]) continue;
+    if (liveCount > 1 && i === yoloPool.decodeWorkerIdx) continue;
+    return i;
+  }
+  return -1;
+}
+
+// Like freeWorkerIdx but no decode-worker reservation — used for on-demand encoding.
+function freeDecodeWorkerIdx() {
+  for (let i = 0; i < YOLO_WORKER_COUNT; i++) {
+    if (yoloPool.ready[i] && !yoloPool.busy[i]) return i;
   }
   return -1;
 }
 
 function drainEncodeQueue() {
-  while (samPool.encodeQueue.length > 0) {
+  while (yoloPool.encodeQueue.length > 0) {
     const wIdx = freeWorkerIdx();
     if (wIdx === -1) break;
-    const imgIdx = samPool.encodeQueue.shift();
-    if (samPool.embeddingCache.has(imgIdx)) continue; // already cached
+    const imgIdx = yoloPool.encodeQueue.shift();
+    if (yoloPool.embeddingCache.has(imgIdx)) continue; // already cached
     sendEncode(wIdx, imgIdx);
   }
   // Once the queue is empty and no worker is busy, release surplus workers —
   // only one alive worker is kept for decoding. Guard against premature teardown
   // before any images have been queued (e.g. pool initialised before upload).
-  if (samPool.encodeQueueBuilt && samPool.encodeQueue.length === 0 && !samPool.busy.some(Boolean)) {
+  if (yoloPool.encodeQueueBuilt && yoloPool.encodeQueue.length === 0 && !yoloPool.busy.some(Boolean)) {
     let keptOne = false;
-    for (let i = 0; i < SAM_WORKER_COUNT; i++) {
-      if (!samPool.ready[i]) continue; // already terminated
-      if (!keptOne) { keptOne = true; continue; }
-      samPool.workers[i].terminate();
-      samPool.ready[i]    = false;
-      samPool.encoding[i] = null;
-      samPool.readyCount  = Math.max(0, samPool.readyCount - 1);
+    for (let i = 0; i < YOLO_WORKER_COUNT; i++) {
+      if (!yoloPool.ready[i]) continue; // already terminated
+      if (!keptOne) { keptOne = true; yoloPool.decodeWorkerIdx = i; continue; }
+      yoloPool.workers[i].terminate();
+      yoloPool.ready[i]    = false;
+      yoloPool.encoding[i] = null;
+      yoloPool.readyCount  = Math.max(0, yoloPool.readyCount - 1);
     }
-    updateSamWorkerCount();
+    updateYoloWorkerCount();
   }
 }
 
 function onEncodeError(wIdx, message) {
-  const imgIdx = samPool.encoding[wIdx] ?? null;
-  samPool.encoding[wIdx] = null;
-  samPool.busy[wIdx]     = false;
+  const imgIdx = yoloPool.encoding[wIdx] ?? null;
+  yoloPool.encoding[wIdx] = null;
+  yoloPool.busy[wIdx]     = false;
 
   // Terminate the failed worker — frees its WASM heap (~3 GB).
-  samPool.workers[wIdx].terminate();
-  samPool.ready[wIdx] = false;
-  samPool.readyCount  = Math.max(0, samPool.readyCount - 1);
-  updateSamWorkerCount();
+  yoloPool.workers[wIdx].terminate();
+  yoloPool.ready[wIdx] = false;
+  yoloPool.readyCount  = Math.max(0, yoloPool.readyCount - 1);
+  updateYoloWorkerCount();
 
   if (imgIdx !== null) {
-    const dot = samPool.dots.get(imgIdx);
-    if (dot) { dot.classList.remove('im-sam-encoding'); dot.classList.add('im-sam-pending'); dot.title = 'Pending encoding'; }
+    const dot = yoloPool.dots.get(imgIdx);
+    if (dot) { dot.classList.remove('im-yolo-encoding'); dot.classList.add('im-yolo-pending'); dot.title = 'Pending encoding'; }
   }
 
-  if (imgIdx !== null && !samPool.embeddingCache.has(imgIdx)) {
-    const attempts = (samPool.encodeRetries.get(imgIdx) || 0) + 1;
-    samPool.encodeRetries.set(imgIdx, attempts);
+  if (imgIdx !== null && !yoloPool.embeddingCache.has(imgIdx)) {
+    const attempts = (yoloPool.encodeRetries.get(imgIdx) || 0) + 1;
+    yoloPool.encodeRetries.set(imgIdx, attempts);
     if (attempts <= 2) {
       // Re-queue at the front so it's picked up by the next free worker.
-      samPool.encodeQueue.unshift(imgIdx);
-      updateSamStatus('YOLO worker failed  -  retrying with fewer workers...', true);
+      yoloPool.encodeQueue.unshift(imgIdx);
+      updateYoloStatus('YOLO worker failed  -  retrying with fewer workers...', true);
     } else {
-      const failDot = samPool.dots.get(imgIdx);
-      if (failDot) { failDot.classList.remove('im-sam-encoding', 'im-sam-pending'); failDot.classList.add('im-sam-failed'); failDot.title = 'Encoding failed'; }
-      updateSamStatus('Could not encode [' + (state.images[imgIdx]?.name ?? imgIdx) + ']  -  skipping.', true);
+      const failDot = yoloPool.dots.get(imgIdx);
+      if (failDot) { failDot.classList.remove('im-yolo-encoding', 'im-yolo-pending'); failDot.classList.add('im-yolo-failed'); failDot.title = 'Encoding failed'; }
+      updateYoloStatus('Could not encode [' + (state.images[imgIdx]?.name ?? imgIdx) + ']  -  skipping.', true);
     }
   } else {
     // Failure during decode or init (imgIdx null) — just report it.
-    updateSamStatus('YOLO error: ' + message, true);
+    updateYoloStatus('YOLO error: ' + message, true);
   }
 
   drainEncodeQueue();
 }
 
 function sendEncode(wIdx, imgIdx) {
-  samPool.busy[wIdx]     = true;
-  samPool.encoding[wIdx] = imgIdx;
-  const dot = samPool.dots.get(imgIdx);
-  if (dot) { dot.classList.remove('im-sam-pending'); dot.classList.add('im-sam-encoding'); dot.title = 'Encoding...'; }
+  yoloPool.busy[wIdx]     = true;
+  yoloPool.encoding[wIdx] = imgIdx;
+  const dot = yoloPool.dots.get(imgIdx);
+  if (dot) { dot.classList.remove('im-yolo-pending'); dot.classList.add('im-yolo-encoding'); dot.title = 'Encoding...'; }
   const entry = state.images[imgIdx];
   const tmp   = document.createElement('canvas');
   tmp.width   = entry.w;
@@ -1063,26 +1099,35 @@ function sendEncode(wIdx, imgIdx) {
   const tmpCtx = tmp.getContext('2d');
   tmpCtx.drawImage(entry.img, 0, 0);
   const id = tmpCtx.getImageData(0, 0, entry.w, entry.h);
-  samPool.workers[wIdx].postMessage(
+  yoloPool.workers[wIdx].postMessage(
     { type: 'encode', imgIdx, pixels: id.data.buffer, width: entry.w, height: entry.h },
     [id.data.buffer]
   );
 }
 
-// Build the encode queue once, in filename order. Called when the first worker
-// is ready. Navigation never clears or rebuilds this queue — encoding proceeds
-// steadily through all images regardless of where the user is painting.
+// Build the encode queue sorted by rank order, so highest-priority images encode first.
 function buildEncodeQueue() {
-  samPool.encodeQueueBuilt = true;
-  samPool.encodeRetries.clear();
-  const sorted = [...state.images.keys()].sort((a, b) =>
-    state.images[a].name.localeCompare(state.images[b].name, undefined, { sensitivity: 'base' })
-  );
+  yoloPool.encodeQueueBuilt = true;
+  yoloPool.encodeRetries.clear();
+  const sorted = [...state.images.keys()].sort((a, b) => {
+    const ra = state.rankOrder.indexOf(a);
+    const rb = state.rankOrder.indexOf(b);
+    return (ra === -1 ? Infinity : ra) - (rb === -1 ? Infinity : rb);
+  });
   for (const imgIdx of sorted) {
-    if (!samPool.embeddingCache.has(imgIdx))
-      samPool.encodeQueue.push(imgIdx);
+    if (!yoloPool.embeddingCache.has(imgIdx))
+      yoloPool.encodeQueue.push(imgIdx);
   }
   drainEncodeQueue();
+}
+
+// Re-sort the pending encode queue to match the current rank order after a reorder.
+function _resortEncodeQueue() {
+  yoloPool.encodeQueue.sort((a, b) => {
+    const ra = state.rankOrder.indexOf(a);
+    const rb = state.rankOrder.indexOf(b);
+    return (ra === -1 ? Infinity : ra) - (rb === -1 ? Infinity : rb);
+  });
 }
 
 // Return the YOLO segment whose bbox contains (x,y) and whose mask pixel is 1,
@@ -1133,19 +1178,28 @@ function requestDecode(x, y) {
       redrawPolyOverlay(imgIdx);
       updateUndoBtn(imgIdx);
       simRefreshGroup(imgIdx);
-      updateSamStatus('Segment removed. Click to add or click an object to segment.');
+      updateYoloStatus('Segment removed. Click to add or click an object to segment.');
       return;
     }
   }
 
-  if (!samPool.embeddingCache.has(imgIdx)) {
-    updateSamStatus('Not encoded yet  -  wait for the dot to turn green', true);
+  if (!yoloPool.embeddingCache.has(imgIdx)) {
+    if (!yoloPool.encoding.includes(imgIdx)) {
+      const wIdx = freeDecodeWorkerIdx();
+      if (wIdx !== -1) {
+        sendEncode(wIdx, imgIdx);
+      } else {
+        yoloPool.encodeQueue.unshift(imgIdx);
+        drainEncodeQueue();
+      }
+    }
+    updateYoloStatus('Encoding - click the subject again when the thumbnail stops pulsing', true);
     return;
   }
-  const { segments, origW, origH } = samPool.embeddingCache.get(imgIdx);
+  const { segments, origW, origH } = yoloPool.embeddingCache.get(imgIdx);
   const seg = findBestSegmentAt(segments, x, y, origW, origH);
   if (!seg) {
-    updateSamStatus('No segment found  -  try clicking on a recognized object.', true);
+    updateYoloStatus('No segment found  -  try clicking on a recognized object.', true);
     return;
   }
   applyMaskAsPolygon(seg.mask, seg.maskW, seg.maskH, imgIdx);
@@ -1155,7 +1209,7 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   if (forImgIdx !== state.rankOrder[state.paintIdx]) return; // stale result
   const poly = maskToPolygon(maskData, width, height);
   if (!poly || poly.length < 3) {
-    updateSamStatus('No region found  -  try clicking a different point.', true);
+    updateYoloStatus('No region found  -  try clicking a different point.', true);
     return;
   }
   const entry = state.images[forImgIdx];
@@ -1172,7 +1226,7 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   redrawPolyOverlay(forImgIdx);
   updateUndoBtn(forImgIdx);
   simRefreshGroup(forImgIdx);
-  updateSamStatus('Segment added. Click for another or switch to manual mode.');
+  updateYoloStatus('Segment added. Click for another or switch to manual mode.');
 }
 
 // Convert a flat Uint8Array mask (0=bg, 1=fg) to an [{x,y}...] polygon
@@ -1229,17 +1283,17 @@ function rdpSimplify(pts, eps) {
   return [first, last];
 }
 
-btnSamToggle.addEventListener('click', () => {
-  samPool.samMode = !samPool.samMode;
-  btnSamToggle.classList.toggle('im-sam-active', samPool.samMode);
-  btnSamToggle.textContent = samPool.samMode ? 'Seg: On' : 'Seg: Off';
-  if (samPool.samMode) {
+btnYoloToggle.addEventListener('click', () => {
+  yoloPool.yoloMode = !yoloPool.yoloMode;
+  btnYoloToggle.classList.toggle('im-yolo-active', yoloPool.yoloMode);
+  btnYoloToggle.textContent = yoloPool.yoloMode ? 'Seg: On' : 'Seg: Off';
+  if (yoloPool.yoloMode) {
     const imgIdx = state.rankOrder[state.paintIdx];
-    updateSamStatus(samPool.embeddingCache.has(imgIdx)
+    updateYoloStatus(yoloPool.embeddingCache.has(imgIdx)
       ? 'Click a subject to segment'
-      : 'Not encoded yet  -  wait for the dot to turn green');
+      : 'Click a subject to begin encoding and segment');
   } else {
-    updateSamStatus('YOLO ready');
+    updateYoloStatus('YOLO ready');
   }
 });
 
@@ -1354,13 +1408,16 @@ let _lastSimTs         = null;
 let simMergedImageData = null; // set when merge complete; cleared when sim re-activates
 let _simViewDirty      = true;
 let simLastPlacements  = null; // placements from last finishMerge — used for mask overlay
-let simCornerDrag      = null; // { dir, id, startPx, startW, startH, startOutX, startOutY }
+let simCornerDrag      = null; // { dir, id, startPx, startX1, startY1, startX2, startY2 }
+let simBodyDragging    = false; // true while a body is held by MouseConstraint
 let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gesture
 let simDispScale       = 1;    // display px per physics px (fixed; based on SIM_WORLD)
 const SIM_WORLD        = 10000; // fixed physics world size, independent of output canvas
-let simOutX            = 0;    // output canvas top-left x in world space
-let simOutY            = 0;    // output canvas top-left y in world space
-let _simOutExplicit    = false; // set when simOutX/Y are set by remote; suppresses resizeSim re-center
+let simX1              = 0;    // output rect TL x in world space
+let simY1              = 0;    // output rect TL y in world space
+let simX2              = 0;    // output rect BR x in world space
+let simY2              = 0;    // output rect BR y in world space
+let _simOutExplicit    = false; // set when corners are set by remote; suppresses resizeSim re-center
 let mergeCanvas        = null; // offscreen full-res canvas -- used for download
 let simViewScale       = 1;          // viewport zoom (1 = no zoom)
 let simViewOffset      = { x: 0, y: 0 }; // viewport pan offset in physics coords
@@ -1488,12 +1545,11 @@ function clientToCanvasPx(clientX, clientY) {
 
 function getCornerHandlePositions() {
   const ts = simDispScale * simViewScale;
-  const ox = simOutX, oy = simOutY, W = state.outW, H = state.outH;
   return [
-    { dir: 'nw', cx: (ox     - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
-    { dir: 'ne', cx: (ox + W - simViewOffset.x) * ts, cy: (oy     - simViewOffset.y) * ts },
-    { dir: 'sw', cx: (ox     - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
-    { dir: 'se', cx: (ox + W - simViewOffset.x) * ts, cy: (oy + H - simViewOffset.y) * ts },
+    { dir: 'nw', cx: (simX1 - simViewOffset.x) * ts, cy: (simY1 - simViewOffset.y) * ts },
+    { dir: 'ne', cx: (simX2 - simViewOffset.x) * ts, cy: (simY1 - simViewOffset.y) * ts },
+    { dir: 'sw', cx: (simX1 - simViewOffset.x) * ts, cy: (simY2 - simViewOffset.y) * ts },
+    { dir: 'se', cx: (simX2 - simViewOffset.x) * ts, cy: (simY2 - simViewOffset.y) * ts },
   ];
 }
 
@@ -1513,22 +1569,32 @@ function drawCornerHandles() {
   if (!simEngine) return;
   const ctx     = simCtx;
   const ts      = simDispScale * simViewScale;
-  const W       = state.outW, H = state.outH;
   const handles = getCornerHandlePositions();
 
   ctx.save();
 
   if (simCornerDrag) {
+    // Ghost showing the original rect before drag started
+    const ox1 = (simCornerDrag.startX1 - simViewOffset.x) * ts;
+    const oy1 = (simCornerDrag.startY1 - simViewOffset.y) * ts;
+    const ox2 = (simCornerDrag.startX2 - simViewOffset.x) * ts;
+    const oy2 = (simCornerDrag.startY2 - simViewOffset.y) * ts;
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(ox1, oy1, ox2 - ox1, oy2 - oy1);
+    ctx.setLineDash([]);
+
     // Dashed preview rect showing the new output boundary
     ctx.strokeStyle = 'rgba(0,255,127,0.5)';
     ctx.lineWidth   = 1.5;
     ctx.setLineDash([6, 4]);
-    const rx = handles[0].cx, ry = handles[0].cy;
-    ctx.strokeRect(rx, ry, W * ts, H * ts);
+    const nw = handles[0], se = handles[3];
+    ctx.strokeRect(nw.cx, nw.cy, se.cx - nw.cx, se.cy - nw.cy);
     ctx.setLineDash([]);
     // Size label
     ctx.fillStyle  = 'springgreen';
-    ctx.font       = 'bold 13px monospace';
+    ctx.font       = 'bold 17px monospace';
     ctx.textAlign  = 'center';
     const lblY = handles[2].cy + 20 < simCanvas.height - 6 ? handles[2].cy + 20 : handles[0].cy - 8;
     ctx.fillText(state.outW + ' \xd7 ' + state.outH, simCanvas.width / 2, lblY);
@@ -1555,20 +1621,25 @@ function drawCornerHandles() {
 function updateCornerResize(canvasPx) {
   if (!simCornerDrag) return;
   const ts  = simDispScale * simViewScale;
-  const dX  = (canvasPx.x - simCornerDrag.startPx.x) / ts;
-  const dY  = (canvasPx.y - simCornerDrag.startPx.y) / ts;
+  const dx  = (canvasPx.x - simCornerDrag.startPx.x) / ts;
+  const dy  = (canvasPx.y - simCornerDrag.startPx.y) / ts;
   const dir = simCornerDrag.dir;
-  const sx  = (dir === 'ne' || dir === 'se') ?  1 : -1;
-  const sy  = (dir === 'sw' || dir === 'se') ?  1 : -1;
-  const newW = Math.min(8000, Math.max(200, Math.round(simCornerDrag.startW + sx * dX)));
-  const newH = Math.min(8000, Math.max(200, Math.round(simCornerDrag.startH + sy * dY)));
-  state.outW = newW;
-  state.outH = newH;
-  cfgWidth.value  = newW;
-  cfgHeight.value = newH;
-  // Move the output rect's anchored corner: opposite side stays fixed in world space
-  simOutX = simCornerDrag.startOutX + (sx > 0 ? 0 : dX);
-  simOutY = simCornerDrag.startOutY + (sy > 0 ? 0 : dY);
+
+  let x1 = simCornerDrag.startX1, y1 = simCornerDrag.startY1;
+  let x2 = simCornerDrag.startX2, y2 = simCornerDrag.startY2;
+
+  if (dir === 'nw' || dir === 'sw') x1 = Math.min(x1 + dx, x2 - 200);
+  if (dir === 'ne' || dir === 'se') x2 = Math.max(x2 + dx, x1 + 200);
+  if (dir === 'nw' || dir === 'ne') y1 = Math.min(y1 + dy, y2 - 200);
+  if (dir === 'sw' || dir === 'se') y2 = Math.max(y2 + dy, y1 + 200);
+
+  simX1 = x1; simY1 = y1; simX2 = x2; simY2 = y2;
+  state.outW = Math.round(x2 - x1);
+  state.outH = Math.round(y2 - y1);
+  cfgWidth.value  = state.outW;
+  cfgHeight.value = state.outH;
+  _simViewDirty = true;
+  _broadcastSettings();
 }
 
 function finishCornerResize() {
@@ -1579,6 +1650,7 @@ function finishCornerResize() {
 }
 
 function initSim(savedPositions = null) {
+  const wasFrozen = simFrozen;
   teardownSim();
   const { Engine, Bodies, Body, World, Events, Mouse, MouseConstraint } = Matter;
 
@@ -1593,17 +1665,19 @@ function initSim(savedPositions = null) {
   simMergedImageData = null;
   mergeCanvas = null;
 
-  // Center output canvas in the fixed world
-  simOutX = (SIM_WORLD - state.outW) / 2;
-  simOutY = (SIM_WORLD - state.outH) / 2;
+  // Center output rect in the fixed world
+  simX1 = (SIM_WORLD - state.outW) / 2;
+  simY1 = (SIM_WORLD - state.outH) / 2;
+  simX2 = simX1 + state.outW;
+  simY2 = simY1 + state.outH;
 
   // Fixed dispScale based on world size; viewScale zooms to fit output canvas initially
   simDispScale = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
   const fitTotal = Math.min(canvasW / state.outW, canvasH / state.outH) * 0.82;
   simViewScale  = fitTotal / simDispScale;
   simViewOffset = {
-    x: simOutX + state.outW / 2 - canvasW / 2 / (simDispScale * simViewScale),
-    y: simOutY + state.outH / 2 - canvasH / 2 / (simDispScale * simViewScale),
+    x: (simX1 + simX2) / 2 - canvasW / 2 / (simDispScale * simViewScale),
+    y: (simY1 + simY2) / 2 - canvasH / 2 / (simDispScale * simViewScale),
   };
 
   const engine = Engine.create({ gravity: { x: 0, y: 0 } });
@@ -1655,14 +1729,14 @@ function initSim(savedPositions = null) {
   World.add(engine.world, mc);
   Events.on(mc, 'startdrag', (event) => {
     if (!event.body) return;
+    simBodyDragging = true;
+    _clearMergedImage();
     const g = simGroups.find(sg => sg && sg.body && (sg.body === event.body || sg.body === event.body.parent));
     if (g) dispatchBodyLift(g);
   });
 
   Events.on(mc, 'enddrag', (event) => {
-    simMergedImageData = null;
-    simLastPlacements  = null;
-    btnDownload.classList.add('im-hidden');
+    simBodyDragging = false;
 
     const g = event.body
       ? simGroups.find(sg => sg && sg.body && (sg.body === event.body || sg.body === event.body.parent))
@@ -1683,6 +1757,8 @@ function initSim(savedPositions = null) {
 
   updateSimStatus('Settling\u2026');
   simRafId = requestAnimationFrame(simTick);
+  if (active.length === 0) { simSettled = true; simAlpha = 0; updateSimStatus('-'); }
+  if (wasFrozen) _setFrozen(true);
 }
 
 function placeBody(body, x, y, angle) {
@@ -1733,7 +1809,8 @@ function teardownSim() {
   simMouse   = null;
   simGroups  = [];
   simSettled = false;
-  simFrozen  = false;
+  simFrozen       = false;
+  simBodyDragging = false;
   _lastSimTs = null;
   btnMerge.classList.add('im-hidden');
   btnDownload.classList.add('im-hidden');
@@ -1743,7 +1820,7 @@ function teardownSim() {
 function simGridPos(rank, n, W, H) {
   const cols = Math.max(1, Math.ceil(Math.sqrt(n * W / H)));
   const cw = W / cols, ch = H / Math.ceil(n / cols);
-  return { x: simOutX + (rank % cols + 0.5) * cw, y: simOutY + (Math.floor(rank / cols) + 0.5) * ch };
+  return { x: simX1 + (rank % cols + 0.5) * cw, y: simY1 + (Math.floor(rank / cols) + 0.5) * ch };
 }
 
 function simActiveBodies() {
@@ -1767,14 +1844,17 @@ function simTick(ts) {
     }
   }
 
+  if (simBodyDragging || simCornerDrag || pinchPreview) _simViewDirty = true;
+
   if (simMergedImageData && simSettled) {
     if (_simViewDirty) {
       _simViewDirty = false;
+      drawSim();
       if (mergeCanvas) {
         simCtx.save();
         simCtx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
         simCtx.translate(-simViewOffset.x, -simViewOffset.y);
-        simCtx.drawImage(mergeCanvas, simOutX, simOutY, state.outW, state.outH);
+        simCtx.drawImage(mergeCanvas, simX1, simY1, state.outW, state.outH);
         simCtx.restore();
       }
       drawMergedMaskOverlay();
@@ -1814,8 +1894,8 @@ function applySimForces() {
   if (simFrozen) return;
   const bodies = simActiveBodies();
   if (bodies.length === 0) return;
-  const cx = simOutX + state.outW / 2;
-  const cy = simOutY + state.outH / 2;
+  const cx = (simX1 + simX2) / 2;
+  const cy = (simY1 + simY2) / 2;
   const kc = 0.00002 * simAlpha;
   const kr = 80      * simAlpha;
 
@@ -1860,9 +1940,7 @@ function drawSim() {
   const vy1 = vy0 + DH / totalScale;
   const visW     = vx1 - vx0;
   const rawStep  = visW / 8;
-  const mag      = Math.pow(10, Math.floor(Math.log10(rawStep)));
-  const norm     = rawStep / mag;
-  const gridStep = mag * (norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10);
+  const gridStep = Math.pow(2, Math.round(Math.log2(rawStep)));
   ctx.strokeStyle = 'rgba(255,255,255,0.07)';
   ctx.lineWidth   = ds * 0.5;
   ctx.beginPath();
@@ -1882,7 +1960,7 @@ function drawSim() {
 
   ctx.strokeStyle = '#555';
   ctx.lineWidth   = ds;
-  ctx.strokeRect(simOutX + 0.5, simOutY + 0.5, W - 1, H - 1);
+  ctx.strokeRect(simX1 + 0.5, simY1 + 0.5, W - 1, H - 1);
 
   const fontSize = Math.max(9, Math.round(11 * ds));
   ctx.font      = `${fontSize}px sans-serif`;
@@ -1962,7 +2040,7 @@ function drawMergedMaskOverlay() {
 
   ctx.save();
   ctx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
-  ctx.translate(-simViewOffset.x, -simViewOffset.y);
+  ctx.translate(-simViewOffset.x + simX1, -simViewOffset.y + simY1);
 
   for (const p of simLastPlacements) {
     const entry = state.images[p.imgIdx];
@@ -1989,6 +2067,14 @@ function drawMergedMaskOverlay() {
 
 function updateSimStatus(text) { simStatusEl.textContent = text; }
 
+function _clearMergedImage() {
+  simMergedImageData = null;
+  simLastPlacements  = null;
+  mergeCanvas        = null;
+  btnDownload.classList.add('im-hidden');
+  _simViewDirty = true;
+}
+
 function extractPlacements() {
   const autoScales = computeAutoScales();
   return state.rankOrder.filter(imgIdx => !state.images[imgIdx].simHidden).map(imgIdx => {
@@ -2010,12 +2096,12 @@ function extractPlacements() {
     }
     return {
       imgIdx,
-      x:            Math.round(g.body.position.x - g.imgCentroidSim.x),
-      y:            Math.round(g.body.position.y - g.imgCentroidSim.y),
+      x:            Math.round(g.body.position.x - g.imgCentroidSim.x - simX1),
+      y:            Math.round(g.body.position.y - g.imgCentroidSim.y - simY1),
       scale,
       angle:        g.body.angle,
-      pivotX:       g.body.position.x,
-      pivotY:       g.body.position.y,
+      pivotX:       g.body.position.x - simX1,
+      pivotY:       g.body.position.y - simY1,
       imgCentroidX: g.imgCentroidSim.x,
       imgCentroidY: g.imgCentroidSim.y,
     };
@@ -2051,13 +2137,17 @@ function scheduleResizeSim() {
 
 function resizeSim() {
   if (!simEngine) return;
-  // Physics world (SIM_WORLD) and body shapes are independent of output canvas size.
-  // Re-center only for local text-input resize; corner drag and remote sync set simOutX/Y themselves.
+  // Corner drag and remote sync set corners directly; text-input resize expands around current center.
   if (!simCornerDrag && !_simOutExplicit) {
-    simOutX = (SIM_WORLD - state.outW) / 2;
-    simOutY = (SIM_WORLD - state.outH) / 2;
+    const cx = (simX1 + simX2) / 2;
+    const cy = (simY1 + simY2) / 2;
+    simX1 = cx - state.outW / 2;
+    simY1 = cy - state.outH / 2;
+    simX2 = cx + state.outW / 2;
+    simY2 = cy + state.outH / 2;
   }
   _simOutExplicit = false;
+  _simViewDirty = true;
 }
 
 function simRefreshGroup(imgIdx) {
@@ -2257,6 +2347,7 @@ function finishMerge(placements, ownershipMap) {
   mergeCanvas.getContext('2d').putImageData(outImgData, 0, 0);
   simMergedImageData = outImgData;
   simLastPlacements  = placements;
+  _simViewDirty      = true;
 
   const placed = placements.length, total = state.images.length;
   updateSimStatus(
@@ -2353,9 +2444,10 @@ window.addEventListener('resize', () => {
     _hold = null;
     simCornerDrag = {
       dir: h.corner.dir, id: h.pointerId,
-      startPx: h.startPx, startW: state.outW, startH: state.outH,
-      startOutX: simOutX, startOutY: simOutY,
+      startPx: h.startPx,
+      startX1: simX1, startY1: simY1, startX2: simX2, startY2: simY2,
     };
+    _clearMergedImage();
   }
 
   function _cancelHold() {
@@ -2484,9 +2576,10 @@ window.addEventListener('resize', () => {
     if (!simEngine || !lpCorner || !lpStartCPx) return;
     simCornerDrag = {
       dir: lpCorner.dir, id: liftedId,
-      startPx: lpStartCPx, startW: state.outW, startH: state.outH,
-      startOutX: simOutX, startOutY: simOutY,
+      startPx: lpStartCPx,
+      startX1: simX1, startY1: simY1, startX2: simX2, startY2: simY2,
     };
+    _clearMergedImage();
     mode = 'resize';
     if (navigator.vibrate) navigator.vibrate(28);
   }
@@ -2501,6 +2594,7 @@ window.addEventListener('resize', () => {
       bodyAngle: liftedGroup.body.angle,
     };
     pinchPreview = { imgIdx: liftedGroup.imgIdx, scale };
+    _clearMergedImage();
   }
 
   function updateGroupPinch(t1, t2) {
@@ -2862,7 +2956,7 @@ btnExportSession.addEventListener('click', async () => {
     await SessionIO.export({
       state,
       simGroups,
-      samPool,
+      yoloPool,
       cfg: {
         blendMode:    cfgBlendMode.value,
         seed:         parseInt(cfgSeed.value) || 42,
@@ -2871,6 +2965,7 @@ btnExportSession.addEventListener('click', async () => {
         rotationLock: cfgRotation.checked,
         simViewScale,
         simViewOffset,
+        simX1, simY1, simX2, simY2,
         simFrozen,
       },
     }, (pct, text) => _sessionStatus(text));
@@ -2946,8 +3041,8 @@ function _applyImportReplace(session, imgs, encodings) {
   state.images    = [];
   state.rankOrder = [];
   state.undoStack = [];
-  samPool.embeddingCache.clear();
-  samPool.dots.clear();
+  yoloPool.embeddingCache.clear();
+  yoloPool.dots.clear();
   rankList.innerHTML = '';
 
   // Restore config to DOM + state
@@ -2992,15 +3087,18 @@ function _applyImportReplace(session, imgs, encodings) {
     simViewOffset = { x: session.simViewOffset.x, y: session.simViewOffset.y };
     updateMouseViewport();
   }
-  if (session.simOutX != null) {
-    simOutX = session.simOutX;
-    simOutY = session.simOutY;
+  if (session.simX1 != null) {
+    simX1 = session.simX1; simY1 = session.simY1;
+    simX2 = session.simX2; simY2 = session.simY2;
+  } else if (session.simOutX != null) {
+    simX1 = session.simOutX; simY1 = session.simOutY;
+    simX2 = simX1 + state.outW; simY2 = simY1 + state.outH;
   }
 
   if (session.simFrozen) _setFrozen(true);
 
   // Queue YOLO encoding for images without cached encodings
-  if (state.useSam && samPool.workers.length > 0 && samPool.readyCount > 0) {
+  if (state.useYolo && yoloPool.workers.length > 0 && yoloPool.readyCount > 0) {
     buildEncodeQueue();
   }
 }
@@ -3038,7 +3136,7 @@ function _applyImportAdd(session, imgs, encodings) {
     }
   }
 
-  if (state.useSam && samPool.workers.length > 0 && samPool.readyCount > 0) {
+  if (state.useYolo && yoloPool.workers.length > 0 && yoloPool.readyCount > 0) {
     buildEncodeQueue();
   }
 }
@@ -3130,7 +3228,7 @@ function _restoreEncodings(encodings, baseIdx, remapIdx) {
     if (!enc) return;
     const newIdx = remapIdx ? remapIdx[i] : baseIdx + i;
     if (newIdx < 0) return;
-    samPool.embeddingCache.set(newIdx, {
+    yoloPool.embeddingCache.set(newIdx, {
       origW: enc.origW, origH: enc.origH,
       segments: enc.segments.map(s => ({
         classId: s.classId, className: s.className, score: s.score,
@@ -3144,12 +3242,14 @@ function _restoreEncodings(encodings, baseIdx, remapIdx) {
 window.addEventListener('collab:remote-encoding', (e) => {
   const { imgName, encoding } = e.detail;
   const idx = state.images.findIndex(im => im.name === imgName);
-  if (idx < 0 || samPool.embeddingCache.has(idx)) return;
+  if (idx < 0 || yoloPool.embeddingCache.has(idx)) return;
   _restoreEncodings([encoding], idx);
-  const dot = samPool.dots.get(idx);
+  const dot = yoloPool.dots.get(idx);
   if (dot) {
-    dot.classList.remove('im-sam-encoding', 'im-sam-pending');
-    dot.classList.add('im-sam-encoded');
+    dot.classList.remove('im-yolo-encoding', 'im-yolo-pending');
+    dot.classList.add('im-yolo-encoded');
     dot.title = 'Encoded';
   }
 });
+
+initSim();

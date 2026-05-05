@@ -109,7 +109,7 @@ function _base64ToMask(b64) {
 
 const SessionIO = {
 
-  // exportData: { state, simGroups, samPool, cfg: { blendMode, seed, ditherExp, useScaleRange, rotationLock } }
+  // exportData: { state, simGroups, yoloPool, cfg: { blendMode, seed, ditherExp, useScaleRange, rotationLock } }
   // onProgress: (pct, text) => void
   export(exportData, onProgress) {
     return this.exportBlob(exportData, onProgress).then(blob => {
@@ -123,7 +123,7 @@ const SessionIO = {
 
   // Same as export() but resolves with Blob instead of triggering a download.
   exportBlob(exportData, onProgress) {
-    const { state, simGroups, samPool, cfg } = exportData;
+    const { state, simGroups, yoloPool, cfg } = exportData;
 
     const images = state.images.map(entry => {
       const c = document.createElement('canvas');
@@ -146,8 +146,8 @@ const SessionIO = {
       paintIdx: state.paintIdx,
       simViewScale: cfg.simViewScale,
       simViewOffset: { x: cfg.simViewOffset.x, y: cfg.simViewOffset.y },
-      simOutX: cfg.simOutX,
-      simOutY: cfg.simOutY,
+      simX1: cfg.simX1, simY1: cfg.simY1,
+      simX2: cfg.simX2, simY2: cfg.simY2,
       simFrozen: cfg.simFrozen,
       images: state.images.map((entry, i) => {
         const g = simGroups[i];
@@ -164,7 +164,7 @@ const SessionIO = {
     };
 
     const encodings = state.images.map((_, i) => {
-      const cached = samPool.embeddingCache.get(i);
+      const cached = yoloPool.embeddingCache.get(i);
       if (!cached) return null;
       return {
         origW: cached.origW, origH: cached.origH,
