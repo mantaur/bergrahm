@@ -162,6 +162,17 @@ function _broadcastSettings() {
   }, 200);
 }
 
+let _settingsThrottleTs = 0;
+function _broadcastSettingsNow() {
+  const now = Date.now();
+  if (now - _settingsThrottleTs < 50) return;
+  _settingsThrottleTs = now;
+  window.dispatchEvent(new CustomEvent('collab:settings-changed', {
+    detail: { outW: state.outW, outH: state.outH, fillColor: state.fillColor, blendMode: cfgBlendMode.value,
+              simX1, simY1, simX2, simY2 },
+  }));
+}
+
 cfgMinScale.addEventListener('input', () => {
   let v = parseFloat(cfgMinScale.value);
   if (v > parseFloat(cfgMaxScale.value)) {
@@ -449,7 +460,11 @@ function createRankItem(imgIdx, rank) {
 
   const thumb = document.createElement('img');
   thumb.className = 'im-rank-thumb';
-  thumb.src = entry.thumbUrl;
+  if (entry.thumbUrl) {
+    thumb.src = entry.thumbUrl;
+  } else {
+    thumb.classList.add('im-rank-thumb-pending');
+  }
   thumb.alt = entry.name;
 
   const badge = document.createElement('span');
@@ -580,6 +595,7 @@ function loadPainterImage(rankIdx) {
   state.paintIdx = rankIdx;
   const imgIdx  = state.rankOrder[rankIdx];
   const entry   = state.images[imgIdx];
+  if (!entry || !entry.img) return; // image not yet received during streaming collab join
 
   paintName.textContent = entry.name;
   paintIndexLbl.textContent = (rankIdx + 1) + ' / ' + state.images.length;
@@ -1427,6 +1443,8 @@ let simX2              = 0;    // output rect BR x in world space
 let simY2              = 0;    // output rect BR y in world space
 let _simOutExplicit    = false; // set when corners are set by remote; suppresses resizeSim re-center
 let mergeCanvas        = null; // offscreen full-res canvas -- used for download
+let mergeX1            = 0;   // simX1 at the time of the last finishMerge
+let mergeY1            = 0;   // simY1 at the time of the last finishMerge
 let simViewScale       = 1;          // viewport zoom (1 = no zoom)
 let simViewOffset      = { x: 0, y: 0 }; // viewport pan offset in physics coords
 let simMouse           = null;       // Matter.js Mouse object (for updateMouseViewport)
@@ -1647,7 +1665,7 @@ function updateCornerResize(canvasPx) {
   cfgWidth.value  = state.outW;
   cfgHeight.value = state.outH;
   _simViewDirty = true;
-  _broadcastSettings();
+  _broadcastSettingsNow();
 }
 
 function finishCornerResize() {
@@ -1888,7 +1906,7 @@ function simTick(ts) {
         simCtx.save();
         simCtx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
         simCtx.translate(-simViewOffset.x, -simViewOffset.y);
-        simCtx.drawImage(mergeCanvas, simX1, simY1, state.outW, state.outH);
+        simCtx.drawImage(mergeCanvas, mergeX1, mergeY1, mergeCanvas.width, mergeCanvas.height);
         simCtx.restore();
       }
       drawMergedMaskOverlay();
@@ -1996,7 +2014,7 @@ function drawSim() {
   ctx.lineWidth   = ds;
   ctx.strokeRect(simX1 + 0.5, simY1 + 0.5, W - 1, H - 1);
 
-  const fontSize = Math.max(9, Math.round(11 * ds));
+  const fontSize = Math.max(Math.round(9 / totalScale), 40);
   ctx.font      = `${fontSize}px sans-serif`;
   ctx.textAlign = 'center';
 
@@ -2010,6 +2028,8 @@ function drawSim() {
     // Live scale factor during pinch gesture for this body
     const pp = pinchPreview && pinchPreview.imgIdx === g.imgIdx ? pinchPreview : null;
     const scaleFactor = pp ? pp.scale / g.scale : 1;
+
+    if (mergeCanvas) continue;
 
     for (const poly of g.polysInSim) {
       ctx.beginPath();
@@ -2026,7 +2046,7 @@ function drawSim() {
       ctx.fill();
       ctx.globalAlpha = 1;
       ctx.strokeStyle = pp ? 'springgreen' : g.color;
-      ctx.lineWidth   = (pp ? 2.5 : 1.5) * ds;
+      ctx.lineWidth   = (pp ? 2.5 : 1.5) / totalScale;
       ctx.stroke();
     }
 
@@ -2047,8 +2067,8 @@ function drawSim() {
     ctx.closePath();
     ctx.globalAlpha = pp ? 0.45 : 0.18;
     ctx.strokeStyle = pp ? 'springgreen' : g.color;
-    ctx.lineWidth   = ds;
-    ctx.setLineDash([4 * ds, 4 * ds]);
+    ctx.lineWidth   = 1 / totalScale;
+    ctx.setLineDash([4 / totalScale, 4 / totalScale]);
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
@@ -2084,8 +2104,8 @@ function drawSim() {
     ctx.closePath();
     ctx.globalAlpha = 0.9;
     ctx.strokeStyle = color;
-    ctx.lineWidth   = 2.5 * ds;
-    ctx.setLineDash([6 * ds, 4 * ds]);
+    ctx.lineWidth   = 2.5 / totalScale;
+    ctx.setLineDash([6 / totalScale, 4 / totalScale]);
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
@@ -2104,7 +2124,7 @@ function drawMergedMaskOverlay() {
 
   ctx.save();
   ctx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
-  ctx.translate(-simViewOffset.x + simX1, -simViewOffset.y + simY1);
+  ctx.translate(-simViewOffset.x + mergeX1, -simViewOffset.y + mergeY1);
 
   for (const p of simLastPlacements) {
     const entry = state.images[p.imgIdx];
@@ -2121,9 +2141,6 @@ function drawMergedMaskOverlay() {
       ctx.fillStyle   = color;
       ctx.fill();
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = color;
-      ctx.lineWidth   = 1.5 * ds;
-      ctx.stroke();
     }
   }
   ctx.restore();
@@ -2180,7 +2197,46 @@ function _setSimSensors(isSensor) {
   }
 }
 
-btnSimReset.addEventListener('click', () => { if (simEngine) initSim(); });
+btnSimReset.addEventListener('click', () => {
+  if (!simEngine) return;
+  initSim();
+  window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
+});
+
+const cfgScaleAll    = document.getElementById('cfg-scale-all');
+const cfgScaleAllVal = document.getElementById('cfg-scale-all-val');
+const btnScaleAll    = document.getElementById('btn-scale-all');
+
+cfgScaleAll.addEventListener('input', () => {
+  cfgScaleAllVal.textContent = parseFloat(cfgScaleAll.value).toFixed(2) + 'x';
+});
+
+btnScaleAll.addEventListener('click', () => {
+  const factor = parseFloat(cfgScaleAll.value);
+  if (!factor || factor === 1) return;
+  const autoScales = computeAutoScales();
+  state.images.forEach((entry, i) => {
+    if (entry.simHidden) return;
+    const base = entry.scale !== null ? entry.scale : autoScales[i].scale;
+    entry.scale = Math.max(0.05, base * factor);
+    entry.scaleFixed = true;
+  });
+  cfgScaleAll.value = '1';
+  cfgScaleAllVal.textContent = '1.00x';
+  buildRankList();
+  // Broadcast scale changes so peers rebuild their sim groups before receiving positions
+  window.dispatchEvent(new CustomEvent('collab:scales-changed', {
+    detail: { scales: state.images.map(e => e.scale) },
+  }));
+  if (simEngine) {
+    const savedPositions = {};
+    simGroups.forEach((g, i) => {
+      if (g) savedPositions[i] = { pos: g.body.position, angle: g.body.angle };
+    });
+    initSim(savedPositions);
+    window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
+  }
+});
 
 btnSimFreeze.addEventListener('click', () => {
   if (!simEngine) return;
@@ -2232,9 +2288,7 @@ function simRefreshGroup(imgIdx) {
 
   if (!hasPolys) return;
 
-  simMergedImageData = null;
-  _simViewDirty = true;
-  btnDownload.classList.add('im-hidden');
+  _clearMergedImage();
   const g = buildSimGroup(imgIdx);
   if (!g) return;
 
@@ -2411,6 +2465,8 @@ function finishMerge(placements, ownershipMap) {
   mergeCanvas.getContext('2d').putImageData(outImgData, 0, 0);
   simMergedImageData = outImgData;
   simLastPlacements  = placements;
+  mergeX1 = simX1;
+  mergeY1 = simY1;
   _simViewDirty      = true;
 
   const placed = placements.length, total = state.images.length;
@@ -2550,7 +2606,8 @@ window.addEventListener('resize', () => {
       return;
     }
     if (!simCornerDrag || e.pointerId !== simCornerDrag.id) return;
-    e.preventDefault();
+    // No preventDefault for mouse — suppressing pointermove also suppresses mousemove,
+    // which would freeze the collab cursor broadcast during the resize drag.
     updateCornerResize(clientToCanvasPx(e.clientX, e.clientY));
   }, { passive: false });
 
@@ -2629,7 +2686,10 @@ window.addEventListener('resize', () => {
     liftedGroup  = g;
     liftedOffset = { x: g.body.position.x - fingerPhys.x, y: g.body.position.y - fingerPhys.y };
     mode = 'lifted';
+    _clearMergedImage();
     dispatchBodyLift(g);
+    _activeDragIdx = g.imgIdx;
+    window.dispatchEvent(new CustomEvent('collab:body-grabbing', { detail: { imgIdx: g.imgIdx } }));
     if (navigator.vibrate) navigator.vibrate(28);
     const autoScale = computeAutoScales()[g.imgIdx].scale;
     pinchPreview = { imgIdx: g.imgIdx, scale: state.images[g.imgIdx].scale ?? autoScale };
@@ -2705,7 +2765,9 @@ window.addEventListener('resize', () => {
     if (liftedGroup) {
       simRefreshGroup(liftedGroup.imgIdx);
       dispatchBodyMoved(liftedGroup);
+      window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: liftedGroup.imgIdx } }));
     }
+    _activeDragIdx = -1;
     liftedGroup  = null;
     liftedOffset = { x: 0, y: 0 };
     pinchPreview = null;
@@ -3229,7 +3291,9 @@ function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
 
 // ── Collaboration remote-event handlers ───────────────────────────────────────
 
-let _collabAutoFrozen = false;
+let _collabAutoFrozen    = false;
+let _collabJoinTotal     = 0;
+let _collabJoinFullsDone = 0;
 
 window.addEventListener('collab:peer-count', ({ detail: { count } }) => {
   if (count > 0) {
@@ -3275,10 +3339,26 @@ window.addEventListener('collab:remote-image', async (e) => {
 
 window.addEventListener('collab:remote-positions', (e) => {
   if (!simEngine) return;
-  for (const [idxStr, { x, y, angle }] of Object.entries(e.detail.positions)) {
+  const { positions, simX1: rx1, simY1: ry1, simX2: rx2, simY2: ry2 } = e.detail;
+  if (rx1 != null) {
+    simX1 = rx1; simY1 = ry1; simX2 = rx2; simY2 = ry2;
+    _simOutExplicit = true; _simViewDirty = true;
+  }
+  for (const [idxStr, { x, y, angle }] of Object.entries(positions)) {
     const g = simGroups[Number(idxStr)];
     if (g && g.body) placeBody(g.body, x, y, angle);
   }
+});
+
+window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
+  scales.forEach((scale, i) => {
+    const entry = state.images[i];
+    if (!entry) return;
+    entry.scale      = scale;
+    entry.scaleFixed = scale !== null;
+    simRefreshGroup(i);
+  });
+  buildRankList();
 });
 
 window.addEventListener('collab:undo-body-move', (e) => {
@@ -3339,6 +3419,96 @@ window.addEventListener('collab:remote-encoding', (e) => {
     dot.classList.add('im-yolo-encoded');
     dot.title = 'Encoded';
   }
+});
+
+// ── Streaming collab join handlers ────────────────────────────────────────────
+
+function _updateFilmstripThumb(imgIdx) {
+  const li = rankList.querySelector('[data-img-idx="' + imgIdx + '"]');
+  if (!li) return;
+  const imgEl = li.querySelector('.im-rank-thumb');
+  if (!imgEl) return;
+  const entry = state.images[imgIdx];
+  if (entry?.thumbUrl) {
+    imgEl.src = entry.thumbUrl;
+    imgEl.classList.remove('im-rank-thumb-pending');
+  }
+}
+
+window.addEventListener('collab:remote-session-meta', ({ detail: meta }) => {
+  const n = meta.imageCount;
+
+  state.images = meta.images.map(si => ({
+    file: null, name: si.name, img: null, thumbUrl: null,
+    w: si.w, h: si.h,
+    polygons:    si.polygons    || [],
+    currentPoly: si.currentPoly || [],
+    scale:      si.scale,
+    scaleFixed:  si.scaleFixed  || false,
+    simHidden:   si.simHidden   || false,
+  }));
+  state.undoStack = state.images.map(() => []);
+  state.rankOrder = meta.rankOrder || state.images.map((_, i) => i);
+  state.paintIdx  = Math.min(meta.paintIdx || 0, Math.max(0, state.rankOrder.length - 1));
+
+  yoloPool.embeddingCache.clear();
+  yoloPool.dots.clear();
+
+  if (window.applyRemoteSettings) window.applyRemoteSettings(meta);
+
+  buildRankList();
+  updateStepMeta('step-images', imageCountLabel(n), true);
+  if (n > 0) { paintArea.classList.remove('im-hidden'); unlockStep('step-paint'); }
+
+  const savedPositions = {};
+  meta.images.forEach((si, i) => {
+    if (si.simPos) savedPositions[i] = { pos: si.simPos, angle: si.simAngle || 0 };
+  });
+  if (simEngine) teardownSim();
+  if (n > 0) initSim(savedPositions);
+
+  // Restore host viewport so guest sees the same view immediately
+  if (meta.simViewScale && simEngine) {
+    simViewScale  = meta.simViewScale;
+    simViewOffset = { x: meta.simViewOffset.x, y: meta.simViewOffset.y };
+    updateMouseViewport();
+  }
+  if (meta.simX1 != null) {
+    simX1 = meta.simX1; simY1 = meta.simY1;
+    simX2 = meta.simX2; simY2 = meta.simY2;
+  }
+
+  _collabJoinTotal     = n;
+  _collabJoinFullsDone = 0;
+});
+
+window.addEventListener('collab:remote-image-thumb', ({ detail: { imgIdx, thumb } }) => {
+  const entry = state.images[imgIdx];
+  if (!entry) return;
+  entry.thumbUrl = thumb;
+  _updateFilmstripThumb(imgIdx);
+});
+
+window.addEventListener('collab:remote-image-full', ({ detail }) => {
+  const { imgIdx, name, w, h, jpegBase64, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
+  const entry = state.images[imgIdx];
+  if (!entry) return;
+  const img = new Image();
+  img.onload = () => {
+    if (jpegBase64.startsWith('blob:')) URL.revokeObjectURL(jpegBase64);
+    entry.img         = img;
+    entry.thumbUrl    = buildThumb(img, w, h);
+    if (polygons)    entry.polygons    = polygons;
+    if (currentPoly) entry.currentPoly = currentPoly;
+    if (scale     != null) entry.scale     = scale;
+    if (scaleFixed != null) entry.scaleFixed = scaleFixed;
+    if (simHidden  != null) entry.simHidden  = simHidden;
+    _updateFilmstripThumb(imgIdx);
+    simRefreshGroup(imgIdx);
+    _simViewDirty = true;
+    if (++_collabJoinFullsDone >= _collabJoinTotal) loadPainterImage(state.paintIdx);
+  };
+  img.src = jpegBase64;
 });
 
 initSim();

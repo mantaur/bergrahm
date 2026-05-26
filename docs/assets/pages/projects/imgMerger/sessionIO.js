@@ -24,19 +24,21 @@ function _sessionWorkerBody() {
     }
   };
 
-  async function doExport({ session, images, encodings }) {
+  async function doExport({ session, imageBitmaps, encodings }) {
     const zip = new JSZip();
-    const n = images.length;
 
-    // Encode each image to JPEG via OffscreenCanvas
-    for (let i = 0; i < n; i++) {
-      const { pixels, w, h } = images[i];
-      const oc = new OffscreenCanvas(w, h);
-      oc.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), w, h), 0, 0);
+    // Encode all images to JPEG in parallel via OffscreenCanvas (ImageBitmap avoids GPU readback)
+    let done = 0;
+    const blobBufs = await Promise.all(imageBitmaps.map(async bm => {
+      const oc = new OffscreenCanvas(bm.width, bm.height);
+      oc.getContext('2d').drawImage(bm, 0, 0);
+      bm.close();
       const blob = await oc.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
-      zip.file('images/' + i + '.jpg', await blob.arrayBuffer());
-      self.postMessage({ type: 'progress', pct: Math.round((i + 1) / n * 65) });
-    }
+      const buf = await blob.arrayBuffer();
+      self.postMessage({ type: 'progress', pct: Math.round(++done / imageBitmaps.length * 65) });
+      return buf;
+    }));
+    for (let i = 0; i < blobBufs.length; i++) zip.file('images/' + i + '.jpg', blobBufs[i]);
 
     // Encode encodings
     for (let i = 0; i < encodings.length; i++) {
@@ -122,16 +124,14 @@ const SessionIO = {
   },
 
   // Same as export() but resolves with Blob instead of triggering a download.
-  exportBlob(exportData, onProgress) {
+  async exportBlob(exportData, onProgress) {
     const { state, simGroups, yoloPool, cfg } = exportData;
 
-    const images = state.images.map(entry => {
-      const c = document.createElement('canvas');
-      c.width = entry.w; c.height = entry.h;
-      c.getContext('2d').drawImage(entry.img, 0, 0);
-      const pixels = c.getContext('2d').getImageData(0, 0, entry.w, entry.h).data;
-      return { pixels, w: entry.w, h: entry.h };
-    });
+    // createImageBitmap is fast (wraps the already-decoded GPU texture) and transferable,
+    // avoiding a synchronous GPU->CPU readback for each image on the main thread.
+    const imageBitmaps = await Promise.all(
+      state.images.map(entry => createImageBitmap(entry.img))
+    );
 
     const session = {
       version: 1,
@@ -175,8 +175,6 @@ const SessionIO = {
       };
     });
 
-    const transfers = images.map(im => im.pixels.buffer);
-
     return new Promise((resolve, reject) => {
       const worker = _makeSessionWorker();
       worker.onmessage = ({ data: msg }) => {
@@ -188,7 +186,7 @@ const SessionIO = {
         if (msg.type === 'error') { worker.terminate(); reject(new Error(msg.message)); }
       };
       worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'Worker error')); };
-      worker.postMessage({ type: 'export', session, images, encodings }, transfers);
+      worker.postMessage({ type: 'export', session, imageBitmaps, encodings }, imageBitmaps);
     });
   },
 

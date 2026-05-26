@@ -6,17 +6,27 @@
 //   Host rebroadcasts every message to all other peers.
 //
 // Protocol messages (JSON strings over reliable data channel):
-//   { type: 'cursor',        id, x, y, name, color }
-//   { type: 'cursor-leave',  id }
-//   { type: 'settings',      settings }
-//   { type: 'rank-order',    order }
-//   { type: 'positions',     positions }
-//   { type: 'drag',          imgIdx, x, y, angle }
-//   { type: 'grab',          imgIdx, color }
-//   { type: 'release',       imgIdx }
-//   { type: 'image',         ...imagePacketFields }
-//   { type: 'encoding',      imgName, encoding }
-//   { type: 'polygon',       imgIdx, polygons }
+//   { type: 'cursor',                id, x, y, name, color }
+//   { type: 'cursor-leave',          id }
+//   { type: 'settings',              settings }
+//   { type: 'rank-order',            order }
+//   { type: 'positions',             positions }
+//   { type: 'drag',                  imgIdx, x, y, angle }
+//   { type: 'grab',                  imgIdx, color }
+//   { type: 'release',               imgIdx }
+//   { type: 'image',                 ...imagePacketFields }
+//   { type: 'encoding',              imgName, encoding }
+//   { type: 'polygon',               imgIdx, polygons }
+//   --- streaming join protocol ---
+//   { type: 'session-meta',          imageCount, outW, outH, ..., images[] }
+//   { type: 'image-thumb',           imgIdx, thumb }
+//   { type: 'session-thumbs-done',  total }
+//   { type: 'image-full-binary',      imgIdx, name, w, h, polygons, ... } + binary ArrayBuffer (next message)
+//   { type: 'image-full',            imgIdx, name, w, h, jpegBase64, polygons, ... }  (legacy / rebroadcast)
+//   { type: 'session-host-progress', sent, total }
+//   { type: 'session-done' }
+//   (encodings skipped on join — guest encodes locally; new ones arrive via live 'encoding' messages)
+//   --- legacy ZIP join (kept for backward compat, no longer sent) ---
 //   { type: 'session-start', totalBytes }
 //   [ArrayBuffer chunks...]
 //   { type: 'session-end' }
@@ -34,21 +44,28 @@ const HOST_PREFIX       = 'im-mrg-'; // prefix for deterministic host peer IDs
 
 // ── DOM ───────────────────────────────────────────────────────────────────────
 
-const modal       = document.getElementById('collab-modal');
-const btnCollab   = document.getElementById('btn-collab');
-const btnClose    = document.getElementById('btn-collab-close');
-const btnJoin     = document.getElementById('btn-collab-join');
-const btnLeave    = document.getElementById('btn-collab-leave');
-const btnCopy     = document.getElementById('btn-collab-copy');
-const btnUndo     = document.getElementById('btn-sim-undo');
-const nameInp     = document.getElementById('collab-name-inp');
-const roomInp     = document.getElementById('collab-room-inp');
-const statusEl    = document.getElementById('collab-status');
-const cursorLayer = document.getElementById('collab-cursor-layer');
-const guestPrompt = document.getElementById('collab-guest-prompt');
-const guestMsg    = document.getElementById('collab-guest-msg');
-const progressBar = document.getElementById('collab-progress-bar');
-const simCanvasEl = document.getElementById('sim-canvas');
+const modal          = document.getElementById('collab-modal');
+const qrContainer    = document.getElementById('collab-qr');
+const btnCollab      = document.getElementById('btn-collab');
+const btnClose       = document.getElementById('btn-collab-close');
+const btnJoin        = document.getElementById('btn-collab-join');
+const btnLeave       = document.getElementById('btn-collab-leave');
+const btnCopy        = document.getElementById('btn-collab-copy');
+const btnUndo        = document.getElementById('btn-sim-undo');
+const nameInp        = document.getElementById('collab-name-inp');
+const roomInp        = document.getElementById('collab-room-inp');
+const statusEl       = document.getElementById('collab-status');
+const cursorLayer    = document.getElementById('collab-cursor-layer');
+const guestPrompt    = document.getElementById('collab-guest-prompt');
+const guestMsg       = document.getElementById('collab-guest-msg');
+const progressBar    = document.getElementById('collab-progress-bar');
+const simCanvasEl    = document.getElementById('sim-canvas');
+const sendProgressEl = document.getElementById('collab-send-progress');
+const sendMsgEl      = document.getElementById('collab-send-msg');
+const sendBarEl      = document.getElementById('collab-send-bar');
+const recvProgressEl = document.getElementById('collab-recv-progress');
+const recvMsgEl      = document.getElementById('collab-recv-msg');
+const recvBarEl      = document.getElementById('collab-recv-bar');
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
 
@@ -102,6 +119,20 @@ function physicsToClient(physX, physY) {
   };
 }
 
+function _updateQR() {
+  if (typeof QRCode === 'undefined') return;
+  const code = roomInp.value.trim();
+  qrContainer.innerHTML = '';
+  if (!code) return;
+  const u = new URL(window.location.href);
+  u.searchParams.set('room', code);
+  new QRCode(qrContainer, {
+    text: u.toString(), width: 160, height: 160,
+    colorDark: '#1a1b1c', colorLight: '#f0f0f0',
+    correctLevel: QRCode.CorrectLevel.M,
+  });
+}
+
 function setStatus(text, connected) {
   statusEl.textContent = text;
   statusEl.classList.toggle('im-collab-connected', !!connected);
@@ -130,6 +161,26 @@ function hideGuestPrompt() {
 }
 
 function updateProgress(pct) { progressBar.style.width = Math.round(pct) + '%'; }
+
+function showSendProgress(msg, pct) {
+  sendProgressEl.classList.remove('im-hidden');
+  sendMsgEl.textContent = msg;
+  sendBarEl.style.width = Math.round(pct) + '%';
+}
+function hideSendProgress() {
+  sendProgressEl.classList.add('im-hidden');
+  sendBarEl.style.width = '0%';
+}
+
+function showRecvProgress(msg, pct) {
+  recvProgressEl.classList.remove('im-hidden');
+  recvMsgEl.textContent = msg;
+  recvBarEl.style.width = Math.round(pct) + '%';
+}
+function hideRecvProgress() {
+  recvProgressEl.classList.add('im-hidden');
+  recvBarEl.style.width = '0%';
+}
 
 // ── Cursor DOM ────────────────────────────────────────────────────────────────
 
@@ -232,7 +283,9 @@ function handleMsg(msg, fromPeerId) {
       break;
 
     case 'positions':
-      window.dispatchEvent(new CustomEvent('collab:remote-positions', { detail: { positions: msg.positions } }));
+      window.dispatchEvent(new CustomEvent('collab:remote-positions', {
+        detail: { positions: msg.positions, simX1: msg.simX1, simY1: msg.simY1, simX2: msg.simX2, simY2: msg.simY2 },
+      }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
@@ -273,29 +326,80 @@ function handleMsg(msg, fromPeerId) {
       }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
+
+    case 'scales':
+      window.dispatchEvent(new CustomEvent('collab:remote-scales', { detail: { scales: msg.scales } }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'session-meta':
+      window.dispatchEvent(new CustomEvent('collab:remote-session-meta', { detail: msg }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'image-thumb':
+      window.dispatchEvent(new CustomEvent('collab:remote-image-thumb', {
+        detail: { imgIdx: msg.imgIdx, thumb: msg.thumb },
+      }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'image-full':
+      window.dispatchEvent(new CustomEvent('collab:remote-image-full', { detail: msg }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'session-thumbs-done':
+      if (!isHost) { hideGuestPrompt(); showRecvProgress('Receiving images... 0/' + msg.total, 0); }
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'session-host-progress':
+      if (!isHost) showRecvProgress('Receiving images... ' + msg.sent + '/' + msg.total, msg.sent / msg.total * 100);
+      break;
+
+    case 'session-done':
+      if (!isHost) hideRecvProgress();
+      break;
   }
 }
 
 // ── Data connection setup ─────────────────────────────────────────────────────
 
 function setupConn(conn, isGuestSide) {
-  let receiving = null;
+  let receiving        = null; // legacy ZIP receive state
+  let pendingImageMeta = null; // set by image-full-binary header; cleared when binary arrives
 
   conn.on('data', data => {
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-      if (!receiving) return;
       const buf = ArrayBuffer.isView(data)
         ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
         : data;
-      receiving.chunks.push(buf);
-      const got = receiving.chunks.reduce((s, c) => s + c.byteLength, 0);
-      updateProgress(Math.round(got / receiving.totalBytes * 100));
+      if (pendingImageMeta !== null) {
+        // Full-res image binary sent by host; reassembled by PeerJS chunking
+        const { imgIdx, ...imgMeta } = pendingImageMeta;
+        pendingImageMeta = null;
+        const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
+        handleMsg({ type: 'image-full', imgIdx, jpegBase64: blobUrl, ...imgMeta }, conn.peer);
+      } else if (receiving) {
+        receiving.chunks.push(buf);
+        const got = receiving.chunks.reduce((s, c) => s + c.byteLength, 0);
+        updateProgress(Math.round(got / receiving.totalBytes * 100));
+      }
       return;
     }
     if (typeof data !== 'string') return;
     const msg = JSON.parse(data);
 
-    if (msg.type === 'session-start') {
+    if (msg.type === 'image-full-binary') {
+      // Metadata header for the binary image that follows
+      pendingImageMeta = {
+        imgIdx: msg.imgIdx, name: msg.name, w: msg.w, h: msg.h,
+        polygons: msg.polygons, currentPoly: msg.currentPoly,
+        scale: msg.scale, scaleFixed: msg.scaleFixed, simHidden: msg.simHidden,
+        simPos: msg.simPos, simAngle: msg.simAngle,
+      };
+    } else if (msg.type === 'session-start') {
       receiving = { chunks: [], totalBytes: msg.totalBytes };
       showGuestPrompt('Receiving session...');
     } else if (msg.type === 'session-end') {
@@ -330,25 +434,70 @@ function setupConn(conn, isGuestSide) {
   conn.on('error', err => console.warn('[collab] conn error:', err));
 }
 
-// ── Session ZIP send ──────────────────────────────────────────────────────────
+// ── Streaming session send ────────────────────────────────────────────────────
+
+async function _waitDrain(conn) {
+  const dc = conn.dataChannel;
+  if (!dc) return;
+  while (dc.bufferedAmount > 512 * 1024) {
+    await new Promise(r => setTimeout(r, 30));
+  }
+}
+
+function _dataUrlToBuffer(dataUrl) {
+  const b64    = dataUrl.split(',')[1];
+  const binary = atob(b64);
+  const buf    = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  return buf.buffer;
+}
 
 async function sendSessionTo(conn) {
   try {
-    const blob = await window.buildSessionBlob(() => {});
-    const buf  = await blob.arrayBuffer();
-    conn.send(JSON.stringify({ type: 'session-start', totalBytes: buf.byteLength }));
-    for (let i = 0; i < buf.byteLength; i += CHUNK_SIZE) {
-      conn.send(buf.slice(i, i + CHUNK_SIZE));
+    const meta = window.getSessionMeta?.();
+    if (!meta || meta.imageCount === 0) return;
+
+    // Phase 1: instant skeleton — synchronous, no pixel reads
+    conn.send(JSON.stringify({ type: 'session-meta', ...meta }));
+
+    // Phase 2: thumbnails — precomputed small JPEGs, sent synchronously
+    for (let i = 0; i < meta.imageCount; i++) {
+      const thumb = window.getImageThumb?.(i);
+      if (thumb) conn.send(JSON.stringify({ type: 'image-thumb', imgIdx: i, thumb }));
     }
-    conn.send(JSON.stringify({ type: 'session-end' }));
+    conn.send(JSON.stringify({ type: 'session-thumbs-done', total: meta.imageCount }));
+
+    // Phase 3: full-res images as binary.
+    // PeerJS chunks ArrayBuffers automatically (never chunks JSON strings), so large images
+    // that would overflow the WebRTC send buffer are safely fragmented.
+    showSendProgress('Sending 1/' + meta.imageCount + '...', 0);
+    for (let i = 0; i < meta.imageCount; i++) {
+      showSendProgress('Sending ' + (i + 1) + '/' + meta.imageCount + '...', i / meta.imageCount * 100);
+      await _waitDrain(conn);
+      const packet = await window.getImagePacket?.(i);
+      if (packet) {
+        const { encoding: _enc, jpegBase64, ...imgMeta } = packet;
+        try {
+          conn.send(JSON.stringify({ type: 'image-full-binary', imgIdx: i, ...imgMeta }));
+          conn.send(_dataUrlToBuffer(jpegBase64));
+        } catch (e) { console.warn('[collab] image-full send failed for index', i, e); }
+      }
+      showSendProgress('Sending ' + (i + 1) + '/' + meta.imageCount + '...', (i + 1) / meta.imageCount * 100);
+      try { conn.send(JSON.stringify({ type: 'session-host-progress', sent: i + 1, total: meta.imageCount })); }
+      catch (_) {}
+    }
+
+    conn.send(JSON.stringify({ type: 'session-done' }));
+    hideSendProgress();
   } catch (err) {
+    hideSendProgress();
     console.warn('[collab] session send failed:', err);
   }
 }
 
 // ── Join as host ──────────────────────────────────────────────────────────────
 
-function joinAsHost(roomCode, retries = 0) {
+function joinAsHost(roomCode) {
   const hid = hostIdFor(roomCode);
   peer = new Peer(hid, { debug: 0 });
 
@@ -372,16 +521,9 @@ function joinAsHost(roomCode, retries = 0) {
 
   peer.on('error', err => {
     if (err.type === 'unavailable-id') {
-      // Signaling server may still hold the old ID briefly after a refresh.
-      // Retry a few times before falling back to guest.
       peer.destroy();
       peer = null;
-      if (retries < 3) {
-        setStatus('Waiting for room to free up...');
-        setTimeout(() => joinAsHost(roomCode, retries + 1), 1500);
-      } else {
-        joinAsGuest(roomCode);
-      }
+      joinAsGuest(roomCode);
     } else {
       setStatus('Connection error: ' + err.type);
       console.warn('[collab] host peer error:', err);
@@ -443,7 +585,7 @@ function joinRoom(code) {
 
   btnJoin.classList.add('im-hidden');
   btnLeave.classList.remove('im-hidden');
-  btnCollab.textContent = 'Live';
+  btnCollab.classList.add('im-collab-live');
 }
 
 function leaveRoom() {
@@ -474,7 +616,7 @@ function leaveRoom() {
 
   btnJoin.classList.remove('im-hidden');
   btnLeave.classList.add('im-hidden');
-  btnCollab.textContent = 'Share';
+  btnCollab.classList.remove('im-collab-live');
   setStatus('Not connected');
 }
 
@@ -507,7 +649,13 @@ window.addEventListener('collab:images-added', async ({ detail: { indices } }) =
 window.addEventListener('collab:canvas-resized', () => {
   if (!localPeerId) return;
   const positions = window.getSimPositions ? window.getSimPositions() : {};
-  broadcast({ type: 'positions', positions });
+  const bounds    = window.getSimBounds    ? window.getSimBounds()    : {};
+  broadcast({ type: 'positions', positions, ...bounds });
+});
+
+window.addEventListener('collab:scales-changed', ({ detail: { scales } }) => {
+  if (!localPeerId) return;
+  broadcast({ type: 'scales', scales });
 });
 
 window.addEventListener('collab:encoding-ready', ({ detail: { imgIdx } }) => {
@@ -569,15 +717,18 @@ btnUndo.addEventListener('click', () => {
 
 // ── UI wiring ─────────────────────────────────────────────────────────────────
 
-btnCollab.addEventListener('click', () => modal.classList.remove('im-hidden'));
+btnCollab.addEventListener('click', () => { modal.classList.remove('im-hidden'); _updateQR(); });
 btnClose.addEventListener('click',  () => modal.classList.add('im-hidden'));
 modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('im-hidden'); });
+
+roomInp.addEventListener('input', _updateQR);
 
 btnJoin.addEventListener('click', () => {
   const code = roomInp.value.trim() || randomRoomCode();
   roomInp.value = code;
   localStorage.setItem(STORAGE_NAME_KEY, nameInp.value.trim());
   joinRoom(code);
+  _updateQR();
 });
 
 btnLeave.addEventListener('click', leaveRoom);

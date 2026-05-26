@@ -384,6 +384,12 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 .im-rank-thumb.im-yolo-encoded  { filter: none; transition: filter .3s; animation: none; }
 .im-rank-thumb.im-yolo-failed   { filter: sepia(1) saturate(3) hue-rotate(300deg) brightness(0.6); animation: none; }
 
+/* Collab join placeholder — image not yet received */
+.im-rank-thumb.im-rank-thumb-pending {
+  background: #2a2c2e;
+  animation: thumb-encode 1.5s ease-in-out infinite;
+}
+
 @keyframes thumb-encode {
   0%, 100% { filter: grayscale(1) brightness(0.45); }
   50%       { filter: grayscale(0) brightness(1); }
@@ -1003,6 +1009,18 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 
 .im-collab-room-row button:hover { background: #32363f; }
 
+#collab-qr {
+  display: flex;
+  justify-content: center;
+  padding: .4rem 0 .2rem;
+}
+#collab-qr canvas, #collab-qr img {
+  border-radius: 6px;
+  display: block;
+  padding: 10px;
+  background: #f0f0f0;
+}
+
 .im-collab-status {
   font-size: .8em;
   color: #7a8090;
@@ -1010,6 +1028,36 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 }
 
 .im-collab-status.im-collab-connected { color: #4caf80; }
+
+.im-btn-icon { padding: .38em .55em; line-height: 0; }
+.im-btn-icon svg { display: block; }
+.im-btn-icon.im-collab-live {
+  border-color: springgreen;
+  color: springgreen;
+  animation: merge-glow 2.2s ease-in-out infinite;
+}
+.im-btn-icon.im-collab-live svg { stroke: springgreen; }
+.im-btn-icon.im-collab-live:hover {
+  background: rgba(0,255,127,.1);
+  animation: none;
+  box-shadow: 0 0 18px rgba(0,255,127,.55);
+}
+
+#collab-send-progress, #collab-recv-progress { margin: .35rem 0 .1rem; }
+
+.im-collab-send-label {
+  font-size: .8em;
+  color: #7a8090;
+  margin: 0 0 .4rem;
+}
+
+#collab-send-bar, #collab-recv-bar {
+  height: 100%;
+  width: 0%;
+  background: springgreen;
+  border-radius: 2px;
+  transition: width .1s linear;
+}
 
 .im-collab-actions {
   display: flex;

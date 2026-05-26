@@ -17,12 +17,13 @@
   <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
 
   <link rel="stylesheet" href="../../../main.css">
-  <link rel="stylesheet" href="imageMerge.css?v=7">
+  <link rel="stylesheet" href="imageMerge.css?v=8">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/poly-decomp/0.3.0/poly-decomp.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
   <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 
 <body>
@@ -152,6 +153,14 @@
                 <div class="im-field">
                   <label><input type="checkbox" id="cfg-rotation" checked> Rotation lock</label>
                 </div>
+                <div class="im-field">
+                  <label for="cfg-scale-all">Scale all visible</label>
+                  <div class="im-slider-row">
+                    <input type="range" id="cfg-scale-all" min="0.5" max="2" step="0.05" value="1">
+                    <span id="cfg-scale-all-val" class="im-rng-val">1.00x</span>
+                    <button class="im-btn im-btn-sm" id="btn-scale-all">Apply</button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -229,7 +238,7 @@
   <div id="sim-hud">
     <span id="sim-status" class="im-sim-status">-</span>
     <div class="im-sim-btns">
-      <button class="im-btn im-btn-sm" id="btn-collab">Share</button>
+      <button class="im-btn im-btn-sm im-btn-icon" id="btn-collab" title="Live session" aria-label="Live session"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="3"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><circle cx="18" cy="8" r="2.5"/><path d="M21 21v-1.5a3.5 3.5 0 0 0-2.5-3.35"/></svg></button>
       <button class="im-btn im-btn-sm" id="btn-sim-undo" disabled>Undo</button>
       <button class="im-btn im-btn-sm" id="btn-sim-reset">Reset</button>
       <button class="im-btn im-btn-sm" id="btn-sim-freeze">Freeze</button>
@@ -270,7 +279,20 @@
         <button id="btn-collab-copy">Copy link</button>
       </div>
     </div>
+    <div id="collab-qr"></div>
     <div class="im-collab-status" id="collab-status">Not connected</div>
+    <div id="collab-send-progress" class="im-hidden">
+      <p id="collab-send-msg" class="im-collab-send-label"></p>
+      <div class="im-collab-progress-wrap">
+        <div id="collab-send-bar"></div>
+      </div>
+    </div>
+    <div id="collab-recv-progress" class="im-hidden">
+      <p id="collab-recv-msg" class="im-collab-send-label"></p>
+      <div class="im-collab-progress-wrap">
+        <div id="collab-recv-bar"></div>
+      </div>
+    </div>
     <div class="im-collab-actions">
       <button class="im-btn" id="btn-collab-join">Join</button>
       <button class="im-btn im-hidden" id="btn-collab-leave">Leave</button>
@@ -296,14 +318,14 @@ let gFineRadius = FINE_RADIUS;
 let gTopK       = TOP_K;
 let gSilent     = false;
 
-self.onmessage = function (e) {
+self.onmessage = async function (e) {
   const { images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp,
           coarseStep, fineStep, fineRadius, topK, silent, precomputedPlacements } = e.data;
 
   // Shortcut: skip placement search, compute ownership map only.
   if (precomputedPlacements) {
     try {
-      const ownershipMap = computeOwnershipMap(images, precomputedPlacements, outW, outH, blendMode, seed | 0, Math.max(1, ditherExp | 0) || 4);
+      const ownershipMap = await computeOwnershipMap(images, precomputedPlacements, outW, outH, blendMode, seed | 0, Math.max(1, ditherExp | 0) || 4);
       self.postMessage({ type: 'done', placements: precomputedPlacements, ownershipMap }, [ownershipMap.buffer]);
     } catch (err) {
       self.postMessage({ type: 'error', text: err.message });
@@ -317,7 +339,7 @@ self.onmessage = function (e) {
   gTopK       = topK        || TOP_K;
   gSilent     = !!silent;
   try {
-    const { placements, ownershipMap } = runMerge(images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp);
+    const { placements, ownershipMap } = await runMerge(images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp);
     self.postMessage({ type: 'done', placements, ownershipMap }, [ownershipMap.buffer]);
   } catch (err) {
     self.postMessage({ type: 'error', text: err.message });
@@ -333,7 +355,7 @@ function postProgress(pct) {
   self.postMessage({ type: 'progress', pct: Math.round(pct) });
 }
 
-function runMerge(images, rankOrder, W, H, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp) {
+async function runMerge(images, rankOrder, W, H, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp) {
   const forbiddenTris = [];
   const placements    = [];
 
@@ -385,7 +407,7 @@ function runMerge(images, rankOrder, W, H, minScale, maxScale, useScaleRange, bl
   }
 
   postLog('Computing ownership map...');
-  const ownershipMap = computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp);
+  const ownershipMap = await computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp);
   return { placements, ownershipMap };
 }
 
@@ -567,8 +589,64 @@ function pointInTriangle(p, a, b, c) {
   return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0);
 }
 
+// ── Parallel chamfer sub-worker ───────────────────────────────────────────────
+// Each sub-worker receives { mask: ArrayBuffer, W, H } and posts back a
+// Float32Array buffer.  The mask buffer is transferred (zero-copy).
+const CHAMFER_WORKER_SRC = `
+self.onmessage = function(e) {
+  var mask = new Uint8Array(e.data.mask), W = e.data.W, H = e.data.H;
+  var INF = 1e9, n = W * H;
+  var d = new Float32Array(n);
+  for (var i = 0; i < n; i++) d[i] = mask[i] ? 0 : INF;
+  var v, i;
+  for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) {
+    i = y*W+x; if (d[i]===0) continue; v=d[i];
+    if (x>0)     v=Math.min(v,d[i-1]+3);
+    if (y>0) {
+      if (x>0)   v=Math.min(v,d[i-W-1]+4);
+                 v=Math.min(v,d[i-W]+3);
+      if (x<W-1) v=Math.min(v,d[i-W+1]+4);
+    }
+    d[i]=v;
+  }
+  for (var y=H-1; y>=0; y--) for (var x=W-1; x>=0; x--) {
+    i=y*W+x; if (d[i]===0) continue; v=d[i];
+    if (x<W-1)   v=Math.min(v,d[i+1]+3);
+    if (y<H-1) {
+      if (x<W-1) v=Math.min(v,d[i+W+1]+4);
+                 v=Math.min(v,d[i+W]+3);
+      if (x>0)   v=Math.min(v,d[i+W-1]+4);
+    }
+    d[i]=v;
+  }
+  self.postMessage(d.buffer, [d.buffer]);
+};
+`;
+
+let _chamferBlobUrl = null;
+function _getChamferBlobUrl() {
+  if (!_chamferBlobUrl)
+    _chamferBlobUrl = URL.createObjectURL(new Blob([CHAMFER_WORKER_SRC], { type: 'application/javascript' }));
+  return _chamferBlobUrl;
+}
+
+// Run chamferDist for each mask in parallel across sub-workers.
+// masks[]: Uint8Array — each is transferred to its worker (detached after call).
+// onDone(completed, total) called after each worker finishes for progress reporting.
+// Returns Promise<(Float32Array|null)[]>
+function parallelChamfer(masks, W, H, onDone) {
+  const url = _getChamferBlobUrl();
+  let completed = 0;
+  return Promise.all(masks.map(mask => new Promise(resolve => {
+    const w = new Worker(url);
+    w.onmessage = e => { w.terminate(); if (onDone) onDone(++completed, masks.length); resolve(new Float32Array(e.data)); };
+    w.onerror   = () => { w.terminate(); resolve(null); };
+    w.postMessage({ mask: mask.buffer, W, H }, [mask.buffer]);
+  })));
+}
+
 // ── Ownership map dispatcher ───────────────────────────────────────────────────
-function computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp) {
+async function computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp) {
   if (blendMode === 'dither') return computeDitherMap(images, placements, W, H, seed | 0, Math.max(1, ditherExp | 0) || 4);
   return computeVoronoiMap(images, placements, W, H);
 }
@@ -590,36 +668,40 @@ function transformPolyVert(v, p) {
 // ── Voronoi ownership map ──────────────────────────────────────────────────────
 // Returns Int16Array(W*H): each cell holds the imgIdx of the image whose
 // essential region is nearest, or -1 if no image has any polygons.
-function computeVoronoiMap(images, placements, W, H) {
+async function computeVoronoiMap(images, placements, W, H) {
   const ownerMap = new Int16Array(W * H).fill(-1);
   const minDist  = new Float32Array(W * H).fill(Infinity);
-  const mask     = new Uint8Array(W * H);
   const N = placements.length;
 
+  // Rasterize all masks (fast, serial) then run chamfer transforms in parallel.
+  const activePs = []; // placements that have polygons
+  const masks    = []; // one fresh Uint8Array per active placement (transferred to sub-worker)
   for (let k = 0; k < N; k++) {
-    const p = placements[k];
+    const p     = placements[k];
     const entry = images[p.imgIdx];
-    if (!entry.polygons || entry.polygons.length === 0) {
-      postProgress(Math.round((k + 1) / Math.max(N, 1) * 100));
-      continue;
-    }
-
-    // Transform polygons from source space to output space
-    const outPolys = entry.polygons.map(poly =>
-      poly.map(v => transformPolyVert(v, p))
-    );
-
-    mask.fill(0);
+    if (!entry.polygons || entry.polygons.length === 0) continue;
+    const outPolys = entry.polygons.map(poly => poly.map(v => transformPolyVert(v, p)));
+    const mask = new Uint8Array(W * H);
     rasterizePolygons(outPolys, W, H, mask);
-    const dist = chamferDist(mask, W, H);
+    masks.push(mask);
+    activePs.push(p);
+  }
 
+  if (activePs.length === 0) return ownerMap;
+  postProgress(20);
+
+  const distMaps = await parallelChamfer(masks, W, H, (done, total) => {
+    postProgress(20 + Math.round(done / total * 60));
+  });
+
+  for (let k = 0; k < activePs.length; k++) {
+    const dist = distMaps[k];
+    if (!dist) continue;
+    const imgIdx = activePs[k].imgIdx;
     for (let i = 0; i < W * H; i++) {
-      if (dist[i] < minDist[i]) {
-        minDist[i] = dist[i];
-        ownerMap[i] = p.imgIdx;
-      }
+      if (dist[i] < minDist[i]) { minDist[i] = dist[i]; ownerMap[i] = imgIdx; }
     }
-    postProgress(Math.round((k + 1) / Math.max(N, 1) * 100));
+    postProgress(80 + Math.round((k + 1) / activePs.length * 20));
   }
 
   return ownerMap;
@@ -629,30 +711,24 @@ function computeVoronoiMap(images, placements, W, H) {
 // Each pixel is assigned to an image by weighted random sampling.
 // Weight = 1 / (chamferDist + 1). Essential-region pixels (dist=0) always win.
 // Only images whose bounding box covers the pixel are eligible (per-user spec).
-function computeDitherMap(images, placements, W, H, seed, exp) {
-  const N       = placements.length;
+async function computeDitherMap(images, placements, W, H, seed, exp) {
+  const N = placements.length;
   const ownerMap = new Int16Array(W * H).fill(-1);
   if (N === 0) return ownerMap;
 
-  const distMaps = new Array(N).fill(null);
-  const bboxes   = new Array(N).fill(null);
-  const mask     = new Uint8Array(W * H);
+  const bboxes  = new Array(N).fill(null);
+  const activeKs = []; // k indices into placements that have polygons
+  const masks    = []; // one fresh Uint8Array per active placement (transferred to sub-worker)
 
   for (let k = 0; k < N; k++) {
     const p     = placements[k];
     const entry = images[p.imgIdx];
-    if (!entry.polygons || entry.polygons.length === 0) {
-      postProgress(Math.round((k + 1) / N * 40));
-      continue;
-    }
-
-    const outPolys = entry.polygons.map(poly =>
-      poly.map(v => transformPolyVert(v, p))
-    );
-    mask.fill(0);
+    if (!entry.polygons || entry.polygons.length === 0) continue;
+    const outPolys = entry.polygons.map(poly => poly.map(v => transformPolyVert(v, p)));
+    const mask = new Uint8Array(W * H);
     rasterizePolygons(outPolys, W, H, mask);
-    distMaps[k] = chamferDist(mask, W, H);
-    // Compute AABB of (possibly rotated) image corners
+    masks.push(mask);
+    activeKs.push(k);
     const corners = [
       { x: 0, y: 0 }, { x: entry.w, y: 0 },
       { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
@@ -664,14 +740,24 @@ function computeDitherMap(images, placements, W, H, seed, exp) {
       x1: Math.min(W - 1, Math.ceil(Math.max(...cxs))),
       y1: Math.min(H - 1, Math.ceil(Math.max(...cys))),
     };
-    postProgress(Math.round((k + 1) / N * 40));
   }
+
+  if (activeKs.length === 0) return ownerMap;
+  postProgress(15);
+
+  const chamferResults = await parallelChamfer(masks, W, H, (done, total) => {
+    postProgress(15 + Math.round(done / total * 25));
+  });
+
+  const distMaps = new Array(N).fill(null);
+  for (let j = 0; j < activeKs.length; j++) distMaps[activeKs[j]] = chamferResults[j];
 
   // Indices of placements that have polygon data
   const active = [];
   for (let k = 0; k < N; k++) { if (distMaps[k] !== null) active.push(k); }
   if (active.length === 0) return ownerMap;
 
+  postProgress(40);
   const covering   = new Int32Array(active.length); // reused per pixel
   const reportStep = Math.max(1, Math.round(H / 20)); // ~20 progress updates
 
@@ -801,8 +887,8 @@ function chamferDist(mask, W, H) {
   </script>
 
   <script src="gpuCheck.js?v=1"></script>
-  <script src="sessionIO.js?v=1"></script>
-  <script src="imageMerge.js?v=15"></script>
+  <script src="sessionIO.js?v=3"></script>
+  <script src="imageMerge.js?v=19"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -822,6 +908,10 @@ function chamferDist(mask, W, H) {
 
     window.getSimState = function() {
       return { dispScale: simDispScale, viewScale: simViewScale, viewOffset: simViewOffset };
+    };
+
+    window.getSimBounds = function() {
+      return { simX1: simX1, simY1: simY1, simX2: simX2, simY2: simY2 };
     };
 
     window.getSimPositions = function() {
@@ -874,6 +964,45 @@ function chamferDist(mask, W, H) {
       };
     };
 
+    window.getSessionMeta = function() {
+      var positions = window.getSimPositions();
+      return {
+        imageCount:    state.images.length,
+        outW: state.outW, outH: state.outH,
+        fillColor:     state.fillColor,
+        blendMode:     cfgBlendMode.value,
+        seed:          parseInt(cfgSeed.value)     || 42,
+        ditherExp:     parseInt(cfgDitherExp.value) || 4,
+        useScaleRange: cfgUseScaleRange.checked,
+        minScale: state.minScale, maxScale: state.maxScale,
+        rotationLock: cfgRotation.checked,
+        rankOrder:     state.rankOrder.slice(),
+        paintIdx:      state.paintIdx,
+        simViewScale:  simViewScale,
+        simViewOffset: { x: simViewOffset.x, y: simViewOffset.y },
+        simX1: simX1, simY1: simY1, simX2: simX2, simY2: simY2,
+        images: state.images.map(function(entry, i) {
+          var pos = positions[i];
+          return {
+            name: entry.name, w: entry.w, h: entry.h,
+            polygons:    entry.polygons    || [],
+            currentPoly: entry.currentPoly || [],
+            scale:       entry.scale,
+            scaleFixed:  entry.scaleFixed  || false,
+            simHidden:   entry.simHidden   || false,
+            simPos:   pos ? { x: pos.x, y: pos.y } : null,
+            simAngle: pos ? pos.angle : 0,
+            hasEncoding: yoloPool.embeddingCache.has(i),
+          };
+        }),
+      };
+    };
+
+    window.getImageThumb = function(imgIdx) {
+      var entry = state.images[imgIdx];
+      return (entry && entry.thumbUrl) ? entry.thumbUrl : null;
+    };
+
     window.buildSessionBlob = function(onProgress) {
       return SessionIO.exportBlob({
         state: state,
@@ -902,8 +1031,8 @@ function chamferDist(mask, W, H) {
       if (s.blendMode) { cfgBlendMode.value = s.blendMode; cfgBlendMode.dispatchEvent(new Event('change')); }
       if (s.minScale != null) state.minScale = +s.minScale;
       if (s.maxScale != null) state.maxScale = +s.maxScale;
-      if (s.simX1 != null) { simX1 = +s.simX1; simY1 = +s.simY1; simX2 = +s.simX2; simY2 = +s.simY2; _simOutExplicit = true; }
-      else if (s.simOutX != null) { simX1 = +s.simOutX; simY1 = +s.simOutY; simX2 = simX1 + state.outW; simY2 = simY1 + state.outH; _simOutExplicit = true; }
+      if (s.simX1 != null) { simX1 = +s.simX1; simY1 = +s.simY1; simX2 = +s.simX2; simY2 = +s.simY2; _simOutExplicit = true; _simViewDirty = true; }
+      else if (s.simOutX != null) { simX1 = +s.simOutX; simY1 = +s.simOutY; simX2 = simX1 + state.outW; simY2 = simY1 + state.outH; _simOutExplicit = true; _simViewDirty = true; }
       window._collabApplyingRemote = false;
     };
 
@@ -915,7 +1044,7 @@ function chamferDist(mask, W, H) {
       buildRankList();
     };
   </script>
-  <script type="module" src="collaborate.js?v=1"></script>
+  <script type="module" src="collaborate.js?v=5"></script>
 </body>
 
 </html>
