@@ -546,6 +546,34 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   cursor: pointer;
 }
 
+.im-fill-row {
+  display: flex;
+  align-items: center;
+  gap: .3em;
+}
+
+.im-fill-checker {
+  flex-shrink: 0;
+  width: 2em; height: 2em;
+  border: 1px solid #1a1b1c;
+  border-radius: .4em;
+  cursor: pointer;
+  padding: 0;
+  background:
+    repeating-conic-gradient(#3c3c3c 0% 25%, #2a2a2a 0% 50%)
+    0 0 / 8px 8px;
+  transition: border-color .15s;
+}
+
+.im-fill-checker:hover { border-color: #555; }
+
+.im-fill-checker.im-active {
+  border-color: springgreen;
+  outline: 1px solid springgreen;
+}
+
+.im-fill-checker.im-active ~ #cfg-fill { opacity: .3; }
+
 .im-config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -1036,6 +1064,20 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   background: rgba(0,255,127,.1);
   animation: none;
   box-shadow: 0 0 18px rgba(0,255,127,.55);
+}
+
+#btn-collab { position: relative; }
+.im-collab-badge {
+  position: absolute;
+  bottom: 1px; right: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: #111;
+  background: springgreen;
+  border-radius: 99px;
+  padding: 1px 3px;
+  pointer-events: none;
 }
 
 #collab-send-progress, #collab-recv-progress { margin: .35rem 0 .1rem; }

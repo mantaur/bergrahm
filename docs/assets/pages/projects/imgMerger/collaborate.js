@@ -52,6 +52,7 @@ const btnJoin        = document.getElementById('btn-collab-join');
 const btnLeave       = document.getElementById('btn-collab-leave');
 const btnCopy        = document.getElementById('btn-collab-copy');
 const btnUndo        = document.getElementById('btn-sim-undo');
+const btnRedo        = document.getElementById('btn-sim-redo');
 const nameInp        = document.getElementById('collab-name-inp');
 const roomInp        = document.getElementById('collab-room-inp');
 const statusEl       = document.getElementById('collab-status');
@@ -69,11 +70,12 @@ const recvBarEl      = document.getElementById('collab-recv-bar');
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
 
-let peer        = null;
-let localPeerId = null;
-let isHost      = false;
-let currentRoom = null;
-let hostConn    = null;                 // guest's single connection to host
+let peer           = null;
+let localPeerId    = null;
+let isHost         = false;
+let currentRoom    = null;
+let hostConn       = null;              // guest's single connection to host
+let remotePeerCount = 0;               // count broadcast by host; used on guest side
 const guestConns = new Map();           // host's connections: peerId -> conn
 
 // ── Cursor state ──────────────────────────────────────────────────────────────
@@ -85,6 +87,7 @@ const remoteCursors = new Map(); // peerId -> { x, y, name, color }
 // ── Sim undo + grab tracking ──────────────────────────────────────────────────
 
 const simUndoStack  = [];
+const simRedoStack  = [];
 const preLiftState  = new Map();
 const grabbedByPeer = new Map(); // imgIdx -> peerId (for cleanup on disconnect)
 
@@ -138,13 +141,29 @@ function setStatus(text, connected) {
   statusEl.classList.toggle('im-collab-connected', !!connected);
 }
 
+const collabPeerBadge = document.getElementById('collab-peer-badge');
+
+function _broadcastPeerCount() {
+  if (!isHost) return;
+  const msg = JSON.stringify({ type: 'peer-count', count: guestConns.size });
+  for (const conn of guestConns.values()) {
+    if (conn.open) conn.send(msg);
+  }
+}
+
 function updatePeerCount() {
-  const count = isHost ? guestConns.size : (hostConn ? 1 : 0);
+  const count = isHost ? guestConns.size : (hostConn ? remotePeerCount : 0);
   setStatus(
     count === 0 ? 'Connected - waiting for others'
                 : `Connected (${count} peer${count > 1 ? 's' : ''})`,
     true
   );
+  if (count > 0) {
+    collabPeerBadge.textContent = count > 9 ? '9+' : count;
+    collabPeerBadge.classList.remove('im-hidden');
+  } else {
+    collabPeerBadge.classList.add('im-hidden');
+  }
   window.dispatchEvent(new CustomEvent('collab:peer-count', { detail: { count } }));
 }
 
@@ -361,6 +380,10 @@ function handleMsg(msg, fromPeerId) {
     case 'session-done':
       if (!isHost) hideRecvProgress();
       break;
+
+    case 'peer-count':
+      if (!isHost) { remotePeerCount = msg.count; updatePeerCount(); }
+      break;
   }
 }
 
@@ -425,8 +448,10 @@ function setupConn(conn, isGuestSide) {
         }
       }
       updatePeerCount();
+      _broadcastPeerCount();
     } else {
       hostConn = null;
+      remotePeerCount = 0;
       setStatus('Disconnected from host');
     }
   });
@@ -510,10 +535,11 @@ function joinAsHost(roomCode) {
   });
 
   peer.on('connection', conn => {
+    guestConns.set(conn.peer, conn);
+    setupConn(conn, true);
+    updatePeerCount();
+    _broadcastPeerCount();
     conn.on('open', () => {
-      guestConns.set(conn.peer, conn);
-      setupConn(conn, true);
-      updatePeerCount();
       const cs = window.getCollabState ? window.getCollabState() : null;
       if (cs && cs.imageCount > 0) sendSessionTo(conn);
     });
@@ -600,8 +626,9 @@ function leaveRoom() {
   peer.destroy();
   peer        = null;
   localPeerId = null;
-  isHost      = false;
-  currentRoom = null;
+  isHost          = false;
+  remotePeerCount = 0;
+  currentRoom     = null;
 
   simCanvasEl.removeEventListener('mousemove', onMouseMove);
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
@@ -617,6 +644,7 @@ function leaveRoom() {
   btnJoin.classList.remove('im-hidden');
   btnLeave.classList.add('im-hidden');
   btnCollab.classList.remove('im-collab-live');
+  collabPeerBadge.classList.add('im-hidden');
   setStatus('Not connected');
 }
 
@@ -694,6 +722,8 @@ window.addEventListener('collab:body-moved', ({ detail }) => {
     simUndoStack.push({ imgIdx: detail.imgIdx, x: pre.prevX, y: pre.prevY, angle: pre.prevAngle });
     if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
     preLiftState.delete(detail.imgIdx);
+    simRedoStack.length = 0;
+    updateRedoBtn();
   }
   if (localPeerId) {
     broadcast({ type: 'positions', positions: { [detail.imgIdx]: { x: detail.x, y: detail.y, angle: detail.angle } } });
@@ -702,24 +732,60 @@ window.addEventListener('collab:body-moved', ({ detail }) => {
 });
 
 function updateUndoBtn() { btnUndo.disabled = simUndoStack.length === 0; }
+function updateRedoBtn() { btnRedo.disabled = simRedoStack.length === 0; }
+
+function _dispatchUndoRedo(eventPrefix, entry) {
+  if (!entry.type || entry.type === 'body-move') {
+    window.dispatchEvent(new CustomEvent(eventPrefix + '-body-move', { detail: entry }));
+  } else if (entry.type === 'reset') {
+    window.dispatchEvent(new CustomEvent(eventPrefix + '-reset', { detail: entry }));
+  } else if (entry.type === 'resize') {
+    window.dispatchEvent(new CustomEvent(eventPrefix + '-resize', { detail: entry }));
+  }
+}
 
 btnUndo.addEventListener('click', () => {
   const entry = simUndoStack.pop();
   if (!entry) return;
-  if (!entry.type || entry.type === 'body-move') {
-    window.dispatchEvent(new CustomEvent('collab:undo-body-move', { detail: entry }));
-  } else if (entry.type === 'reset') {
-    window.dispatchEvent(new CustomEvent('collab:undo-reset', { detail: entry }));
-  } else if (entry.type === 'resize') {
-    window.dispatchEvent(new CustomEvent('collab:undo-resize', { detail: entry }));
+  _dispatchUndoRedo('collab:undo', entry);
+  updateUndoBtn();
+});
+
+btnRedo.addEventListener('click', () => {
+  const entry = simRedoStack.pop();
+  if (!entry) return;
+  _dispatchUndoRedo('collab:redo', entry);
+  updateRedoBtn();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!modal.classList.contains('im-hidden')) modal.classList.add('im-hidden');
+    return;
   }
+  if (!e.ctrlKey || e.key.toLowerCase() !== 'z') return;
+  e.preventDefault();
+  if (e.shiftKey) btnRedo.click(); else btnUndo.click();
+});
+
+window.addEventListener('collab:redo-push', ({ detail }) => {
+  simRedoStack.push(detail);
+  if (simRedoStack.length > SIM_UNDO_MAX) simRedoStack.shift();
+  updateRedoBtn();
+});
+
+window.addEventListener('collab:undo-push', ({ detail }) => {
+  simUndoStack.push(detail);
+  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
   updateUndoBtn();
 });
 
 window.addEventListener('collab:pre-reset', ({ detail }) => {
   simUndoStack.push({ type: 'reset', groups: detail.groups });
   if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
+  simRedoStack.length = 0;
   updateUndoBtn();
+  updateRedoBtn();
 });
 
 window.addEventListener('collab:resize-done', ({ detail }) => {
@@ -729,7 +795,9 @@ window.addEventListener('collab:resize-done', ({ detail }) => {
     x2: detail.oldX2, y2: detail.oldY2,
   });
   if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
+  simRedoStack.length = 0;
   updateUndoBtn();
+  updateRedoBtn();
 });
 
 // ── UI wiring ─────────────────────────────────────────────────────────────────

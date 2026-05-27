@@ -46,7 +46,8 @@ const cfgMinScale      = document.getElementById('cfg-min-scale');
 const cfgMinScaleV     = document.getElementById('cfg-min-scale-val');
 const cfgMaxScale      = document.getElementById('cfg-max-scale');
 const cfgMaxScaleV     = document.getElementById('cfg-max-scale-val');
-const cfgFill       = document.getElementById('cfg-fill');
+const cfgFill            = document.getElementById('cfg-fill');
+const cfgFillTransparent = document.getElementById('cfg-fill-transparent');
 const cfgImages     = document.getElementById('cfg-images');
 
 const secPaint      = document.getElementById('section-paint');
@@ -91,7 +92,7 @@ const btnSessCancel    = document.getElementById('btn-sess-cancel');
 const btnCancel    = document.getElementById('btn-cancel');
 const btnDownload  = document.getElementById('btn-download');
 const simStatusEl  = document.getElementById('sim-status');
-const cfgRotation  = document.getElementById('cfg-rotation');
+
 
 const paintCtx = paintCanvas.getContext('2d');
 const maskCtx  = maskCanvas.getContext('2d');
@@ -106,6 +107,11 @@ function panelSetOpen(open) {
 btnPanelToggle.addEventListener('click', () =>
   panelSetOpen(panelWrap.classList.contains('im-panel-hidden'))
 );
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!panelWrap.classList.contains('im-panel-hidden')) panelSetOpen(false);
+});
 
 panelSetOpen(false); // start closed
 
@@ -145,6 +151,23 @@ cfgHeight.addEventListener('input', () => {
 
 cfgFill.addEventListener('input', () => {
   state.fillColor = cfgFill.value;
+  cfgFillTransparent.classList.remove('im-active');
+  if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
+  if (!window._collabApplyingRemote) _broadcastSettings();
+});
+
+cfgFill.addEventListener('click', () => {
+  if (state.fillColor === null) {
+    state.fillColor = cfgFill.value;
+    cfgFillTransparent.classList.remove('im-active');
+    if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
+    if (!window._collabApplyingRemote) _broadcastSettings();
+  }
+});
+
+cfgFillTransparent.addEventListener('click', () => {
+  state.fillColor = null;
+  cfgFillTransparent.classList.add('im-active');
   if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
   if (!window._collabApplyingRemote) _broadcastSettings();
 });
@@ -272,9 +295,11 @@ function updateScalePreview(imgIdx) {
     }
   }
 
-  // Output rect filled with the configured fill color
-  ctx.fillStyle = state.fillColor;
-  ctx.fillRect(1.5, 1.5, dispOutW, dispOutH);
+  // Output rect filled with the configured fill color (skipped when transparent)
+  if (state.fillColor !== null) {
+    ctx.fillStyle = state.fillColor;
+    ctx.fillRect(1.5, 1.5, dispOutW, dispOutH);
+  }
 
   // Output rect outline
   ctx.strokeStyle = '#777';
@@ -2157,12 +2182,6 @@ function simRefreshGroup(imgIdx) {
   }
 }
 
-cfgRotation.addEventListener('change', () => {
-  simMergedImageData = null;
-  btnDownload.classList.add('im-hidden');
-  if (simRafId !== null) btnMerge.classList.remove('im-hidden');
-  _simViewDirty = true;
-});
 
 function transformPolyVert(v, p) {
   const angle = p.angle || 0;
@@ -2252,7 +2271,8 @@ function finishMerge(placements, ownershipMap) {
   for (const id of imgData) { if (id) imgDataByIdx.set(id.imgIdx, id); }
 
   // Build output image pixel-by-pixel using ownership map
-  const [fr, fg, fb] = hexToRgb(state.fillColor);
+  const fillTransparent = state.fillColor === null;
+  const [fr, fg, fb] = fillTransparent ? [0, 0, 0] : hexToRgb(state.fillColor);
   const outImgData = simCtx.createImageData(W, H);
   const out = outImgData.data;
 
@@ -2284,7 +2304,7 @@ function finishMerge(placements, ownershipMap) {
         out[out4]     = fr;
         out[out4 + 1] = fg;
         out[out4 + 2] = fb;
-        out[out4 + 3] = 255;
+        out[out4 + 3] = fillTransparent ? 0 : 255;
       }
     }
   }
@@ -2375,6 +2395,7 @@ function _onSimCanvasResize() {
   const oldDisp = simDispScale;
   simDispScale  = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
   simViewScale  = simViewScale * oldDisp / simDispScale; // keep visual zoom constant
+  _simViewDirty = true;
 }
 
 let _windowResizeTimer = null;
@@ -2383,20 +2404,23 @@ window.addEventListener('resize', () => {
   _windowResizeTimer = setTimeout(_onSimCanvasResize, 200);
 });
 
-// ── Mouse corner resize ────────────────────────────────────────────────────────
-// Corner handles are drawn on the canvas at the output image corners (viewport-
-// aware). Touch corners are handled inside the touch IIFE below.
+// ── Mouse interaction: drag (translate), Ctrl+drag (scale+rotate), corner resize
 (function () {
   simCanvas.addEventListener('mousemove', (e) => {
-    if (simRafId === null || simCornerDrag || _mouseDrag) return;
+    if (simRafId === null || simCornerDrag || _mouseDrag || _ctrlDrag) return;
     const canvasPx = clientToCanvasPx(e.clientX, e.clientY);
     const corner = nearestCornerHandle(canvasPx);
     if (corner) { simCanvas.style.cursor = corner.dir + '-resize'; return; }
     const g = nearestGroup(canvasToPhysics(e.clientX, e.clientY));
-    simCanvas.style.cursor = g && !_remoteGrabs.has(g.imgIdx) ? 'grab' : '';
+    if (g && !_remoteGrabs.has(g.imgIdx)) {
+      simCanvas.style.cursor = e.ctrlKey ? 'crosshair' : 'grab';
+    } else {
+      simCanvas.style.cursor = '';
+    }
   });
 
   let _mouseDrag = null; // { pointerId, group, offsetX, offsetY }
+  let _ctrlDrag  = null; // { pointerId, group, grabPhys, initScale, initAngle, initDist, initCursorAngle }
 
   simCanvas.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'mouse' || simRafId === null) return;
@@ -2420,9 +2444,27 @@ window.addEventListener('resize', () => {
     if (!g || _remoteGrabs.has(g.imgIdx)) return;
     e.preventDefault();
     simCanvas.setPointerCapture(e.pointerId);
-    _mouseDrag = { pointerId: e.pointerId, group: g, offsetX: g.x - phys.x, offsetY: g.y - phys.y };
-    simBodyDragging = true;
-    simCanvas.style.cursor = 'grabbing';
+    if (e.ctrlKey) {
+      const autoScale = computeAutoScales()[g.imgIdx].scale;
+      const cx = g.x, cy = g.y;
+      const dx0 = phys.x - cx, dy0 = phys.y - cy;
+      const d0 = Math.hypot(dx0, dy0);
+      const minPhys = 8 / (simDispScale * simViewScale);
+      _ctrlDrag = {
+        pointerId: e.pointerId, group: g,
+        center: { x: cx, y: cy },
+        initScale: state.images[g.imgIdx].scale ?? autoScale,
+        initAngle: g.angle,
+        initDist: d0 > minPhys ? d0 : null,
+        initCursorAngle: d0 > minPhys ? Math.atan2(dy0, dx0) : null,
+      };
+      simBodyDragging = true;
+      simCanvas.style.cursor = 'crosshair';
+    } else {
+      _mouseDrag = { pointerId: e.pointerId, group: g, offsetX: g.x - phys.x, offsetY: g.y - phys.y };
+      simBodyDragging = true;
+      simCanvas.style.cursor = 'grabbing';
+    }
     _clearMergedImage();
     dispatchBodyLift(g);
     _activeDragIdx = g.imgIdx;
@@ -2440,6 +2482,38 @@ window.addEventListener('resize', () => {
       _mouseDrag.group.x = phys.x + _mouseDrag.offsetX;
       _mouseDrag.group.y = phys.y + _mouseDrag.offsetY;
       _simViewDirty = true;
+      return;
+    }
+    if (_ctrlDrag && e.pointerId === _ctrlDrag.pointerId) {
+      const phys = canvasToPhysics(e.clientX, e.clientY);
+      const dx = phys.x - _ctrlDrag.center.x;
+      const dy = phys.y - _ctrlDrag.center.y;
+      const dist = Math.hypot(dx, dy);
+      const curAngle = Math.atan2(dy, dx);
+
+      if (_ctrlDrag.initDist === null) {
+        const minPhys = 8 / (simDispScale * simViewScale);
+        if (dist < minPhys) return;
+        _ctrlDrag.initDist = dist;
+        _ctrlDrag.initCursorAngle = curAngle;
+      }
+
+      let newScale = Math.max(0.05, Math.min(20, _ctrlDrag.initScale * Math.pow(dist / _ctrlDrag.initDist, 0.5)));
+      let delta = curAngle - _ctrlDrag.initCursorAngle;
+      if (delta >  Math.PI) delta -= 2 * Math.PI;
+      if (delta < -Math.PI) delta += 2 * Math.PI;
+      let newAngle = _ctrlDrag.initAngle + delta;
+
+      if (e.shiftKey) {
+        const scaleStep = _ctrlDrag.initScale * 0.05;
+        newScale = Math.max(0.05, Math.round(newScale / scaleStep) * scaleStep);
+        newAngle = Math.round(newAngle / (5 * Math.PI / 180)) * (5 * Math.PI / 180);
+      }
+
+      _ctrlDrag.group.angle = newAngle;
+      pinchPreview = { imgIdx: _ctrlDrag.group.imgIdx, scale: newScale };
+      updateSimStatus(newScale.toFixed(2) + '\xd7  ' + Math.round(newAngle * 180 / Math.PI) + '\xb0');
+      _simViewDirty = true;
     }
   }, { passive: false });
 
@@ -2453,16 +2527,43 @@ window.addEventListener('resize', () => {
     _mouseDrag = null;
   }
 
+  function _endCtrlDrag() {
+    if (!_ctrlDrag) return;
+    const g = _ctrlDrag.group;
+    if (pinchPreview && pinchPreview.imgIdx === g.imgIdx) {
+      const entry = state.images[g.imgIdx];
+      entry.scale = pinchPreview.scale;
+      pinchPreview = null;
+      const ri = state.rankOrder.indexOf(g.imgIdx);
+      if (ri === state.paintIdx) {
+        painterScaleAuto.checked = false;
+        painterScaleInp.disabled = false;
+        painterScaleInp.value = entry.scale.toFixed(2);
+        updatePainterZoom(g.imgIdx);
+      }
+    }
+    simRefreshGroup(g.imgIdx);
+    simBodyDragging = false;
+    _activeDragIdx  = -1;
+    simCanvas.style.cursor = '';
+    dispatchBodyMoved(g);
+    window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: g.imgIdx } }));
+    updateSimStatus('');
+    _ctrlDrag = null;
+  }
+
   simCanvas.addEventListener('pointerup', (e) => {
     if (e.pointerType !== 'mouse') return;
     if (simCornerDrag && e.pointerId === simCornerDrag.id) { simCanvas.style.cursor = ''; finishCornerResize(); return; }
-    if (_mouseDrag && e.pointerId === _mouseDrag.pointerId) _endMouseDrag();
+    if (_mouseDrag  && e.pointerId === _mouseDrag.pointerId)  _endMouseDrag();
+    if (_ctrlDrag   && e.pointerId === _ctrlDrag.pointerId)   _endCtrlDrag();
   });
 
   simCanvas.addEventListener('pointercancel', (e) => {
     if (e.pointerType !== 'mouse') return;
     if (simCornerDrag && e.pointerId === simCornerDrag.id) { simCanvas.style.cursor = ''; finishCornerResize(); return; }
-    if (_mouseDrag && e.pointerId === _mouseDrag.pointerId) _endMouseDrag();
+    if (_mouseDrag  && e.pointerId === _mouseDrag.pointerId)  _endMouseDrag();
+    if (_ctrlDrag   && e.pointerId === _ctrlDrag.pointerId)   _endCtrlDrag();
   });
 }());
 
@@ -2572,7 +2673,7 @@ window.addEventListener('resize', () => {
       if (Math.abs(diff) < SNAP) { newBodyAngle -= diff; break; }
     }
 
-    if (!cfgRotation.checked) liftedGroup.angle = newBodyAngle;
+    liftedGroup.angle = newBodyAngle;
     updateSimStatus(newScale.toFixed(2) + '\xd7  ' + Math.round(newBodyAngle * 180 / Math.PI) + '\xb0');
   }
 
@@ -2791,16 +2892,14 @@ window.addEventListener('resize', () => {
   simCanvas.addEventListener('touchcancel', () => reset(), { passive: true });
 }());
 
-// ── Mouse wheel: two-finger trackpad pan + Ctrl/pinch zoom ────────────────────
+// ── Mouse wheel: viewport pan + Ctrl+scroll zoom ─────────────────────────────
 simCanvas.addEventListener('wheel', (e) => {
   if (simRafId === null) return;
   e.preventDefault();
-  const rect       = simCanvas.getBoundingClientRect();
+  const rect        = simCanvas.getBoundingClientRect();
   const cssToCanvas = simCanvas.width / rect.width;
   const ts          = simDispScale * simViewScale;
-
   if (e.ctrlKey) {
-    // Pinch-to-zoom (trackpad) or Ctrl+scroll: zoom around cursor
     const zoomFactor = Math.exp(-e.deltaY * 0.01);
     const newScale   = Math.max(0.1, Math.min(10, simViewScale * zoomFactor));
     const cursorPx   = clientToCanvasPx(e.clientX, e.clientY);
@@ -2808,7 +2907,6 @@ simCanvas.addEventListener('wheel', (e) => {
     simViewOffset.y  = simViewOffset.y + cursorPx.y / ts - cursorPx.y / (simDispScale * newScale);
     simViewScale     = newScale;
   } else {
-    // Two-finger pan
     simViewOffset.x += e.deltaX * cssToCanvas / ts;
     simViewOffset.y += e.deltaY * cssToCanvas / ts;
   }
@@ -2915,7 +3013,6 @@ btnExportSession.addEventListener('click', async () => {
         seed:         parseInt(cfgSeed.value) || 42,
         ditherExp:    parseInt(cfgDitherExp.value) || 4,
         useScaleRange: cfgUseScaleRange.checked,
-        rotationLock: cfgRotation.checked,
         simViewScale,
         simViewOffset,
         simX1, simY1, simX2, simY2,
@@ -3000,7 +3097,13 @@ function _applyImportReplace(session, imgs, encodings) {
   // Restore config to DOM + state
   state.outW = session.outW;         cfgWidth.value  = session.outW;
   state.outH = session.outH;         cfgHeight.value = session.outH;
-  state.fillColor = session.fillColor; cfgFill.value  = session.fillColor;
+  state.fillColor = session.fillColor !== undefined ? session.fillColor : '#181a1b';
+  if (state.fillColor === null) {
+    cfgFillTransparent.classList.add('im-active');
+  } else {
+    cfgFill.value = state.fillColor;
+    cfgFillTransparent.classList.remove('im-active');
+  }
   cfgBlendMode.value = session.blendMode || 'voronoi';
   cfgBlendMode.dispatchEvent(new Event('change'));
   cfgSeed.value      = session.seed    || 42;
@@ -3008,7 +3111,6 @@ function _applyImportReplace(session, imgs, encodings) {
   cfgUseScaleRange.checked = session.useScaleRange !== false;
   state.minScale = session.minScale || 0.5; cfgMinScale.value = state.minScale; cfgMinScaleV.textContent = state.minScale + 'x';
   state.maxScale = session.maxScale || 2.0; cfgMaxScale.value = state.maxScale; cfgMaxScaleV.textContent = state.maxScale + 'x';
-  cfgRotation.checked = session.rotationLock !== false;
 
   // Load images
   _loadSessionImages(session.images, imgs, 0);
@@ -3173,25 +3275,32 @@ window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
   buildRankList();
 });
 
-window.addEventListener('collab:undo-body-move', (e) => {
-  const { imgIdx, x, y, angle } = e.detail;
+function _applyBodyMoveSnapshot(entry, pushBackEvent) {
+  const { imgIdx, x, y, angle } = entry;
   const g = simGroups[imgIdx];
-  if (g) placeGroup(g, x, y, angle);
-});
+  if (!g) return;
+  window.dispatchEvent(new CustomEvent(pushBackEvent, { detail: { imgIdx, x: g.x, y: g.y, angle: g.angle } }));
+  placeGroup(g, x, y, angle);
+  _clearMergedImage();
+}
 
-window.addEventListener('collab:undo-reset', (e) => {
+function _applyResetSnapshot(entry, pushBackEvent) {
   if (simRafId === null) return;
-  for (const { imgIdx, x, y, angle } of e.detail.groups) {
+  window.dispatchEvent(new CustomEvent(pushBackEvent, {
+    detail: { type: 'reset', groups: simGroups.filter(Boolean).map(g => ({ imgIdx: g.imgIdx, x: g.x, y: g.y, angle: g.angle })) },
+  }));
+  for (const { imgIdx, x, y, angle } of entry.groups) {
     const g = simGroups[imgIdx];
     if (g) placeGroup(g, x, y, angle);
   }
   _clearMergedImage();
   window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
-});
+}
 
-window.addEventListener('collab:undo-resize', (e) => {
+function _applyResizeSnapshot(entry, pushBackEvent) {
   if (simRafId === null) return;
-  const { x1, y1, x2, y2 } = e.detail;
+  window.dispatchEvent(new CustomEvent(pushBackEvent, { detail: { type: 'resize', x1: simX1, y1: simY1, x2: simX2, y2: simY2 } }));
+  const { x1, y1, x2, y2 } = entry;
   simX1 = x1; simY1 = y1; simX2 = x2; simY2 = y2;
   state.outW = Math.round(x2 - x1);
   state.outH = Math.round(y2 - y1);
@@ -3200,7 +3309,14 @@ window.addEventListener('collab:undo-resize', (e) => {
   _simViewDirty = true;
   _broadcastSettings();
   window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
-});
+}
+
+window.addEventListener('collab:undo-body-move', (e) => _applyBodyMoveSnapshot(e.detail, 'collab:redo-push'));
+window.addEventListener('collab:redo-body-move', (e) => _applyBodyMoveSnapshot(e.detail, 'collab:undo-push'));
+window.addEventListener('collab:undo-reset',     (e) => _applyResetSnapshot(e.detail,     'collab:redo-push'));
+window.addEventListener('collab:redo-reset',     (e) => _applyResetSnapshot(e.detail,     'collab:undo-push'));
+window.addEventListener('collab:undo-resize',    (e) => _applyResizeSnapshot(e.detail,    'collab:redo-push'));
+window.addEventListener('collab:redo-resize',    (e) => _applyResizeSnapshot(e.detail,    'collab:undo-push'));
 
 window.addEventListener('collab:remote-drag', ({ detail: { imgIdx, x, y, angle } }) => {
   if (simRafId === null) return;
