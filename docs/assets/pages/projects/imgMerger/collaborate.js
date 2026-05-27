@@ -513,7 +513,7 @@ function joinAsHost(roomCode) {
     conn.on('open', () => {
       guestConns.set(conn.peer, conn);
       setupConn(conn, true);
-      updatePeerCount(); // freeze host before building session blob so simFrozen is captured correctly
+      updatePeerCount();
       const cs = window.getCollabState ? window.getCollabState() : null;
       if (cs && cs.imageCount > 0) sendSessionTo(conn);
     });
@@ -622,11 +622,6 @@ function leaveRoom() {
 
 // ── App event hooks ───────────────────────────────────────────────────────────
 
-window.addEventListener('collab:freeze-changed', ({ detail }) => {
-  if (!localPeerId || !detail.frozen) return;
-  const positions = window.getSimPositions ? window.getSimPositions() : {};
-  broadcast({ type: 'positions', positions });
-});
 
 window.addEventListener('collab:settings-changed', ({ detail }) => {
   if (!localPeerId) return;
@@ -711,7 +706,29 @@ function updateUndoBtn() { btnUndo.disabled = simUndoStack.length === 0; }
 btnUndo.addEventListener('click', () => {
   const entry = simUndoStack.pop();
   if (!entry) return;
-  window.dispatchEvent(new CustomEvent('collab:undo-body-move', { detail: entry }));
+  if (!entry.type || entry.type === 'body-move') {
+    window.dispatchEvent(new CustomEvent('collab:undo-body-move', { detail: entry }));
+  } else if (entry.type === 'reset') {
+    window.dispatchEvent(new CustomEvent('collab:undo-reset', { detail: entry }));
+  } else if (entry.type === 'resize') {
+    window.dispatchEvent(new CustomEvent('collab:undo-resize', { detail: entry }));
+  }
+  updateUndoBtn();
+});
+
+window.addEventListener('collab:pre-reset', ({ detail }) => {
+  simUndoStack.push({ type: 'reset', groups: detail.groups });
+  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
+  updateUndoBtn();
+});
+
+window.addEventListener('collab:resize-done', ({ detail }) => {
+  simUndoStack.push({
+    type: 'resize',
+    x1: detail.oldX1, y1: detail.oldY1,
+    x2: detail.oldX2, y2: detail.oldY2,
+  });
+  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
   updateUndoBtn();
 });
 

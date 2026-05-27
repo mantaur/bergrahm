@@ -615,7 +615,6 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 .im-yolo-status       { font-size: .76em; color: #484848; }
 
 .im-btn.im-yolo-active { color: springgreen; border-color: rgba(0,255,127,.4); }
-.im-btn.im-sim-frozen { color: springgreen; border-color: rgba(0,255,127,.4); }
 
 .im-paint-nav {
   display: flex;
@@ -734,10 +733,7 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   display: block;
   width: 100%;
   height: 100%;
-  cursor: grab;
 }
-
-#sim-canvas:active { cursor: grabbing; }
 
 /* ── Sim HUD ── */
 #sim-hud {
@@ -745,6 +741,7 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   bottom: 1rem;
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100vw - 2rem);
   z-index: 50;
   display: flex;
   align-items: center;
@@ -762,15 +759,13 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 .im-sim-status {
   font-size: .76em;
   color: #888;
-  flex: 1;
-  min-width: 6em;
 }
 
 .im-sim-btns {
   display: flex;
-  flex-wrap: wrap;
   gap: .45em;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .im-rot-lbl {

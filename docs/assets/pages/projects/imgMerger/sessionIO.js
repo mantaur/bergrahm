@@ -134,7 +134,7 @@ const SessionIO = {
     );
 
     const session = {
-      version: 1,
+      version: 2,
       outW: state.outW, outH: state.outH,
       fillColor: state.fillColor,
       blendMode: cfg.blendMode,
@@ -148,7 +148,6 @@ const SessionIO = {
       simViewOffset: { x: cfg.simViewOffset.x, y: cfg.simViewOffset.y },
       simX1: cfg.simX1, simY1: cfg.simY1,
       simX2: cfg.simX2, simY2: cfg.simY2,
-      simFrozen: cfg.simFrozen,
       images: state.images.map((entry, i) => {
         const g = simGroups[i];
         return {
@@ -156,8 +155,8 @@ const SessionIO = {
           scale: entry.scale, scaleFixed: entry.scaleFixed || false,
           simHidden: entry.simHidden || false,
           polygons: entry.polygons, currentPoly: entry.currentPoly || [],
-          simPos: g ? { x: g.body.position.x, y: g.body.position.y } : null,
-          simAngle: g ? g.body.angle : 0,
+          simPos: g ? { x: g.x, y: g.y } : null,
+          simAngle: g ? g.angle : 0,
           hasEncoding: false,
         };
       }),

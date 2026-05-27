@@ -20,8 +20,6 @@
   <link rel="stylesheet" href="imageMerge.css?v=8">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/poly-decomp/0.3.0/poly-decomp.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
   <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
@@ -236,12 +234,11 @@
   </div>
   <div id="collab-cursor-layer"></div>
   <div id="sim-hud">
-    <span id="sim-status" class="im-sim-status">-</span>
+    <span id="sim-status" class="im-sim-status"></span>
     <div class="im-sim-btns">
       <button class="im-btn im-btn-sm im-btn-icon" id="btn-collab" title="Live session" aria-label="Live session"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="3"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><circle cx="18" cy="8" r="2.5"/><path d="M21 21v-1.5a3.5 3.5 0 0 0-2.5-3.35"/></svg></button>
       <button class="im-btn im-btn-sm" id="btn-sim-undo" disabled>Undo</button>
       <button class="im-btn im-btn-sm" id="btn-sim-reset">Reset</button>
-      <button class="im-btn im-btn-sm" id="btn-sim-freeze">Freeze</button>
       <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
       <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
       <button class="im-btn im-hidden" id="btn-download" title="Download PNG"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
@@ -918,7 +915,7 @@ function chamferDist(mask, W, H) {
       var out = {};
       if (!simGroups) return out;
       simGroups.forEach(function(g, i) {
-        if (g && g.body) out[i] = { x: g.body.position.x, y: g.body.position.y, angle: g.body.angle };
+        if (g) out[i] = { x: g.x, y: g.y, angle: g.angle };
       });
       return out;
     };
@@ -949,8 +946,8 @@ function chamferDist(mask, W, H) {
         name: entry.name, w: entry.w, h: entry.h,
         jpegBase64: jpegBase64, encoding: encoding,
         polygons: entry.polygons,
-        simPos: g ? { x: g.body.position.x, y: g.body.position.y } : null,
-        simAngle: g ? g.body.angle : 0,
+        simPos: g ? { x: g.x, y: g.y } : null,
+        simAngle: g ? g.angle : 0,
       };
     };
 
@@ -1018,7 +1015,6 @@ function chamferDist(mask, W, H) {
           simViewOffset: simViewOffset,
           simX1: simX1, simY1: simY1,
           simX2: simX2, simY2: simY2,
-          simFrozen:     simFrozen,
         },
       }, onProgress || function() {});
     };
