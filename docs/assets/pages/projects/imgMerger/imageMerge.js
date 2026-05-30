@@ -1391,7 +1391,11 @@ function startMerge() {
     const msg = e.data;
     if (msg.type === 'done') {
       cleanupWorker();
-      finishMerge(msg.placements, msg.ownershipMap);
+      simLastOwnershipMap = msg.ownershipMap;
+      updateSimStatus('Rendering...');
+      _renderPixels(msg.placements, msg.ownershipMap, 0.25)
+        .then(({ pixels, PW, PH }) => _applyMergePreview(pixels, PW, PH, msg.placements))
+        .catch(err => { updateSimStatus('Render error: ' + err.message); resetMergeUI(); });
     } else if (msg.type === 'progress') {
       updateSimStatus('Merging... ' + msg.pct + '%');
     } else if (msg.type === 'error') {
@@ -1439,9 +1443,12 @@ function resetMergeUI() {
 let simGroups          = [];   // indexed by imgIdx; null entry = image has no polygons
 let simRafId           = null;
 let _lastSimTs         = null;
-let simMergedImageData = null; // set when merge complete; cleared when sim re-activates
-let _simViewDirty      = true;
-let simLastPlacements  = null; // placements from last finishMerge — used for mask overlay
+let simMergedImageData  = null; // truthy when merge complete; cleared when sim re-activates
+let _simViewDirty       = true;
+let simLastPlacements   = null; // placements from last merge — used for mask overlay + download
+let simLastOwnershipMap = null; // ownershipMap from last merge — used for full-res download
+let _activePixelWorker  = null; // running pixel-render worker (preview or download)
+let _pixelWorkerBlobUrl = null; // cached blob URL for the pixel render worker
 let simCornerDrag      = null; // { dir, id, startPx, startX1, startY1, startX2, startY2 }
 let simBodyDragging    = false; // true while a body is held by MouseConstraint
 let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gesture
@@ -1455,9 +1462,9 @@ let simY1              = 0;    // output rect TL y in world space
 let simX2              = 0;    // output rect BR x in world space
 let simY2              = 0;    // output rect BR y in world space
 let _simOutExplicit    = false; // set when corners are set by remote; suppresses resizeSim re-center
-let mergeCanvas        = null; // offscreen full-res canvas -- used for download
-let mergeX1            = 0;   // simX1 at the time of the last finishMerge
-let mergeY1            = 0;   // simY1 at the time of the last finishMerge
+let mergeCanvas        = null; // offscreen preview-res canvas shown in sim view
+let mergeX1            = 0;   // simX1 at the time of the last merge
+let mergeY1            = 0;   // simY1 at the time of the last merge
 let simViewScale       = 1;          // viewport zoom (1 = no zoom)
 let simViewOffset      = { x: 0, y: 0 }; // viewport pan offset in physics coords
 
@@ -1817,7 +1824,7 @@ function simTick(ts) {
         simCtx.save();
         simCtx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
         simCtx.translate(-simViewOffset.x, -simViewOffset.y);
-        simCtx.drawImage(mergeCanvas, mergeX1, mergeY1, mergeCanvas.width, mergeCanvas.height);
+        simCtx.drawImage(mergeCanvas, mergeX1, mergeY1, state.outW, state.outH);
         simCtx.restore();
       }
       drawMergedMaskOverlay();
@@ -2012,9 +2019,11 @@ function drawMergedMaskOverlay() {
 function updateSimStatus(text) { simStatusEl.textContent = text; }
 
 function _clearMergedImage() {
-  simMergedImageData = null;
-  simLastPlacements  = null;
-  mergeCanvas        = null;
+  simMergedImageData  = null;
+  simLastPlacements   = null;
+  simLastOwnershipMap = null;
+  mergeCanvas         = null;
+  if (_activePixelWorker) { _activePixelWorker.terminate(); _activePixelWorker = null; }
   btnDownload.classList.add('im-hidden');
   btnMerge.classList.remove('im-hidden');
   _simViewDirty = true;
@@ -2143,6 +2152,9 @@ function resizeSim() {
     simY2 = cy + state.outH / 2;
   }
   _simOutExplicit = false;
+  // Output dimensions changed — auto-scale may differ, so imgCentroidSim is stale.
+  // Rebuild all existing groups preserving their current positions.
+  simGroups.forEach((g, i) => { if (g) simRefreshGroup(i); });
   _simViewDirty = true;
 }
 
@@ -2203,121 +2215,207 @@ function hexToRgb(hex) {
   ];
 }
 
-// Sample a pixel from a pre-captured image data record.
-// Returns [r,g,b] or null if the point is outside or fully transparent.
-function sampleImgData(id, ox, oy) {
-  if (ox < id.x0 || ox >= id.x1 || oy < id.y0 || oy >= id.y1) return null;
-  const base = ((oy - id.y0) * id.rw + (ox - id.x0)) * 4;
-  if (id.data[base + 3] === 0) return null;
-  return [id.data[base], id.data[base + 1], id.data[base + 2]];
-}
+// ── Pixel render worker ────────────────────────────────────────────────────────
+// Runs off-main-thread: draws each placed image to OffscreenCanvas, assembles
+// the final RGBA pixel buffer. Accepts pre-sized ImageBitmaps so the worker
+// never needs to know about image scale — just position and rotation.
 
-function finishMerge(placements, ownershipMap) {
-  resetMergeUI();
-  btnMerge.classList.add('im-hidden');
+function _pixelWorkerBody() {
+  self.onmessage = async ({ data: msg }) => {
+    try {
+      const { imageBitmaps, placements, ownershipMap, W, H, PW, PH, fillColor } = msg;
 
-  const W = state.outW, H = state.outH;
+      const imgData = [];
+      for (let k = 0; k < placements.length; k++) {
+        const sp = placements[k];
+        const bm = imageBitmaps[k];
+        if (!bm) { imgData.push(null); continue; }
 
-  // Pre-render each placed image into a clipped canvas and capture its pixels.
-  // The temp canvas is only as large as the region that overlaps the output,
-  // so large-scale images don't create huge off-screen surfaces.
-  const imgData = []; // { imgIdx, x0, y0, x1, y1, rw, data }
-  for (const p of placements) {
-    const entry = state.images[p.imgIdx];
-    const angle = p.angle || 0;
+        let x0, y0, x1, y1;
+        if (sp.angle) {
+          const cos = Math.cos(sp.angle), sin = Math.sin(sp.angle);
+          const bw = bm.width, bh = bm.height;
+          const corners = [[0, 0], [bw, 0], [bw, bh], [0, bh]].map(([cx, cy]) => {
+            const dx = cx - sp.imgCentroidX, dy = cy - sp.imgCentroidY;
+            return [sp.pivotX + cos * dx - sin * dy, sp.pivotY + sin * dx + cos * dy];
+          });
+          const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
+          x0 = Math.max(0, Math.floor(Math.min(...xs)));
+          y0 = Math.max(0, Math.floor(Math.min(...ys)));
+          x1 = Math.min(PW, Math.ceil(Math.max(...xs)));
+          y1 = Math.min(PH, Math.ceil(Math.max(...ys)));
+        } else {
+          x0 = Math.max(0, sp.x);
+          y0 = Math.max(0, sp.y);
+          x1 = Math.min(PW, sp.x + bm.width);
+          y1 = Math.min(PH, sp.y + bm.height);
+        }
 
-    let x0, y0, x1, y1;
-    if (angle) {
-      const corners = [
-        { x: 0, y: 0 }, { x: entry.w, y: 0 },
-        { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
-      ].map(c => transformPolyVert(c, p));
-      const cxs = corners.map(c => c.x), cys = corners.map(c => c.y);
-      x0 = Math.max(0, Math.floor(Math.min(...cxs)));
-      y0 = Math.max(0, Math.floor(Math.min(...cys)));
-      x1 = Math.min(W, Math.ceil(Math.max(...cxs)));
-      y1 = Math.min(H, Math.ceil(Math.max(...cys)));
-    } else {
-      const scaledW = Math.round(entry.w * p.scale);
-      const scaledH = Math.round(entry.h * p.scale);
-      x0 = Math.max(0, p.x);           y0 = Math.max(0, p.y);
-      x1 = Math.min(W, p.x + scaledW); y1 = Math.min(H, p.y + scaledH);
-    }
-    if (x1 <= x0 || y1 <= y0) { imgData.push(null); continue; }
+        if (x1 <= x0 || y1 <= y0) { bm.close(); imgData.push(null); continue; }
 
-    const rw = x1 - x0, rh = y1 - y0;
-    const tmp = document.createElement('canvas');
-    tmp.width = rw; tmp.height = rh;
-    const tmpCtx = tmp.getContext('2d');
+        const rw = x1 - x0, rh = y1 - y0;
+        const oc = new OffscreenCanvas(rw, rh);
+        const ctx = oc.getContext('2d');
 
-    if (angle) {
-      tmpCtx.save();
-      tmpCtx.translate(p.pivotX - x0, p.pivotY - y0);
-      tmpCtx.rotate(angle);
-      tmpCtx.drawImage(entry.img, 0, 0, entry.w, entry.h,
-        -p.imgCentroidX, -p.imgCentroidY, entry.w * p.scale, entry.h * p.scale);
-      tmpCtx.restore();
-    } else {
-      // Draw only the source sub-region that maps to [x0..x1] × [y0..y1]
-      const srcX = (x0 - p.x) / p.scale, srcY = (y0 - p.y) / p.scale;
-      const srcW = rw / p.scale,          srcH = rh / p.scale;
-      tmpCtx.drawImage(entry.img, srcX, srcY, srcW, srcH, 0, 0, rw, rh);
-    }
-    imgData.push({ imgIdx: p.imgIdx, x0, y0, x1, y1, rw, data: tmpCtx.getImageData(0, 0, rw, rh).data });
-  }
+        if (sp.angle) {
+          ctx.save();
+          ctx.translate(sp.pivotX - x0, sp.pivotY - y0);
+          ctx.rotate(sp.angle);
+          ctx.drawImage(bm, 0, 0, bm.width, bm.height,
+            -sp.imgCentroidX, -sp.imgCentroidY, bm.width, bm.height);
+          ctx.restore();
+        } else {
+          const srcX = Math.max(0, -sp.x), srcY = Math.max(0, -sp.y);
+          ctx.drawImage(bm, srcX, srcY, rw, rh, 0, 0, rw, rh);
+        }
+        bm.close();
 
-  // Index by imgIdx for O(1) owner lookup
-  const imgDataByIdx = new Map();
-  for (const id of imgData) { if (id) imgDataByIdx.set(id.imgIdx, id); }
+        imgData.push({ imgIdx: sp.imgIdx, x0, y0, x1, y1, rw, data: ctx.getImageData(0, 0, rw, rh).data });
+      }
 
-  // Build output image pixel-by-pixel using ownership map
-  const fillTransparent = state.fillColor === null;
-  const [fr, fg, fb] = fillTransparent ? [0, 0, 0] : hexToRgb(state.fillColor);
-  const outImgData = simCtx.createImageData(W, H);
-  const out = outImgData.data;
+      const imgDataByIdx = new Map();
+      for (const id of imgData) { if (id) imgDataByIdx.set(id.imgIdx, id); }
 
-  for (let oy = 0; oy < H; oy++) {
-    for (let ox = 0; ox < W; ox++) {
-      const oi  = oy * W + ox;
-      const out4 = oi * 4;
+      const fillTransparent = fillColor === null;
+      const fr = fillTransparent ? 0 : parseInt(fillColor.slice(1, 3), 16);
+      const fg = fillTransparent ? 0 : parseInt(fillColor.slice(3, 5), 16);
+      const fb = fillTransparent ? 0 : parseInt(fillColor.slice(5, 7), 16);
 
-      // 1. Try the Voronoi owner (nearest essential region)
-      let pixel = null;
-      const owner = ownershipMap ? ownershipMap[oi] : -1;
-      if (owner >= 0) pixel = sampleImgData(imgDataByIdx.get(owner), ox, oy);
+      const scaleX = W / PW, scaleY = H / PH;
+      const out = new Uint8ClampedArray(PW * PH * 4);
 
-      // 2. Fall back to highest-priority image that covers this pixel
-      if (!pixel) {
-        for (const id of imgData) {
-          if (!id) continue;
-          pixel = sampleImgData(id, ox, oy);
-          if (pixel) break;
+      for (let oy = 0; oy < PH; oy++) {
+        for (let ox = 0; ox < PW; ox++) {
+          const oi   = oy * PW + ox;
+          const out4 = oi * 4;
+          const fullOx = Math.min(W - 1, Math.round(ox * scaleX));
+          const fullOy = Math.min(H - 1, Math.round(oy * scaleY));
+          const owner = ownershipMap ? ownershipMap[fullOy * W + fullOx] : -1;
+
+          let pixel = null;
+          if (owner >= 0) {
+            const id = imgDataByIdx.get(owner);
+            if (id) pixel = _sample(id, ox, oy);
+          }
+          if (!pixel) {
+            for (const id of imgData) {
+              if (!id) continue;
+              pixel = _sample(id, ox, oy);
+              if (pixel) break;
+            }
+          }
+
+          if (pixel) {
+            out[out4]     = pixel[0];
+            out[out4 + 1] = pixel[1];
+            out[out4 + 2] = pixel[2];
+            out[out4 + 3] = 255;
+          } else {
+            out[out4]     = fr;
+            out[out4 + 1] = fg;
+            out[out4 + 2] = fb;
+            out[out4 + 3] = fillTransparent ? 0 : 255;
+          }
         }
       }
 
-      if (pixel) {
-        out[out4]     = pixel[0];
-        out[out4 + 1] = pixel[1];
-        out[out4 + 2] = pixel[2];
-        out[out4 + 3] = 255;
+      if (msg.returnBlob) {
+        const oc = new OffscreenCanvas(PW, PH);
+        oc.getContext('2d').putImageData(new ImageData(out, PW, PH), 0, 0);
+        const blob = await oc.convertToBlob({ type: 'image/png' });
+        self.postMessage({ type: 'done', blob, PW, PH });
       } else {
-        out[out4]     = fr;
-        out[out4 + 1] = fg;
-        out[out4 + 2] = fb;
-        out[out4 + 3] = fillTransparent ? 0 : 255;
+        self.postMessage({ type: 'done', pixels: out.buffer, PW, PH }, [out.buffer]);
       }
+    } catch (err) {
+      self.postMessage({ type: 'error', message: err.message });
     }
-  }
+  };
 
+  function _sample(id, ox, oy) {
+    if (ox < id.x0 || ox >= id.x1 || oy < id.y0 || oy >= id.y1) return null;
+    const base = ((oy - id.y0) * id.rw + (ox - id.x0)) * 4;
+    if (id.data[base + 3] === 0) return null;
+    return [id.data[base], id.data[base + 1], id.data[base + 2]];
+  }
+}
+
+function _makePixelWorker() {
+  if (!_pixelWorkerBlobUrl) {
+    const src = '(' + _pixelWorkerBody.toString() + ')();';
+    _pixelWorkerBlobUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  }
+  return new Worker(_pixelWorkerBlobUrl);
+}
+
+// Renders placements off-thread.
+// previewScale=0.25 for fast preview; 1.0 for full-res download.
+// returnBlob=true: worker encodes PNG and resolves with { blob, PW, PH }.
+// returnBlob=false (default): resolves with { pixels: ArrayBuffer, PW, PH }.
+async function _renderPixels(placements, ownershipMap, previewScale, returnBlob = false) {
+  const ps = previewScale;
+  const PW = Math.max(1, Math.round(state.outW * ps));
+  const PH = Math.max(1, Math.round(state.outH * ps));
+
+  // Pre-scale each image bitmap to its final pixel size so the worker
+  // only needs to composite, not scale.
+  const imageBitmaps = await Promise.all(placements.map(p => {
+    const entry = state.images[p.imgIdx];
+    const bw = Math.max(1, Math.round(entry.w * p.scale * ps));
+    const bh = Math.max(1, Math.round(entry.h * p.scale * ps));
+    return createImageBitmap(entry.img, { resizeWidth: bw, resizeHeight: bh, resizeQuality: ps < 1 ? 'medium' : 'high' });
+  }));
+
+  // Scale all position coords into preview canvas space.
+  const scaledPlacements = placements.map(p => ({
+    imgIdx:        p.imgIdx,
+    x:             Math.round(p.x * ps),
+    y:             Math.round(p.y * ps),
+    angle:         p.angle || 0,
+    pivotX:        (p.pivotX        || 0) * ps,
+    pivotY:        (p.pivotY        || 0) * ps,
+    imgCentroidX:  (p.imgCentroidX  || 0) * ps,
+    imgCentroidY:  (p.imgCentroidY  || 0) * ps,
+  }));
+
+  if (_activePixelWorker) { _activePixelWorker.terminate(); _activePixelWorker = null; }
+  const worker = _makePixelWorker();
+  _activePixelWorker = worker;
+
+  return new Promise((resolve, reject) => {
+    worker.onmessage = ({ data: msg }) => {
+      _activePixelWorker = null;
+      worker.terminate();
+      if (msg.type === 'done') resolve({ pixels: msg.pixels, blob: msg.blob, PW: msg.PW, PH: msg.PH });
+      else reject(new Error(msg.message || 'Pixel worker error'));
+    };
+    worker.onerror = err => {
+      _activePixelWorker = null;
+      worker.terminate();
+      reject(new Error(err.message || 'Pixel worker error'));
+    };
+    worker.postMessage(
+      { imageBitmaps, placements: scaledPlacements, ownershipMap,
+        W: state.outW, H: state.outH, PW, PH, fillColor: state.fillColor, returnBlob },
+      imageBitmaps
+    );
+  });
+}
+
+function _applyMergePreview(pixels, PW, PH, placements) {
+  resetMergeUI();
+  btnMerge.classList.add('im-hidden');
+
+  const imgData = new ImageData(new Uint8ClampedArray(pixels), PW, PH);
   mergeCanvas = document.createElement('canvas');
-  mergeCanvas.width  = W;
-  mergeCanvas.height = H;
-  mergeCanvas.getContext('2d').putImageData(outImgData, 0, 0);
-  simMergedImageData = outImgData;
+  mergeCanvas.width  = PW;
+  mergeCanvas.height = PH;
+  mergeCanvas.getContext('2d').putImageData(imgData, 0, 0);
+  simMergedImageData = imgData;
   simLastPlacements  = placements;
   mergeX1 = simX1;
   mergeY1 = simY1;
-  _simViewDirty      = true;
+  _simViewDirty = true;
 
   const placed = placements.length, total = state.images.length;
   updateSimStatus(
@@ -2330,10 +2428,24 @@ function finishMerge(placements, ownershipMap) {
 
 // ── Download ──────────────────────────────────────────────────────────────────
 btnDownload.addEventListener('click', () => {
-  const link = document.createElement('a');
-  link.download = 'merged.png';
-  link.href = mergeCanvas ? mergeCanvas.toDataURL('image/png') : simCanvas.toDataURL('image/png');
-  link.click();
+  if (!simLastPlacements || !simLastOwnershipMap) return;
+  btnDownload.disabled = true;
+  updateSimStatus('Preparing full-res download...');
+  _renderPixels(simLastPlacements, simLastOwnershipMap, 1.0, true)
+    .then(({ blob }) => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.download = 'merged.png';
+      link.href = url;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      btnDownload.disabled = false;
+      updateSimStatus('Merged - drag to re-arrange');
+    })
+    .catch(err => {
+      updateSimStatus('Download error: ' + err.message);
+      btnDownload.disabled = false;
+    });
 });
 
 // ── Accordion controller ──────────────────────────────────────────────────────
@@ -2505,9 +2617,8 @@ window.addEventListener('resize', () => {
       let newAngle = _ctrlDrag.initAngle + delta;
 
       if (e.shiftKey) {
-        const scaleStep = _ctrlDrag.initScale * 0.05;
-        newScale = Math.max(0.05, Math.round(newScale / scaleStep) * scaleStep);
-        newAngle = Math.round(newAngle / (5 * Math.PI / 180)) * (5 * Math.PI / 180);
+        newScale = Math.max(0.10, Math.round(newScale / 0.10) * 0.10);
+        newAngle = Math.round(newAngle / (15 * Math.PI / 180)) * (15 * Math.PI / 180);
       }
 
       _ctrlDrag.group.angle = newAngle;
@@ -3065,7 +3176,7 @@ async function _doImportReplace(file) {
   _sessionStatus('Importing 0%');
   try {
     const { session, imgs, encodings } = await SessionIO.import(file, (pct, text) => _sessionStatus(text));
-    _applyImportReplace(session, imgs, encodings);
+    await _applyImportReplace(session, imgs, encodings);
     _sessionStatus('');
   } catch (e) {
     _sessionStatus('Import failed: ' + e.message);
@@ -3076,14 +3187,14 @@ async function _doImportAdd(file) {
   _sessionStatus('Importing 0%');
   try {
     const { session, imgs, encodings } = await SessionIO.import(file, (pct, text) => _sessionStatus(text));
-    _applyImportAdd(session, imgs, encodings);
+    await _applyImportAdd(session, imgs, encodings);
     _sessionStatus('');
   } catch (e) {
     _sessionStatus('Import failed: ' + e.message);
   }
 }
 
-function _applyImportReplace(session, imgs, encodings) {
+async function _applyImportReplace(session, imgs, encodings) {
   teardownSim();
 
   // Wipe existing state
@@ -3113,7 +3224,7 @@ function _applyImportReplace(session, imgs, encodings) {
   state.maxScale = session.maxScale || 2.0; cfgMaxScale.value = state.maxScale; cfgMaxScaleV.textContent = state.maxScale + 'x';
 
   // Load images
-  _loadSessionImages(session.images, imgs, 0);
+  await _loadSessionImages(session.images, imgs, 0);
 
   // Restore encodings
   _restoreEncodings(encodings, 0);
@@ -3155,14 +3266,14 @@ function _applyImportReplace(session, imgs, encodings) {
   }
 }
 
-function _applyImportAdd(session, imgs, encodings) {
+async function _applyImportAdd(session, imgs, encodings) {
   const baseIdx = state.images.length;
   let addCount  = 0;
 
   // Map imported index -> new index (-1 if image failed to load)
   const remapIdx = (session.images || []).map((_si, i) => imgs[i] ? baseIdx + addCount++ : -1);
 
-  _loadSessionImages(session.images, imgs, baseIdx, remapIdx);
+  await _loadSessionImages(session.images, imgs, baseIdx, remapIdx);
   _restoreEncodings(encodings, baseIdx, remapIdx);
 
   // Append to rankOrder (in the order they appear in the imported session's rankOrder)
@@ -3193,11 +3304,13 @@ function _applyImportAdd(session, imgs, encodings) {
   }
 }
 
-function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
-  (sessionImages || []).forEach((si, i) => {
+async function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
+  const list = sessionImages || [];
+  for (let i = 0; i < list.length; i++) {
+    const si = list[i];
     const img = imgs[i];
     const newIdx = remapIdx ? remapIdx[i] : baseIdx + i;
-    if (!img || newIdx < 0) return;
+    if (!img || newIdx < 0) continue;
 
     const w = si.w || img.naturalWidth;
     const h = si.h || img.naturalHeight;
@@ -3212,7 +3325,9 @@ function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
       simHidden:   si.simHidden   || false,
     };
     state.undoStack[newIdx] = [];
-  });
+
+    if ((i + 1) % 20 === 0) await new Promise(r => setTimeout(r, 0));
+  }
 }
 
 // ── Collaboration remote-event handlers ───────────────────────────────────────

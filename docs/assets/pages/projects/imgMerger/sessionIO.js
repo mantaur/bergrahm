@@ -70,18 +70,21 @@ function _sessionWorkerBody() {
     const session = JSON.parse(await zip.file('session.json').async('string'));
     const n = session.images.length;
 
-    const imageBuffers = [];
-    for (let i = 0; i < n; i++) {
-      const f = zip.file('images/' + i + '.jpg');
-      imageBuffers.push(f ? await f.async('arraybuffer') : null);
-      self.postMessage({ type: 'progress', pct: Math.round((i + 1) / n * 75) });
-    }
-
-    const encodings = [];
-    for (let i = 0; i < n; i++) {
-      const f = zip.file('encodings/' + i + '.json');
-      encodings.push(f ? JSON.parse(await f.async('string')) : null);
-    }
+    let done = 0;
+    const [imageBuffers, encodings] = await Promise.all([
+      Promise.all(Array.from({ length: n }, (_, i) => {
+        const f = zip.file('images/' + i + '.jpg');
+        if (!f) return Promise.resolve(null);
+        return f.async('arraybuffer').then(buf => {
+          self.postMessage({ type: 'progress', pct: Math.round(++done / n * 75) });
+          return buf;
+        });
+      })),
+      Promise.all(Array.from({ length: n }, (_, i) => {
+        const f = zip.file('encodings/' + i + '.json');
+        return f ? f.async('string').then(s => JSON.parse(s)) : Promise.resolve(null);
+      })),
+    ]);
     self.postMessage({ type: 'progress', pct: 95 });
 
     const transfers = imageBuffers.filter(Boolean);

@@ -629,19 +629,38 @@ function _getChamferBlobUrl() {
   return _chamferBlobUrl;
 }
 
-// Run chamferDist for each mask in parallel across sub-workers.
-// masks[]: Uint8Array — each is transferred to its worker (detached after call).
-// onDone(completed, total) called after each worker finishes for progress reporting.
-// Returns Promise<(Float32Array|null)[]>
-function parallelChamfer(masks, W, H, onDone) {
+// Run chamferDist for each item with at most 8 workers in flight at once.
+// count: number of items.
+// getEntry(j): called synchronously just before worker j starts; returns { mask: Uint8Array }.
+//   The mask buffer is transferred to the worker (zero-copy; detached after call).
+// onResult(j, dist): called when worker j finishes; dist is Float32Array or null on error.
+// onDone(completed, total): progress callback called after each result.
+async function parallelChamfer(count, W, H, getEntry, onResult, onDone) {
+  const CONCURRENCY = Math.min(8, count);
   const url = _getChamferBlobUrl();
   let completed = 0;
-  return Promise.all(masks.map(mask => new Promise(resolve => {
-    const w = new Worker(url);
-    w.onmessage = e => { w.terminate(); if (onDone) onDone(++completed, masks.length); resolve(new Float32Array(e.data)); };
-    w.onerror   = () => { w.terminate(); resolve(null); };
-    w.postMessage({ mask: mask.buffer, W, H }, [mask.buffer]);
-  })));
+  let nextIdx = CONCURRENCY;
+
+  function runOne(j) {
+    const { mask } = getEntry(j);
+    return new Promise(resolve => {
+      const w = new Worker(url);
+      w.onmessage = e => {
+        w.terminate();
+        if (onDone) onDone(++completed, count);
+        onResult(j, new Float32Array(e.data));
+        resolve();
+      };
+      w.onerror = () => { w.terminate(); onResult(j, null); resolve(); };
+      w.postMessage({ mask: mask.buffer, W, H }, [mask.buffer]);
+    });
+  }
+
+  async function lane(j) {
+    while (j < count) { await runOne(j); j = nextIdx++; }
+  }
+
+  await Promise.all(Array.from({ length: CONCURRENCY }, (_, i) => lane(i)));
 }
 
 // ── Ownership map dispatcher ───────────────────────────────────────────────────
@@ -665,43 +684,36 @@ function transformPolyVert(v, p) {
 }
 
 // ── Voronoi ownership map ──────────────────────────────────────────────────────
-// Returns Int16Array(W*H): each cell holds the imgIdx of the image whose
-// essential region is nearest, or -1 if no image has any polygons.
+// Returns Int16Array(W*H): each cell holds the imgIdx of the nearest essential region,
+// or -1 if no image has any polygons.
 async function computeVoronoiMap(images, placements, W, H) {
-  const ownerMap = new Int16Array(W * H).fill(-1);
-  const minDist  = new Float32Array(W * H).fill(Infinity);
-  const N = placements.length;
+  const M = W * H;
+  const ownerMap = new Int16Array(M).fill(-1);
+  const minDist  = new Float32Array(M).fill(Infinity);
 
-  // Rasterize all masks (fast, serial) then run chamfer transforms in parallel.
-  const activePs = []; // placements that have polygons
-  const masks    = []; // one fresh Uint8Array per active placement (transferred to sub-worker)
-  for (let k = 0; k < N; k++) {
-    const p     = placements[k];
-    const entry = images[p.imgIdx];
-    if (!entry.polygons || entry.polygons.length === 0) continue;
-    const outPolys = entry.polygons.map(poly => poly.map(v => transformPolyVert(v, p)));
-    const mask = new Uint8Array(W * H);
-    rasterizePolygons(outPolys, W, H, mask);
-    masks.push(mask);
-    activePs.push(p);
-  }
-
+  const activePs = placements.filter(p => {
+    const e = images[p.imgIdx]; return e.polygons && e.polygons.length > 0;
+  });
   if (activePs.length === 0) return ownerMap;
   postProgress(20);
 
-  const distMaps = await parallelChamfer(masks, W, H, (done, total) => {
-    postProgress(20 + Math.round(done / total * 60));
-  });
-
-  for (let k = 0; k < activePs.length; k++) {
-    const dist = distMaps[k];
-    if (!dist) continue;
-    const imgIdx = activePs[k].imgIdx;
-    for (let i = 0; i < W * H; i++) {
-      if (dist[i] < minDist[i]) { minDist[i] = dist[i]; ownerMap[i] = imgIdx; }
-    }
-    postProgress(80 + Math.round((k + 1) / activePs.length * 20));
-  }
+  await parallelChamfer(activePs.length, W, H,
+    j => {
+      const p = activePs[j], entry = images[p.imgIdx];
+      const outPolys = entry.polygons.map(poly => poly.map(v => transformPolyVert(v, p)));
+      const mask = new Uint8Array(M);
+      rasterizePolygons(outPolys, W, H, mask);
+      return { mask };
+    },
+    (j, dist) => {
+      if (!dist) return;
+      const imgIdx = activePs[j].imgIdx;
+      for (let i = 0; i < M; i++) {
+        if (dist[i] < minDist[i]) { minDist[i] = dist[i]; ownerMap[i] = imgIdx; }
+      }
+    },
+    (done, total) => postProgress(20 + Math.round(done / total * 80))
+  );
 
   return ownerMap;
 }
@@ -712,21 +724,17 @@ async function computeVoronoiMap(images, placements, W, H) {
 // Only images whose bounding box covers the pixel are eligible (per-user spec).
 async function computeDitherMap(images, placements, W, H, seed, exp) {
   const N = placements.length;
-  const ownerMap = new Int16Array(W * H).fill(-1);
+  const M = W * H;
+  const ownerMap = new Int16Array(M).fill(-1);
   if (N === 0) return ownerMap;
 
-  const bboxes  = new Array(N).fill(null);
-  const activeKs = []; // k indices into placements that have polygons
-  const masks    = []; // one fresh Uint8Array per active placement (transferred to sub-worker)
+  const bboxes   = new Array(N).fill(null);
+  const activeKs = [];
 
   for (let k = 0; k < N; k++) {
     const p     = placements[k];
     const entry = images[p.imgIdx];
     if (!entry.polygons || entry.polygons.length === 0) continue;
-    const outPolys = entry.polygons.map(poly => poly.map(v => transformPolyVert(v, p)));
-    const mask = new Uint8Array(W * H);
-    rasterizePolygons(outPolys, W, H, mask);
-    masks.push(mask);
     activeKs.push(k);
     const corners = [
       { x: 0, y: 0 }, { x: entry.w, y: 0 },
@@ -744,58 +752,51 @@ async function computeDitherMap(images, placements, W, H, seed, exp) {
   if (activeKs.length === 0) return ownerMap;
   postProgress(15);
 
-  const chamferResults = await parallelChamfer(masks, W, H, (done, total) => {
-    postProgress(15 + Math.round(done / total * 25));
-  });
+  // Track the two nearest-distance placements per pixel (streaming; no accumulation).
+  const top0Dist = new Float32Array(M).fill(Infinity);
+  const top1Dist = new Float32Array(M).fill(Infinity);
+  const top0K    = new Int16Array(M).fill(-1);
+  const top1K    = new Int16Array(M).fill(-1);
 
-  const distMaps = new Array(N).fill(null);
-  for (let j = 0; j < activeKs.length; j++) distMaps[activeKs[j]] = chamferResults[j];
-
-  // Indices of placements that have polygon data
-  const active = [];
-  for (let k = 0; k < N; k++) { if (distMaps[k] !== null) active.push(k); }
-  if (active.length === 0) return ownerMap;
-
-  postProgress(40);
-  const covering   = new Int32Array(active.length); // reused per pixel
-  const reportStep = Math.max(1, Math.round(H / 20)); // ~20 progress updates
-
-  for (let y = 0; y < H; y++) {
-    if (y % reportStep === 0) postProgress(40 + Math.round(y / H * 60));
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-
-      // Gather active placements whose bbox covers (x, y)
-      let nCov = 0;
-      for (const k of active) {
-        const bb = bboxes[k];
-        if (x >= bb.x0 && x <= bb.x1 && y >= bb.y0 && y <= bb.y1) {
-          covering[nCov++] = k;
+  await parallelChamfer(activeKs.length, W, H,
+    j => {
+      const k = activeKs[j], p = placements[k], entry = images[p.imgIdx];
+      const outPolys = entry.polygons.map(poly => poly.map(v => transformPolyVert(v, p)));
+      const mask = new Uint8Array(M);
+      rasterizePolygons(outPolys, W, H, mask);
+      return { mask };
+    },
+    (j, dist) => {
+      if (!dist) return;
+      const k = activeKs[j], bb = bboxes[k];
+      for (let y = bb.y0; y <= bb.y1; y++) {
+        for (let x = bb.x0; x <= bb.x1; x++) {
+          const i = y * W + x, d = dist[i];
+          if (d < top0Dist[i]) {
+            top1Dist[i] = top0Dist[i]; top1K[i] = top0K[i];
+            top0Dist[i] = d;           top0K[i]  = k;
+          } else if (d < top1Dist[i]) {
+            top1Dist[i] = d; top1K[i] = k;
+          }
         }
       }
-      if (nCov === 0) continue;
-      if (nCov === 1) { ownerMap[i] = placements[covering[0]].imgIdx; continue; }
+    },
+    (done, total) => postProgress(15 + Math.round(done / total * 50))
+  );
 
-      // Essential region (dist=0) — first covering wins (= highest rank)
-      let essentialOwner = -1;
-      for (let j = 0; j < nCov; j++) {
-        if (distMaps[covering[j]][i] === 0) { essentialOwner = placements[covering[j]].imgIdx; break; }
-      }
-      if (essentialOwner !== -1) { ownerMap[i] = essentialOwner; continue; }
+  postProgress(65);
+  const reportStep = Math.max(1, Math.round(H / 20));
 
-      // Find the two covering placements with smallest chamfer distance.
-      // Blending only between the two nearest avoids sampling a far-away image
-      // whose essential region is on the opposite side of the canvas.
-      let d0 = Infinity, d1 = Infinity, k0 = covering[0], k1 = covering[1];
-      for (let j = 0; j < nCov; j++) {
-        const d = distMaps[covering[j]][i];
-        if (d < d0) { d1 = d0; k1 = k0; d0 = d; k0 = covering[j]; }
-        else if (d < d1) { d1 = d; k1 = covering[j]; }
-      }
-
-      // p(k0) = d1^exp / (d0^exp + d1^exp) — higher exp = narrower blend band.
-      const w0 = Math.pow(d1, exp);
-      const w1 = Math.pow(d0, exp);
+  for (let y = 0; y < H; y++) {
+    if (y % reportStep === 0) postProgress(65 + Math.round(y / H * 35));
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const k0 = top0K[i];
+      if (k0 < 0) continue;
+      const k1 = top1K[i];
+      if (k1 < 0 || top0Dist[i] === 0) { ownerMap[i] = placements[k0].imgIdx; continue; }
+      const w0 = Math.pow(top1Dist[i], exp);
+      const w1 = Math.pow(top0Dist[i], exp);
       ownerMap[i] = placements[pixelRand(seed, i) < w0 / (w0 + w1) ? k0 : k1].imgIdx;
     }
   }
