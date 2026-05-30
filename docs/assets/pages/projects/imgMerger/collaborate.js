@@ -15,6 +15,7 @@
 //   { type: 'grab',                  imgIdx, color }
 //   { type: 'release',               imgIdx }
 //   { type: 'image',                 ...imagePacketFields }
+//   { type: 'image-removed',         imgIdx }
 //   { type: 'encoding',              imgName, encoding }
 //   { type: 'polygon',               imgIdx, polygons }
 //   --- streaming join protocol ---
@@ -26,12 +27,18 @@
 //   { type: 'session-host-progress', sent, total }
 //   { type: 'session-done' }
 //   (encodings skipped on join — guest encodes locally; new ones arrive via live 'encoding' messages)
+//   --- heartbeat ---
+//   { type: 'ping' }                    (host -> guest, every PING_INTERVAL ms)
+//   { type: 'pong' }                    (guest -> host, in response to ping)
 //   --- legacy ZIP join (kept for backward compat, no longer sent) ---
 //   { type: 'session-start', totalBytes }
 //   [ArrayBuffer chunks...]
 //   { type: 'session-end' }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
+
+const PING_INTERVAL = 3000;   // ms between host pings to each guest
+const PING_TIMEOUT  = 10000;  // ms without a pong before host drops the guest
 
 const COLORS = [
   '#e05252', '#4a9eed', '#52c97a', '#e0a033',
@@ -89,7 +96,13 @@ const remoteCursors = new Map(); // peerId -> { x, y, name, color }
 const simUndoStack  = [];
 const simRedoStack  = [];
 const preLiftState  = new Map();
-const grabbedByPeer = new Map(); // imgIdx -> peerId (for cleanup on disconnect)
+const grabbedByPeer  = new Map(); // imgIdx -> peerId (for cleanup on disconnect)
+
+// ── Heartbeat state ───────────────────────────────────────────────────────────
+
+const _guestLastPong = new Map(); // host: peerId -> timestamp of last pong received
+let _hostPingTimer   = null;
+let _reconnectTimer  = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -334,6 +347,11 @@ function handleMsg(msg, fromPeerId) {
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
+    case 'image-removed':
+      window.dispatchEvent(new CustomEvent('collab:remote-image-removed', { detail: { imgIdx: msg.imgIdx } }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
     case 'encoding':
       window.dispatchEvent(new CustomEvent('collab:remote-encoding', { detail: msg }));
       if (isHost) broadcast(msg, fromPeerId);
@@ -383,6 +401,15 @@ function handleMsg(msg, fromPeerId) {
 
     case 'peer-count':
       if (!isHost) { remotePeerCount = msg.count; updatePeerCount(); }
+      break;
+
+    case 'ping':
+      if (!isHost && hostConn && hostConn.open)
+        hostConn.send(JSON.stringify({ type: 'pong' }));
+      break;
+
+    case 'pong':
+      if (isHost) _guestLastPong.set(fromPeerId, Date.now());
       break;
   }
 }
@@ -439,24 +466,63 @@ function setupConn(conn, isGuestSide) {
 
   conn.on('close', () => {
     if (isGuestSide) {
-      guestConns.delete(conn.peer);
-      removeCursorEl(conn.peer);
-      for (const [imgIdx, peerId] of grabbedByPeer) {
-        if (peerId === conn.peer) {
-          grabbedByPeer.delete(imgIdx);
-          window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx } }));
-        }
-      }
-      updatePeerCount();
-      _broadcastPeerCount();
+      _dropGuest(conn.peer);
     } else {
-      hostConn = null;
+      hostConn        = null;
       remotePeerCount = 0;
       setStatus('Disconnected from host');
+      _scheduleReconnect();
     }
   });
 
   conn.on('error', err => console.warn('[collab] conn error:', err));
+}
+
+// ── Heartbeat helpers ─────────────────────────────────────────────────────────
+
+function _dropGuest(peerId) {
+  const conn = guestConns.get(peerId);
+  if (conn) { try { conn.close(); } catch (_) {} }
+  guestConns.delete(peerId);
+  _guestLastPong.delete(peerId);
+  removeCursorEl(peerId);
+  for (const [imgIdx, pid] of grabbedByPeer) {
+    if (pid === peerId) {
+      grabbedByPeer.delete(imgIdx);
+      window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx } }));
+    }
+  }
+  updatePeerCount();
+  _broadcastPeerCount();
+}
+
+function _startHostPing() {
+  clearInterval(_hostPingTimer);
+  _hostPingTimer = setInterval(() => {
+    if (!isHost) return;
+    const now  = Date.now();
+    const ping = JSON.stringify({ type: 'ping' });
+    const toDrop = [];
+    for (const [peerId, conn] of guestConns) {
+      const last = _guestLastPong.get(peerId) || 0;
+      if (now - last > PING_TIMEOUT) { toDrop.push(peerId); continue; }
+      if (conn.open) conn.send(ping);
+    }
+    for (const peerId of toDrop) _dropGuest(peerId);
+  }, PING_INTERVAL);
+}
+
+function _scheduleReconnect() {
+  clearTimeout(_reconnectTimer);
+  _reconnectTimer = setTimeout(() => {
+    if (!currentRoom || isHost) return;
+    if (peer && !peer.destroyed) { try { peer.destroy(); } catch (_) {} }
+    peer            = null;
+    localPeerId     = null;
+    hostConn        = null;
+    remotePeerCount = 0;
+    joinAsGuest(currentRoom);
+  }, 2000);
 }
 
 // ── Streaming session send ────────────────────────────────────────────────────
@@ -498,13 +564,14 @@ async function sendSessionTo(conn) {
     showSendProgress('Sending 1/' + meta.imageCount + '...', 0);
     for (let i = 0; i < meta.imageCount; i++) {
       showSendProgress('Sending ' + (i + 1) + '/' + meta.imageCount + '...', i / meta.imageCount * 100);
+      const packet = await window.getImageBuffer?.(i); // async JPEG encode, non-blocking
       await _waitDrain(conn);
-      const packet = await window.getImagePacket?.(i);
       if (packet) {
-        const { encoding: _enc, jpegBase64, ...imgMeta } = packet;
+        const { buffer, ...imgMeta } = packet;
         try {
           conn.send(JSON.stringify({ type: 'image-full-binary', imgIdx: i, ...imgMeta }));
-          conn.send(_dataUrlToBuffer(jpegBase64));
+          await new Promise(r => setTimeout(r, 0)); // yield before blocking chunk loop
+          conn.send(buffer);
         } catch (e) { console.warn('[collab] image-full send failed for index', i, e); }
       }
       showSendProgress('Sending ' + (i + 1) + '/' + meta.imageCount + '...', (i + 1) / meta.imageCount * 100);
@@ -527,22 +594,30 @@ function joinAsHost(roomCode) {
   peer = new Peer(hid, { debug: 0 });
 
   peer.on('open', id => {
+    if (isHost) return; // signaling reconnect — data channels intact, skip reinit
     localPeerId = id;
     isHost      = true;
     setStatus('Connected - waiting for others', true);
     rafId = requestAnimationFrame(rafLoop);
     simCanvasEl.addEventListener('mousemove', onMouseMove);
+    _startHostPing();
   });
 
   peer.on('connection', conn => {
+    _guestLastPong.set(conn.peer, Date.now());
     guestConns.set(conn.peer, conn);
     setupConn(conn, true);
     updatePeerCount();
     _broadcastPeerCount();
     conn.on('open', () => {
+      _broadcastPeerCount();
       const cs = window.getCollabState ? window.getCollabState() : null;
       if (cs && cs.imageCount > 0) sendSessionTo(conn);
     });
+  });
+
+  peer.on('disconnected', () => {
+    if (peer && !peer.destroyed) peer.reconnect();
   });
 
   peer.on('error', err => {
@@ -619,6 +694,10 @@ function leaveRoom() {
 
   broadcast({ type: 'cursor-leave', id: localPeerId });
 
+  clearInterval(_hostPingTimer); _hostPingTimer = null;
+  clearTimeout(_reconnectTimer); _reconnectTimer = null;
+  _guestLastPong.clear();
+
   guestConns.forEach(conn => { try { conn.close(); } catch (_) {} });
   guestConns.clear();
   if (hostConn) { try { hostConn.close(); } catch (_) {} hostConn = null; }
@@ -646,6 +725,10 @@ function leaveRoom() {
   btnCollab.classList.remove('im-collab-live');
   collabPeerBadge.classList.add('im-hidden');
   setStatus('Not connected');
+
+  const u = new URL(window.location.href);
+  u.searchParams.delete('room');
+  window.history.replaceState(null, '', u.toString());
 }
 
 // ── App event hooks ───────────────────────────────────────────────────────────
@@ -667,6 +750,11 @@ window.addEventListener('collab:images-added', async ({ detail: { indices } }) =
   for (const packet of packets) {
     if (packet) broadcast({ type: 'image', ...packet });
   }
+});
+
+window.addEventListener('collab:image-removed', ({ detail: { imgIdx } }) => {
+  if (!localPeerId) return;
+  broadcast({ type: 'image-removed', imgIdx });
 });
 
 window.addEventListener('collab:canvas-resized', () => {
@@ -748,6 +836,8 @@ btnUndo.addEventListener('click', () => {
   const entry = simUndoStack.pop();
   if (!entry) return;
   _dispatchUndoRedo('collab:undo', entry);
+  if (localPeerId && (!entry.type || entry.type === 'body-move'))
+    broadcast({ type: 'positions', positions: { [entry.imgIdx]: { x: entry.x, y: entry.y, angle: entry.angle } } });
   updateUndoBtn();
 });
 
@@ -755,6 +845,8 @@ btnRedo.addEventListener('click', () => {
   const entry = simRedoStack.pop();
   if (!entry) return;
   _dispatchUndoRedo('collab:redo', entry);
+  if (localPeerId && (!entry.type || entry.type === 'body-move'))
+    broadcast({ type: 'positions', positions: { [entry.imgIdx]: { x: entry.x, y: entry.y, angle: entry.angle } } });
   updateRedoBtn();
 });
 
@@ -840,3 +932,10 @@ if (urlRoom) {
 } else {
   roomInp.value = randomRoomCode();
 }
+
+// Reconnect guest when returning from background (mobile browsers suspend WebRTC)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (isHost || !currentRoom) return;
+  if (!hostConn || !hostConn.open) _scheduleReconnect();
+});

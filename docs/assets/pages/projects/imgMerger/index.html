@@ -888,7 +888,7 @@ function chamferDist(mask, W, H) {
 
   <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=3"></script>
-  <script src="imageMerge.js?v=19"></script>
+  <script src="imageMerge.js?v=20"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -949,6 +949,64 @@ function chamferDist(mask, W, H) {
         name: entry.name, w: entry.w, h: entry.h,
         jpegBase64: jpegBase64, encoding: encoding,
         polygons: entry.polygons,
+        simPos: g ? { x: g.x, y: g.y } : null,
+        simAngle: g ? g.angle : 0,
+      };
+    };
+
+    // Off-thread image encoder: ImageBitmap transferred to worker, OffscreenCanvas encodes JPEG,
+    // GPU memory released via oc.width=0 before returning. Sequential — one image at a time.
+    var _imgEncWorker = null;
+    var _imgEncWorkerUrl = null;
+    var _imgEncPending = new Map();
+    var _imgEncNextId = 0;
+
+    function _imgEncWorkerBody() {
+      self.onmessage = async function(e) {
+        var id = e.data.id, bm = e.data.bitmap;
+        var oc = new OffscreenCanvas(bm.width, bm.height);
+        oc.getContext('2d').drawImage(bm, 0, 0);
+        bm.close();
+        var blob = await oc.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+        oc.width = oc.height = 0; // release GPU backing store
+        var buf = await blob.arrayBuffer();
+        self.postMessage({ id: id, buf: buf }, [buf]);
+      };
+    }
+
+    function _getImgEncWorker() {
+      if (!_imgEncWorkerUrl) {
+        var src = '(' + _imgEncWorkerBody.toString() + ')();';
+        _imgEncWorkerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      }
+      if (!_imgEncWorker) {
+        _imgEncWorker = new Worker(_imgEncWorkerUrl);
+        _imgEncWorker.onmessage = function(e) {
+          var res = _imgEncPending.get(e.data.id);
+          if (res) { _imgEncPending.delete(e.data.id); res(e.data.buf); }
+        };
+        _imgEncWorker.onerror = function() { _imgEncWorker = null; };
+      }
+      return _imgEncWorker;
+    }
+
+    window.getImageBuffer = async function(imgIdx) {
+      var entry = state.images[imgIdx];
+      if (!entry || !entry.img) return null;
+      var bm = await createImageBitmap(entry.img); // async, no main-thread GPU readback
+      var id = _imgEncNextId++;
+      var buf = await new Promise(function(res) {
+        _imgEncPending.set(id, res);
+        _getImgEncWorker().postMessage({ id: id, bitmap: bm }, [bm]);
+      });
+      var g = simGroups[imgIdx];
+      return {
+        buffer: buf,
+        name: entry.name, w: entry.w, h: entry.h,
+        polygons: entry.polygons,
+        currentPoly: entry.currentPoly || [],
+        scale: entry.scale, scaleFixed: entry.scaleFixed || false,
+        simHidden: entry.simHidden || false,
         simPos: g ? { x: g.x, y: g.y } : null,
         simAngle: g ? g.angle : 0,
       };
@@ -1046,7 +1104,7 @@ function chamferDist(mask, W, H) {
       buildRankList();
     };
   </script>
-  <script type="module" src="collaborate.js?v=5"></script>
+  <script type="module" src="collaborate.js?v=6"></script>
 </body>
 
 </html>

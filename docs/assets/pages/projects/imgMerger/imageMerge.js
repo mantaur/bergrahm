@@ -405,7 +405,14 @@ function buildRankList() {
   btnExportSession.disabled = state.images.length === 0;
 }
 
-function removeImage(imgIdx) {
+// opts.broadcast === false when applying a removal received from a peer, so the
+// removal isn't echoed back out (avoids a rebroadcast loop).
+function removeImage(imgIdx, opts = {}) {
+  if (imgIdx < 0 || imgIdx >= state.images.length) return; // stale/out-of-range (e.g. late remote msg)
+  if (opts.broadcast !== false) {
+    window.dispatchEvent(new CustomEvent('collab:image-removed', { detail: { imgIdx } }));
+  }
+
   // Compact state arrays, remapping all indices.
   const remap = {};
   const newImages    = [];
@@ -459,6 +466,7 @@ function removeImage(imgIdx) {
   }
 
   if (state.images.length === 0) {
+    buildRankList(); // clear the (now empty) filmstrip; also disables export
     paintArea.classList.add('im-hidden');
     lockStep('step-paint');
     updateStepMeta('step-images', 'Upload to start', false);
@@ -3364,6 +3372,10 @@ window.addEventListener('collab:remote-image', async (e) => {
   updateStepMeta('step-images', imageCountLabel(n), true);
   paintArea.classList.remove('im-hidden');
   unlockStep('step-paint');
+});
+
+window.addEventListener('collab:remote-image-removed', ({ detail: { imgIdx } }) => {
+  removeImage(imgIdx, { broadcast: false });
 });
 
 window.addEventListener('collab:remote-positions', (e) => {
