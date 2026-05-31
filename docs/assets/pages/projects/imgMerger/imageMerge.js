@@ -1463,7 +1463,6 @@ let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gest
 let _activeDragIdx     = -1;   // imgIdx currently being dragged locally; -1 if none
 let _lastDragBroadcast = 0;    // timestamp of last collab:body-dragging dispatch
 const _remoteGrabs     = new Map(); // imgIdx -> { color } for bodies grabbed by peers
-let simDispScale       = 1;    // display px per physics px (fixed; based on SIM_WORLD)
 const SIM_WORLD        = 10000; // fixed physics world size, independent of output canvas
 let simX1              = 0;    // output rect TL x in world space
 let simY1              = 0;    // output rect TL y in world space
@@ -1473,8 +1472,16 @@ let _simOutExplicit    = false; // set when corners are set by remote; suppresse
 let mergeCanvas        = null; // offscreen preview-res canvas shown in sim view
 let mergeX1            = 0;   // simX1 at the time of the last merge
 let mergeY1            = 0;   // simY1 at the time of the last merge
-let simViewScale       = 1;          // viewport zoom (1 = no zoom)
-let simViewOffset      = { x: 0, y: 0 }; // viewport pan offset in physics coords
+// ── Sim viewport ────────────────────────────────────────────────────────────────
+// Zoom/pan/transforms/animation/presenter live in viewport.js (loaded first).
+// Wire it to this module's sim state — it owns scale/offset/dispScale; the rest
+// (canvas, dirty flag, artboard rect, sim groups) is injected here.
+viewport.init({
+  canvas:      simCanvas,
+  markDirty:   () => { _simViewDirty = true; },
+  getArtboard: () => ({ x1: simX1, y1: simY1, x2: simX2, y2: simY2 }),
+  getGroup:    (i) => simGroups[i] || null,
+});
 
 // RDP simplification (mirrored from merge worker for main-thread use)
 function rdpSimplify(pts, eps) {
@@ -1554,32 +1561,15 @@ function buildSimGroup(imgIdx) {
   };
 }
 
-function canvasToPhysics(clientX, clientY) {
-  const rect = simCanvas.getBoundingClientRect();
-  const px = (clientX - rect.left) / rect.width  * simCanvas.width;
-  const py = (clientY - rect.top)  / rect.height * simCanvas.height;
-  return {
-    x: px / (simDispScale * simViewScale) + simViewOffset.x,
-    y: py / (simDispScale * simViewScale) + simViewOffset.y,
-  };
-}
-
-
-function clientToCanvasPx(clientX, clientY) {
-  const rect = simCanvas.getBoundingClientRect();
-  return {
-    x: (clientX - rect.left) / rect.width  * simCanvas.width,
-    y: (clientY - rect.top)  / rect.height * simCanvas.height,
-  };
-}
+// canvasToPhysics / clientToCanvasPx now live on the viewport (viewport.js).
 
 function getCornerHandlePositions() {
-  const ts = simDispScale * simViewScale;
+  const ts = viewport.totalScale;
   return [
-    { dir: 'nw', cx: (simX1 - simViewOffset.x) * ts, cy: (simY1 - simViewOffset.y) * ts },
-    { dir: 'ne', cx: (simX2 - simViewOffset.x) * ts, cy: (simY1 - simViewOffset.y) * ts },
-    { dir: 'sw', cx: (simX1 - simViewOffset.x) * ts, cy: (simY2 - simViewOffset.y) * ts },
-    { dir: 'se', cx: (simX2 - simViewOffset.x) * ts, cy: (simY2 - simViewOffset.y) * ts },
+    { dir: 'nw', cx: (simX1 - viewport.offsetX) * ts, cy: (simY1 - viewport.offsetY) * ts },
+    { dir: 'ne', cx: (simX2 - viewport.offsetX) * ts, cy: (simY1 - viewport.offsetY) * ts },
+    { dir: 'sw', cx: (simX1 - viewport.offsetX) * ts, cy: (simY2 - viewport.offsetY) * ts },
+    { dir: 'se', cx: (simX2 - viewport.offsetX) * ts, cy: (simY2 - viewport.offsetY) * ts },
   ];
 }
 
@@ -1610,7 +1600,7 @@ function _physPointInGroup(phys, g, expandPhys = 0) {
 // touchTolCssPx: tolerance in CSS pixels expanding the polygon hit zone (0 = exact)
 function nearestGroup(phys, touchTolCssPx = 0) {
   const expandPhys = touchTolCssPx > 0
-    ? touchTolCssPx / (simDispScale * simViewScale) : 0;
+    ? touchTolCssPx / (viewport.totalScale) : 0;
   let best = null, bestD = Infinity;
   for (const g of simGroups) {
     if (!g || !g.inWorld) continue;
@@ -1637,17 +1627,17 @@ function nearestCornerHandle(canvasPx) {
 function drawCornerHandles() {
   if (simRafId === null) return;
   const ctx     = simCtx;
-  const ts      = simDispScale * simViewScale;
+  const ts      = viewport.totalScale;
   const handles = getCornerHandlePositions();
 
   ctx.save();
 
   if (simCornerDrag) {
     // Ghost showing the original rect before drag started
-    const ox1 = (simCornerDrag.startX1 - simViewOffset.x) * ts;
-    const oy1 = (simCornerDrag.startY1 - simViewOffset.y) * ts;
-    const ox2 = (simCornerDrag.startX2 - simViewOffset.x) * ts;
-    const oy2 = (simCornerDrag.startY2 - simViewOffset.y) * ts;
+    const ox1 = (simCornerDrag.startX1 - viewport.offsetX) * ts;
+    const oy1 = (simCornerDrag.startY1 - viewport.offsetY) * ts;
+    const ox2 = (simCornerDrag.startX2 - viewport.offsetX) * ts;
+    const oy2 = (simCornerDrag.startY2 - viewport.offsetY) * ts;
     ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.lineWidth   = 1;
     ctx.setLineDash([4, 4]);
@@ -1689,7 +1679,7 @@ function drawCornerHandles() {
 
 function updateCornerResize(canvasPx) {
   if (!simCornerDrag) return;
-  const ts  = simDispScale * simViewScale;
+  const ts  = viewport.totalScale;
   const dx  = (canvasPx.x - simCornerDrag.startPx.x) / ts;
   const dy  = (canvasPx.y - simCornerDrag.startPx.y) / ts;
   const dir = simCornerDrag.dir;
@@ -1742,13 +1732,14 @@ function initSim(savedPositions = null) {
   simX2 = simX1 + state.outW;
   simY2 = simY1 + state.outH;
 
-  simDispScale = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
-  const fitTotal = Math.min(canvasW / state.outW, canvasH / state.outH) * 0.82;
-  simViewScale  = fitTotal / simDispScale;
-  simViewOffset = {
-    x: (simX1 + simX2) / 2 - canvasW / 2 / (simDispScale * simViewScale),
-    y: (simY1 + simY2) / 2 - canvasH / 2 / (simDispScale * simViewScale),
-  };
+  const dispScale = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
+  viewport.setDispScale(dispScale);
+  const fitTotal  = Math.min(canvasW / state.outW, canvasH / state.outH) * 0.82;
+  const initScale = Math.max(0.1, Math.min(10, fitTotal / dispScale));
+  viewport._cancelAnim(); // a fresh sim init drops any pending tween / presenter-follow
+  viewport._set(initScale,
+    (simX1 + simX2) / 2 - canvasW / 2 / (dispScale * initScale),
+    (simY1 + simY2) / 2 - canvasH / 2 / (dispScale * initScale));
 
   simGroups = [];
   for (let i = 0; i < state.images.length; i++) {
@@ -1809,6 +1800,8 @@ function simTick(ts) {
   const dt = _lastSimTs ? Math.min(ts - _lastSimTs, 50) : 16.67;
   _lastSimTs = ts;
 
+  viewport.stepAnim(ts); // advance any view tween / presenter-follow
+
   if (_activeDragIdx >= 0) {
     const now = performance.now();
     if (now - _lastDragBroadcast > 33) {
@@ -1830,8 +1823,8 @@ function simTick(ts) {
       drawSim();
       if (mergeCanvas) {
         simCtx.save();
-        simCtx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
-        simCtx.translate(-simViewOffset.x, -simViewOffset.y);
+        simCtx.scale(viewport.totalScale, viewport.totalScale);
+        simCtx.translate(-viewport.offsetX, -viewport.offsetY);
         simCtx.drawImage(mergeCanvas, mergeX1, mergeY1, state.outW, state.outH);
         simCtx.restore();
       }
@@ -1857,16 +1850,16 @@ function drawSim() {
   ctx.fillRect(0, 0, DW, DH);
 
   ctx.save();
-  ctx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
-  ctx.translate(-simViewOffset.x, -simViewOffset.y);
+  ctx.scale(viewport.totalScale, viewport.totalScale);
+  ctx.translate(-viewport.offsetX, -viewport.offsetY);
 
   const W  = state.outW;
   const H  = state.outH;
 
-  const totalScale = simDispScale * simViewScale;
+  const totalScale = viewport.totalScale;
   const px = 1 / totalScale; // 1 screen pixel in physics units
-  const vx0 = simViewOffset.x;
-  const vy0 = simViewOffset.y;
+  const vx0 = viewport.offsetX;
+  const vy0 = viewport.offsetY;
   const vx1 = vx0 + DW / totalScale;
   const vy1 = vy0 + DH / totalScale;
   const visW     = vx1 - vx0;
@@ -2001,8 +1994,8 @@ function drawMergedMaskOverlay() {
   const N   = state.images.length;
 
   ctx.save();
-  ctx.scale(simDispScale * simViewScale, simDispScale * simViewScale);
-  ctx.translate(-simViewOffset.x + mergeX1, -simViewOffset.y + mergeY1);
+  ctx.scale(viewport.totalScale, viewport.totalScale);
+  ctx.translate(-viewport.offsetX + mergeX1, -viewport.offsetY + mergeY1);
 
   for (const p of simLastPlacements) {
     const entry = state.images[p.imgIdx];
@@ -2512,10 +2505,11 @@ function _onSimCanvasResize() {
   const canvasH = Math.round(window.innerHeight * dpr);
   simCanvas.width  = canvasW;
   simCanvas.height = canvasH;
-  const oldDisp = simDispScale;
-  simDispScale  = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
-  simViewScale  = simViewScale * oldDisp / simDispScale; // keep visual zoom constant
-  _simViewDirty = true;
+  const oldDisp = viewport.dispScale;
+  const newDisp = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
+  viewport.setDispScale(newDisp);
+  // Keep visual zoom constant across the disp-scale change (offset unchanged).
+  viewport._set(viewport.scale * oldDisp / newDisp, viewport.offsetX, viewport.offsetY);
 }
 
 let _windowResizeTimer = null;
@@ -2528,10 +2522,10 @@ window.addEventListener('resize', () => {
 (function () {
   simCanvas.addEventListener('mousemove', (e) => {
     if (simRafId === null || simCornerDrag || _mouseDrag || _ctrlDrag) return;
-    const canvasPx = clientToCanvasPx(e.clientX, e.clientY);
+    const canvasPx = viewport.clientToCanvasPx(e.clientX, e.clientY);
     const corner = nearestCornerHandle(canvasPx);
     if (corner) { simCanvas.style.cursor = corner.dir + '-resize'; return; }
-    const g = nearestGroup(canvasToPhysics(e.clientX, e.clientY));
+    const g = nearestGroup(viewport.canvasToPhysics(e.clientX, e.clientY));
     if (g && !_remoteGrabs.has(g.imgIdx)) {
       simCanvas.style.cursor = e.ctrlKey ? 'crosshair' : 'grab';
     } else {
@@ -2544,7 +2538,7 @@ window.addEventListener('resize', () => {
 
   simCanvas.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'mouse' || simRafId === null) return;
-    const canvasPx = clientToCanvasPx(e.clientX, e.clientY);
+    const canvasPx = viewport.clientToCanvasPx(e.clientX, e.clientY);
     const corner   = nearestCornerHandle(canvasPx);
     if (corner) {
       e.preventDefault();
@@ -2559,7 +2553,7 @@ window.addEventListener('resize', () => {
       _clearMergedImage();
       return;
     }
-    const phys = canvasToPhysics(e.clientX, e.clientY);
+    const phys = viewport.canvasToPhysics(e.clientX, e.clientY);
     const g    = nearestGroup(phys);
     if (!g || _remoteGrabs.has(g.imgIdx)) return;
     e.preventDefault();
@@ -2569,7 +2563,7 @@ window.addEventListener('resize', () => {
       const cx = g.x, cy = g.y;
       const dx0 = phys.x - cx, dy0 = phys.y - cy;
       const d0 = Math.hypot(dx0, dy0);
-      const minPhys = 8 / (simDispScale * simViewScale);
+      const minPhys = 8 / (viewport.totalScale);
       _ctrlDrag = {
         pointerId: e.pointerId, group: g,
         center: { x: cx, y: cy },
@@ -2594,25 +2588,25 @@ window.addEventListener('resize', () => {
   simCanvas.addEventListener('pointermove', (e) => {
     if (e.pointerType !== 'mouse') return;
     if (simCornerDrag && e.pointerId === simCornerDrag.id) {
-      updateCornerResize(clientToCanvasPx(e.clientX, e.clientY));
+      updateCornerResize(viewport.clientToCanvasPx(e.clientX, e.clientY));
       return;
     }
     if (_mouseDrag && e.pointerId === _mouseDrag.pointerId) {
-      const phys = canvasToPhysics(e.clientX, e.clientY);
+      const phys = viewport.canvasToPhysics(e.clientX, e.clientY);
       _mouseDrag.group.x = phys.x + _mouseDrag.offsetX;
       _mouseDrag.group.y = phys.y + _mouseDrag.offsetY;
       _simViewDirty = true;
       return;
     }
     if (_ctrlDrag && e.pointerId === _ctrlDrag.pointerId) {
-      const phys = canvasToPhysics(e.clientX, e.clientY);
+      const phys = viewport.canvasToPhysics(e.clientX, e.clientY);
       const dx = phys.x - _ctrlDrag.center.x;
       const dy = phys.y - _ctrlDrag.center.y;
       const dist = Math.hypot(dx, dy);
       const curAngle = Math.atan2(dy, dx);
 
       if (_ctrlDrag.initDist === null) {
-        const minPhys = 8 / (simDispScale * simViewScale);
+        const minPhys = 8 / (viewport.totalScale);
         if (dist < minPhys) return;
         _ctrlDrag.initDist = dist;
         _ctrlDrag.initCursorAngle = curAngle;
@@ -2729,7 +2723,7 @@ window.addEventListener('resize', () => {
   function triggerLift() {
     lpTimer = null;
     if (simRafId === null || !lpTouch) return;
-    const fingerPhys = canvasToPhysics(lpTouch.clientX, lpTouch.clientY);
+    const fingerPhys = viewport.canvasToPhysics(lpTouch.clientX, lpTouch.clientY);
     const g = nearestGroup(fingerPhys, 40);
     if (!g) return;
     liftedGroup  = g;
@@ -2826,20 +2820,20 @@ window.addEventListener('resize', () => {
   function initViewPinch(t1, t2) {
     viewStart = {
       dist:   twoTouchDist(t1, t2),
-      scale:  simViewScale,
-      offset: { x: simViewOffset.x, y: simViewOffset.y },
-      mid:    canvasToPhysics((t1.clientX + t2.clientX) / 2, (t1.clientY + t2.clientY) / 2),
+      scale:  viewport.scale,
+      offset: { x: viewport.offsetX, y: viewport.offsetY },
+      mid:    viewport.canvasToPhysics((t1.clientX + t2.clientX) / 2, (t1.clientY + t2.clientY) / 2),
     };
   }
 
   function updateViewPinch(t1, t2) {
-    const dist      = twoTouchDist(t1, t2);
-    const newScale  = Math.max(0.1, Math.min(10, viewStart.scale * dist / viewStart.dist));
-    const midPx     = twoTouchMidPx(t1, t2);
-    simViewScale    = newScale;
-    simViewOffset.x = viewStart.mid.x - midPx.x / (simDispScale * newScale);
-    simViewOffset.y = viewStart.mid.y - midPx.y / (simDispScale * newScale);
-    _simViewDirty   = true;
+    const dist     = twoTouchDist(t1, t2);
+    const newScale = Math.max(0.1, Math.min(10, viewStart.scale * dist / viewStart.dist));
+    const midPx    = twoTouchMidPx(t1, t2);
+    viewport._apply(
+      newScale,
+      viewStart.mid.x - midPx.x / (viewport.dispScale * newScale),
+      viewStart.mid.y - midPx.y / (viewport.dispScale * newScale));
   }
 
   function reset() {
@@ -2863,7 +2857,7 @@ window.addEventListener('resize', () => {
 
     if (all.length === 1 && mode === 'idle') {
       const t        = all[0];
-      const canvasPx = clientToCanvasPx(t.clientX, t.clientY);
+      const canvasPx = viewport.clientToCanvasPx(t.clientX, t.clientY);
       const corner   = nearestCornerHandle(canvasPx);
       if (corner) {
         mode       = 'corner-lp';
@@ -2911,14 +2905,14 @@ window.addEventListener('resize', () => {
 
     if (mode === 'resize' && simCornerDrag) {
       const t = findTouch(all, simCornerDrag.id);
-      if (t) updateCornerResize(clientToCanvasPx(t.clientX, t.clientY));
+      if (t) updateCornerResize(viewport.clientToCanvasPx(t.clientX, t.clientY));
 
     } else if (mode === 'lp') {
       const t = findTouch(all, liftedId);
       if (t && Math.hypot(t.clientX - lpStartX, t.clientY - lpStartY) > CANCEL_PX) {
         clearTimeout(lpTimer); lpTimer = null;
         mode      = 'pan';
-        panLastPx = clientToCanvasPx(t.clientX, t.clientY);
+        panLastPx = viewport.clientToCanvasPx(t.clientX, t.clientY);
       }
 
     } else if (mode === 'corner-lp') {
@@ -2927,24 +2921,21 @@ window.addEventListener('resize', () => {
         clearTimeout(lpTimer); lpTimer = null;
         lpCorner  = null; lpStartCPx = null;
         mode      = 'pan';
-        panLastPx = clientToCanvasPx(t.clientX, t.clientY);
+        panLastPx = viewport.clientToCanvasPx(t.clientX, t.clientY);
       }
 
     } else if (mode === 'pan') {
       const t = findTouch(all, liftedId);
       if (t) {
-        const px = clientToCanvasPx(t.clientX, t.clientY);
-        const ts = simDispScale * simViewScale;
-        simViewOffset.x -= (px.x - panLastPx.x) / ts;
-        simViewOffset.y -= (px.y - panLastPx.y) / ts;
+        const px = viewport.clientToCanvasPx(t.clientX, t.clientY);
+        viewport.panByCanvasPx(-(px.x - panLastPx.x), -(px.y - panLastPx.y));
         panLastPx = px;
-        _simViewDirty = true;
       }
 
     } else if (mode === 'lifted') {
       const t = findTouch(all, liftedId);
       if (t && liftedGroup) {
-        const phys = canvasToPhysics(t.clientX, t.clientY);
+        const phys = viewport.canvasToPhysics(t.clientX, t.clientY);
         liftedGroup.x = phys.x + liftedOffset.x;
         liftedGroup.y = phys.y + liftedOffset.y;
         simMergedImageData = null;
@@ -3017,19 +3008,12 @@ simCanvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   const rect        = simCanvas.getBoundingClientRect();
   const cssToCanvas = simCanvas.width / rect.width;
-  const ts          = simDispScale * simViewScale;
   if (e.ctrlKey) {
     const zoomFactor = Math.exp(-e.deltaY * 0.01);
-    const newScale   = Math.max(0.1, Math.min(10, simViewScale * zoomFactor));
-    const cursorPx   = clientToCanvasPx(e.clientX, e.clientY);
-    simViewOffset.x  = simViewOffset.x + cursorPx.x / ts - cursorPx.x / (simDispScale * newScale);
-    simViewOffset.y  = simViewOffset.y + cursorPx.y / ts - cursorPx.y / (simDispScale * newScale);
-    simViewScale     = newScale;
+    viewport.zoomAtCanvasPx(viewport.clientToCanvasPx(e.clientX, e.clientY), viewport.scale * zoomFactor);
   } else {
-    simViewOffset.x += e.deltaX * cssToCanvas / ts;
-    simViewOffset.y += e.deltaY * cssToCanvas / ts;
+    viewport.panByCanvasPx(e.deltaX * cssToCanvas, e.deltaY * cssToCanvas);
   }
-  _simViewDirty = true;
 }, { passive: false });
 
 // ── Touch drag-to-reorder filmstrip ───────────────────────────────────────────
@@ -3132,8 +3116,8 @@ btnExportSession.addEventListener('click', async () => {
         seed:         parseInt(cfgSeed.value) || 42,
         ditherExp:    parseInt(cfgDitherExp.value) || 4,
         useScaleRange: cfgUseScaleRange.checked,
-        simViewScale,
-        simViewOffset,
+        simViewScale:  viewport.scale,
+        simViewOffset: viewport.offset,
         simX1, simY1, simX2, simY2,
       },
     }, (pct, text) => _sessionStatus(text));
@@ -3256,8 +3240,7 @@ async function _applyImportReplace(session, imgs, encodings) {
 
   // Restore viewport and output position after initSim resets them
   if (session.simViewScale) {
-    simViewScale  = session.simViewScale;
-    simViewOffset = { x: session.simViewOffset.x, y: session.simViewOffset.y };
+    viewport.setView(session.simViewScale, session.simViewOffset.x, session.simViewOffset.y);
   }
   if (session.simX1 != null) {
     simX1 = session.simX1; simY1 = session.simY1;
@@ -3469,6 +3452,13 @@ window.addEventListener('collab:remote-polygon', ({ detail: { imgIdx, polygons }
   simRefreshGroup(imgIdx);
 });
 
+// A presenter's viewport — smoothly track it until the user interacts (any manual
+// pan/zoom routes through viewport._apply, which cancels the follow).
+window.addEventListener('collab:remote-viewport', ({ detail: { scale, offsetX, offsetY } }) => {
+  if (simRafId === null) return;
+  viewport.follow(scale, offsetX, offsetY);
+});
+
 function _restoreEncodings(encodings, baseIdx, remapIdx) {
   if (!encodings) return;
   encodings.forEach((enc, i) => {
@@ -3547,8 +3537,7 @@ window.addEventListener('collab:remote-session-meta', ({ detail: meta }) => {
 
   // Restore host viewport so guest sees the same view immediately
   if (meta.simViewScale && simRafId !== null) {
-    simViewScale  = meta.simViewScale;
-    simViewOffset = { x: meta.simViewOffset.x, y: meta.simViewOffset.y };
+    viewport.setView(meta.simViewScale, meta.simViewOffset.x, meta.simViewOffset.y);
   }
   if (meta.simX1 != null) {
     simX1 = meta.simX1; simY1 = meta.simY1;

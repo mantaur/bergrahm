@@ -35,8 +35,18 @@ test.describe('real collab (live broker)', () => {
       await expect(a.locator('#collab-peer-badge')).toBeVisible();
       await expect(b.locator('#collab-peer-badge')).toBeVisible();
 
-      // Close the host modal so its overlay doesn't intercept rank-list clicks.
+      // Presenter mode: host enables it, then closes the modal and pans;
+      // the guest's viewport should follow.
+      const gBefore = await b.evaluate(() => (window as any).getSimState().viewOffset);
+      await a.locator('#btn-collab-present').click();
       await a.locator('#btn-collab-close').click();
+      const box = await a.locator('#sim-canvas').boundingBox();
+      await a.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+      await a.mouse.wheel(150, 100);
+      await expect.poll(async () => {
+        const o = await b.evaluate(() => (window as any).getSimState().viewOffset);
+        return Math.hypot(o.x - gBefore.x, o.y - gBefore.y);
+      }, { timeout: 25000 }).toBeGreaterThan(1);
 
       // Host adds an image -> it streams to the guest.
       await a.locator('#cfg-images').setInputFiles(FIXTURE_IMG);

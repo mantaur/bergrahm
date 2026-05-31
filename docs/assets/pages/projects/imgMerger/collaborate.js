@@ -18,6 +18,7 @@
 //   { type: 'image-removed',         imgIdx }
 //   { type: 'encoding',              imgName, encoding }
 //   { type: 'polygon',               imgIdx, polygons }
+//   { type: 'viewport',              scale, offsetX, offsetY }   (presenter -> followers)
 //   --- streaming join protocol ---
 //   { type: 'session-meta',          imageCount, outW, outH, ..., images[] }
 //   { type: 'image-thumb',           imgIdx, thumb }
@@ -57,6 +58,7 @@ const btnCollab      = document.getElementById('btn-collab');
 const btnClose       = document.getElementById('btn-collab-close');
 const btnJoin        = document.getElementById('btn-collab-join');
 const btnLeave       = document.getElementById('btn-collab-leave');
+const btnPresent     = document.getElementById('btn-collab-present');
 const btnCopy        = document.getElementById('btn-collab-copy');
 const btnUndo        = document.getElementById('btn-sim-undo');
 const btnRedo        = document.getElementById('btn-sim-redo');
@@ -124,15 +126,7 @@ function setRoomParam(code) {
 function hostIdFor(roomCode) { return HOST_PREFIX + roomCode; }
 
 function physicsToClient(physX, physY) {
-  const rect = simCanvasEl.getBoundingClientRect();
-  const { dispScale, viewScale, viewOffset } = window.getSimState();
-  const ts = dispScale * viewScale;
-  const cx = (physX - viewOffset.x) * ts;
-  const cy = (physY - viewOffset.y) * ts;
-  return {
-    x: cx * rect.width  / simCanvasEl.width  + rect.left,
-    y: cy * rect.height / simCanvasEl.height + rect.top,
-  };
+  return window.imViewport.physicsToClient(physX, physY);
 }
 
 function _updateQR() {
@@ -263,8 +257,8 @@ function rafLoop() {
 // ── Cursor broadcast ──────────────────────────────────────────────────────────
 
 function onMouseMove(e) {
-  if (!localPeerId || typeof canvasToPhysics === 'undefined') return;
-  const phys = canvasToPhysics(e.clientX, e.clientY);
+  if (!localPeerId || !window.imViewport) return;
+  const phys = window.imViewport.canvasToPhysics(e.clientX, e.clientY);
   broadcast({
     type: 'cursor', id: localPeerId,
     x: phys.x, y: phys.y,
@@ -360,6 +354,13 @@ function handleMsg(msg, fromPeerId) {
     case 'polygon':
       window.dispatchEvent(new CustomEvent('collab:remote-polygon', {
         detail: { imgIdx: msg.imgIdx, polygons: msg.polygons },
+      }));
+      if (isHost) broadcast(msg, fromPeerId);
+      break;
+
+    case 'viewport':
+      window.dispatchEvent(new CustomEvent('collab:remote-viewport', {
+        detail: { scale: msg.scale, offsetX: msg.offsetX, offsetY: msg.offsetY },
       }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
@@ -686,8 +687,21 @@ function joinRoom(code) {
 
   btnJoin.classList.add('im-hidden');
   btnLeave.classList.remove('im-hidden');
+  btnPresent.classList.remove('im-hidden');
   btnCollab.classList.add('im-collab-live');
 }
+
+function _setPresentBtn(on) {
+  btnPresent.textContent = on ? 'Stop presenting' : 'Present';
+  btnPresent.classList.toggle('im-collab-live', on);
+}
+
+btnPresent.addEventListener('click', () => {
+  if (!localPeerId || !window.imViewport) return;
+  const on = !window.imViewport.presenting;
+  window.imViewport.setPresenting(on);
+  _setPresentBtn(on);
+});
 
 function leaveRoom() {
   if (!peer) return;
@@ -720,6 +734,9 @@ function leaveRoom() {
   grabbedByPeer.clear();
   hideGuestPrompt();
 
+  if (window.imViewport) window.imViewport.setPresenting(false);
+  _setPresentBtn(false);
+  btnPresent.classList.add('im-hidden');
   btnJoin.classList.remove('im-hidden');
   btnLeave.classList.add('im-hidden');
   btnCollab.classList.remove('im-collab-live');
@@ -794,6 +811,29 @@ window.addEventListener('collab:body-releasing', ({ detail: { imgIdx } }) => {
 window.addEventListener('collab:polygon-changed', ({ detail: { imgIdx, polygons } }) => {
   if (!localPeerId) return;
   broadcast({ type: 'polygon', imgIdx, polygons });
+});
+
+// Presenter mode: stream the local viewport to followers, throttled (leading + trailing).
+const VP_THROTTLE_MS = 50;
+let _vpLastSent = 0, _vpTrailing = null, _vpTimer = null;
+function _sendViewport(d) {
+  broadcast({ type: 'viewport', scale: d.scale, offsetX: d.offsetX, offsetY: d.offsetY });
+}
+window.addEventListener('collab:viewport-changed', ({ detail }) => {
+  if (!localPeerId) return;
+  const now = Date.now();
+  const since = now - _vpLastSent;
+  if (since >= VP_THROTTLE_MS) {
+    _vpLastSent = now; _vpTrailing = null; _sendViewport(detail);
+  } else {
+    _vpTrailing = detail;
+    if (!_vpTimer) {
+      _vpTimer = setTimeout(() => {
+        _vpTimer = null;
+        if (_vpTrailing) { _vpLastSent = Date.now(); _sendViewport(_vpTrailing); _vpTrailing = null; }
+      }, VP_THROTTLE_MS - since);
+    }
+  }
 });
 
 // ── Sim undo ──────────────────────────────────────────────────────────────────

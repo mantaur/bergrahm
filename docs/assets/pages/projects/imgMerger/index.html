@@ -294,6 +294,7 @@
     </div>
     <div class="im-collab-actions">
       <button class="im-btn" id="btn-collab-join">Join</button>
+      <button class="im-btn im-hidden" id="btn-collab-present" title="Drive everyone's view to match yours">Present</button>
       <button class="im-btn im-hidden" id="btn-collab-leave">Leave</button>
     </div>
   </div>
@@ -888,7 +889,8 @@ function chamferDist(mask, W, H) {
 
   <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=3"></script>
-  <script src="imageMerge.js?v=20"></script>
+  <script src="viewport.js?v=1"></script>
+  <script src="imageMerge.js?v=22"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -907,7 +909,7 @@ function chamferDist(mask, W, H) {
     }
 
     window.getSimState = function() {
-      return { dispScale: simDispScale, viewScale: simViewScale, viewOffset: simViewOffset };
+      return { dispScale: viewport.dispScale, viewScale: viewport.scale, viewOffset: viewport.offset };
     };
 
     window.getSimBounds = function() {
@@ -1035,8 +1037,8 @@ function chamferDist(mask, W, H) {
         minScale: state.minScale, maxScale: state.maxScale,
         rankOrder:     state.rankOrder.slice(),
         paintIdx:      state.paintIdx,
-        simViewScale:  simViewScale,
-        simViewOffset: { x: simViewOffset.x, y: simViewOffset.y },
+        simViewScale:  viewport.scale,
+        simViewOffset: viewport.offset,
         simX1: simX1, simY1: simY1, simX2: simX2, simY2: simY2,
         images: state.images.map(function(entry, i) {
           var pos = positions[i];
@@ -1070,8 +1072,8 @@ function chamferDist(mask, W, H) {
           seed:         parseInt(cfgSeed.value) || 42,
           ditherExp:    parseInt(cfgDitherExp.value) || 4,
           useScaleRange: cfgUseScaleRange.checked,
-          simViewScale:  simViewScale,
-          simViewOffset: simViewOffset,
+          simViewScale:  viewport.scale,
+          simViewOffset: viewport.offset,
           simX1: simX1, simY1: simY1,
           simX2: simX2, simY2: simY2,
         },
@@ -1104,7 +1106,7 @@ function chamferDist(mask, W, H) {
       buildRankList();
     };
   </script>
-  <script type="module" src="collaborate.js?v=6"></script>
+  <script type="module" src="collaborate.js?v=8"></script>
 </body>
 
 </html>
