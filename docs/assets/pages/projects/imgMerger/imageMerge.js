@@ -195,6 +195,13 @@ function _broadcastSettingsNow() {
   }));
 }
 
+// Broadcast per-image scales to peers (so they rebuild groups at the right size).
+function _broadcastScales() {
+  window.dispatchEvent(new CustomEvent('collab:scales-changed', {
+    detail: { scales: state.images.map(e => e.scale) },
+  }));
+}
+
 cfgMinScale.addEventListener('input', () => {
   let v = parseFloat(cfgMinScale.value);
   if (v > parseFloat(cfgMaxScale.value)) {
@@ -1463,6 +1470,7 @@ let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gest
 let _activeDragIdx     = -1;   // imgIdx currently being dragged locally; -1 if none
 let _lastDragBroadcast = 0;    // timestamp of last collab:body-dragging dispatch
 const _remoteGrabs     = new Map(); // imgIdx -> { color } for bodies grabbed by peers
+const _remoteScalePreview = new Map(); // imgIdx -> scale, live (render-only) while a peer scales
 const SIM_WORLD        = 10000; // fixed physics world size, independent of output canvas
 let simX1              = 0;    // output rect TL x in world space
 let simY1              = 0;    // output rect TL y in world space
@@ -1702,12 +1710,11 @@ function updateCornerResize(canvasPx) {
 }
 
 function finishCornerResize() {
-  window.dispatchEvent(new CustomEvent('collab:resize-done', {
-    detail: {
-      oldX1: simCornerDrag.startX1, oldY1: simCornerDrag.startY1,
-      oldX2: simCornerDrag.startX2, oldY2: simCornerDrag.startY2,
-    },
-  }));
+  // Resize changes only the bounds (auto-scale re-derives; positions preserved).
+  recordSimUndo({ groups: [], bounds: {
+    x1: simCornerDrag.startX1, y1: simCornerDrag.startY1,
+    x2: simCornerDrag.startX2, y2: simCornerDrag.startY2,
+  } });
   if (simRafId !== null) resizeSim();
   simCornerDrag = null;
   _broadcastSettings();
@@ -1766,13 +1773,17 @@ function placeGroup(g, x, y, angle) {
   _simViewDirty = true;
 }
 
+let _liftSnap = null;
 function dispatchBodyLift(g) {
+  // Stash this image's pre-drag transform (incl. scale) for a scoped undo entry.
+  _liftSnap = captureSimSnapshot([g.imgIdx], false);
   window.dispatchEvent(new CustomEvent('collab:body-lift', {
     detail: { imgIdx: g.imgIdx, prevX: g.x, prevY: g.y, prevAngle: g.angle },
   }));
 }
 
 function dispatchBodyMoved(g) {
+  if (_liftSnap) { recordSimUndo(_liftSnap); _liftSnap = null; }
   window.dispatchEvent(new CustomEvent('collab:body-moved', {
     detail: { imgIdx: g.imgIdx, x: g.x, y: g.y, angle: g.angle },
   }));
@@ -1807,9 +1818,10 @@ function simTick(ts) {
     if (now - _lastDragBroadcast > 33) {
       const dg = simGroups[_activeDragIdx];
       if (dg) {
-        window.dispatchEvent(new CustomEvent('collab:body-dragging', {
-          detail: { imgIdx: _activeDragIdx, x: dg.x, y: dg.y, angle: dg.angle },
-        }));
+        const detail = { imgIdx: _activeDragIdx, x: dg.x, y: dg.y, angle: dg.angle };
+        // Carry the in-progress scale so peers can preview it live (like rotation).
+        if (pinchPreview && pinchPreview.imgIdx === _activeDragIdx) detail.scale = pinchPreview.scale;
+        window.dispatchEvent(new CustomEvent('collab:body-dragging', { detail }));
       }
       _lastDragBroadcast = now;
     }
@@ -1897,7 +1909,8 @@ function drawSim() {
     const cos = Math.cos(ang), sin = Math.sin(ang);
 
     // Live scale factor during pinch gesture for this body
-    const pp = pinchPreview && pinchPreview.imgIdx === g.imgIdx ? pinchPreview : null;
+    let pp = pinchPreview && pinchPreview.imgIdx === g.imgIdx ? pinchPreview : null;
+    if (!pp && _remoteScalePreview.has(g.imgIdx)) pp = { imgIdx: g.imgIdx, scale: _remoteScalePreview.get(g.imgIdx) };
     const scaleFactor = pp ? pp.scale / g.scale : 1;
 
     if (mergeCanvas) continue;
@@ -2066,9 +2079,8 @@ function extractPlacements() {
 
 btnSimReset.addEventListener('click', () => {
   if (simRafId === null) return;
-  window.dispatchEvent(new CustomEvent('collab:pre-reset', {
-    detail: { groups: simGroups.filter(Boolean).map(g => ({ imgIdx: g.imgIdx, x: g.x, y: g.y, angle: g.angle })) },
-  }));
+  // Reset moves every placed group -> snapshot them all (scope = all groups).
+  recordSimUndo(captureSimSnapshot(simGroups.filter(Boolean).map(g => g.imgIdx), false));
   const W = state.outW, H = state.outH;
   const active = simGroups.filter(g => g && !state.images[g.imgIdx].simHidden);
   active.forEach((g, rank) => {
@@ -2102,9 +2114,7 @@ btnScaleAll.addEventListener('click', () => {
   cfgScaleAllVal.textContent = '1.00x';
   buildRankList();
   // Broadcast scale changes so peers rebuild their sim groups before receiving positions
-  window.dispatchEvent(new CustomEvent('collab:scales-changed', {
-    detail: { scales: state.images.map(e => e.scale) },
-  }));
+  _broadcastScales();
   if (simRafId !== null) {
     const savedPositions = {};
     simGroups.forEach((g, i) => {
@@ -2132,9 +2142,7 @@ function scheduleResizeSim() {
     _resizePreBounds = null;
     resizeSim();
     if (pre) {
-      window.dispatchEvent(new CustomEvent('collab:resize-done', {
-        detail: { oldX1: pre.x1, oldY1: pre.y1, oldX2: pre.x2, oldY2: pre.y2 },
-      }));
+      recordSimUndo({ groups: [], bounds: { x1: pre.x1, y1: pre.y1, x2: pre.x2, y2: pre.y2 } });
     }
     _broadcastSettings();
     window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
@@ -2656,6 +2664,7 @@ window.addEventListener('resize', () => {
       }
     }
     simRefreshGroup(g.imgIdx);
+    _broadcastScales(); // scale changed -> sync to peers before the final position
     simBodyDragging = false;
     _activeDragIdx  = -1;
     simCanvas.style.cursor = '';
@@ -2794,6 +2803,7 @@ window.addEventListener('resize', () => {
     if (!liftedGroup || !pinchPreview) return;
     const entry = state.images[liftedGroup.imgIdx];
     entry.scale = pinchPreview.scale;
+    _broadcastScales(); // sync the pinched scale to peers
     const ri = state.rankOrder.indexOf(liftedGroup.imgIdx);
     if (ri === state.paintIdx) {
       painterScaleAuto.checked = false;
@@ -3381,57 +3391,72 @@ window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
     entry.scale      = scale;
     entry.scaleFixed = scale !== null;
     simRefreshGroup(i);
+    _remoteScalePreview.delete(i); // committed -> drop the live preview
   });
   buildRankList();
 });
 
-function _applyBodyMoveSnapshot(entry, pushBackEvent) {
-  const { imgIdx, x, y, angle } = entry;
-  const g = simGroups[imgIdx];
-  if (!g) return;
-  window.dispatchEvent(new CustomEvent(pushBackEvent, { detail: { imgIdx, x: g.x, y: g.y, angle: g.angle } }));
-  placeGroup(g, x, y, angle);
-  _clearMergedImage();
+// ── Sim undo snapshots ──────────────────────────────────────────────────────────
+// One scoped snapshot type captures exactly what an action changed: the affected
+// images' full transforms (x/y/angle/scale, keyed by imgIdx) plus, for a resize,
+// the artboard bounds. Scoping keeps undo in a collab session local to the object(s)
+// you touched (a move-undo won't disturb a peer's separate mask). The undo/redo
+// stacks live in collaborate.js; here we only build (capture) and restore (apply).
+function captureSimSnapshot(imgIdxs, withBounds) {
+  const groups = [];
+  for (const i of imgIdxs) {
+    const g = simGroups[i];
+    if (g) groups.push({ imgIdx: i, x: g.x, y: g.y, angle: g.angle, scale: state.images[i].scale });
+  }
+  const snap = { groups };
+  if (withBounds) snap.bounds = { x1: simX1, y1: simY1, x2: simX2, y2: simY2 };
+  return snap;
 }
 
-function _applyResetSnapshot(entry, pushBackEvent) {
+function recordSimUndo(snap) {
+  window.dispatchEvent(new CustomEvent('collab:undo-record', { detail: snap }));
+}
+
+// Restore a snapshot. Bounds (resize) restore the artboard and let auto-scale groups
+// re-derive (positions preserved); listed groups restore x/y/angle/scale exactly.
+function applySimSnapshot(snap) {
   if (simRafId === null) return;
-  window.dispatchEvent(new CustomEvent(pushBackEvent, {
-    detail: { type: 'reset', groups: simGroups.filter(Boolean).map(g => ({ imgIdx: g.imgIdx, x: g.x, y: g.y, angle: g.angle })) },
-  }));
-  for (const { imgIdx, x, y, angle } of entry.groups) {
-    const g = simGroups[imgIdx];
-    if (g) placeGroup(g, x, y, angle);
+  if (snap.bounds) {
+    const b = snap.bounds;
+    simX1 = b.x1; simY1 = b.y1; simX2 = b.x2; simY2 = b.y2;
+    state.outW = Math.round(b.x2 - b.x1);
+    state.outH = Math.round(b.y2 - b.y1);
+    cfgWidth.value  = state.outW;
+    cfgHeight.value = state.outH;
+    _simOutExplicit = true;   // keep these exact bounds; resizeSim refreshes groups
+    resizeSim();
+  }
+  for (const s of (snap.groups || [])) {
+    const entry = state.images[s.imgIdx];
+    if (!entry) continue;
+    entry.scale      = s.scale;
+    entry.scaleFixed = s.scale !== null;
+    simRefreshGroup(s.imgIdx);
+    const g = simGroups[s.imgIdx];
+    if (g) { g.x = s.x; g.y = s.y; g.angle = s.angle; }
   }
   _clearMergedImage();
-  window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
-}
-
-function _applyResizeSnapshot(entry, pushBackEvent) {
-  if (simRafId === null) return;
-  window.dispatchEvent(new CustomEvent(pushBackEvent, { detail: { type: 'resize', x1: simX1, y1: simY1, x2: simX2, y2: simY2 } }));
-  const { x1, y1, x2, y2 } = entry;
-  simX1 = x1; simY1 = y1; simX2 = x2; simY2 = y2;
-  state.outW = Math.round(x2 - x1);
-  state.outH = Math.round(y2 - y1);
-  cfgWidth.value  = state.outW;
-  cfgHeight.value = state.outH;
   _simViewDirty = true;
-  _broadcastSettings();
-  window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
+  buildRankList();
 }
 
-window.addEventListener('collab:undo-body-move', (e) => _applyBodyMoveSnapshot(e.detail, 'collab:redo-push'));
-window.addEventListener('collab:redo-body-move', (e) => _applyBodyMoveSnapshot(e.detail, 'collab:undo-push'));
-window.addEventListener('collab:undo-reset',     (e) => _applyResetSnapshot(e.detail,     'collab:redo-push'));
-window.addEventListener('collab:redo-reset',     (e) => _applyResetSnapshot(e.detail,     'collab:undo-push'));
-window.addEventListener('collab:undo-resize',    (e) => _applyResizeSnapshot(e.detail,    'collab:redo-push'));
-window.addEventListener('collab:redo-resize',    (e) => _applyResizeSnapshot(e.detail,    'collab:undo-push'));
+window.captureSimSnapshot = captureSimSnapshot;
+window.applySimSnapshot   = applySimSnapshot;
+window.getScales          = () => state.images.map(im => im.scale);
+// Live remote scale preview for an image (read-only; for diagnostics / tests).
+window.getRemoteScalePreview = (i) => (_remoteScalePreview.has(i) ? _remoteScalePreview.get(i) : null);
 
-window.addEventListener('collab:remote-drag', ({ detail: { imgIdx, x, y, angle } }) => {
+window.addEventListener('collab:remote-drag', ({ detail: { imgIdx, x, y, angle, scale } }) => {
   if (simRafId === null) return;
   const g = simGroups[imgIdx];
   if (g) placeGroup(g, x, y, angle);
+  // Live scale preview (render-only; the committed scale arrives via remote-scales).
+  if (scale != null) { _remoteScalePreview.set(imgIdx, scale); _simViewDirty = true; }
 });
 
 window.addEventListener('collab:remote-grab', ({ detail: { imgIdx, color } }) => {
@@ -3441,6 +3466,7 @@ window.addEventListener('collab:remote-grab', ({ detail: { imgIdx, color } }) =>
 
 window.addEventListener('collab:remote-release', ({ detail: { imgIdx } }) => {
   _remoteGrabs.delete(imgIdx);
+  _remoteScalePreview.delete(imgIdx);
   _simViewDirty = true;
 });
 

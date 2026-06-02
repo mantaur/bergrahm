@@ -1067,6 +1067,22 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 }
 
 #btn-collab { position: relative; }
+#btn-sim-undo, #btn-sim-redo { position: relative; }
+
+/* Count badge on the undo/redo buttons (entries in each stack). */
+.im-count-badge {
+  position: absolute;
+  bottom: 1px; right: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: #111;
+  background: springgreen;
+  border-radius: 99px;
+  padding: 1px 3px;
+  pointer-events: none;
+  white-space: nowrap;
+}
 .im-collab-badge {
   position: absolute;
   bottom: 1px; right: 2px;

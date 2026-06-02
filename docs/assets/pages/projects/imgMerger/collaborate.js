@@ -11,7 +11,7 @@
 //   { type: 'settings',              settings }
 //   { type: 'rank-order',            order }
 //   { type: 'positions',             positions }
-//   { type: 'drag',                  imgIdx, x, y, angle }
+//   { type: 'drag',                  imgIdx, x, y, angle, scale? }
 //   { type: 'grab',                  imgIdx, color }
 //   { type: 'release',               imgIdx }
 //   { type: 'image',                 ...imagePacketFields }
@@ -62,6 +62,8 @@ const btnPresent     = document.getElementById('btn-collab-present');
 const btnCopy        = document.getElementById('btn-collab-copy');
 const btnUndo        = document.getElementById('btn-sim-undo');
 const btnRedo        = document.getElementById('btn-sim-redo');
+const simUndoBadge   = document.getElementById('sim-undo-badge');
+const simRedoBadge   = document.getElementById('sim-redo-badge');
 const nameInp        = document.getElementById('collab-name-inp');
 const roomInp        = document.getElementById('collab-room-inp');
 const statusEl       = document.getElementById('collab-status');
@@ -97,7 +99,6 @@ const remoteCursors = new Map(); // peerId -> { x, y, name, color }
 
 const simUndoStack  = [];
 const simRedoStack  = [];
-const preLiftState  = new Map();
 const grabbedByPeer  = new Map(); // imgIdx -> peerId (for cleanup on disconnect)
 
 // ── Heartbeat state ───────────────────────────────────────────────────────────
@@ -317,7 +318,7 @@ function handleMsg(msg, fromPeerId) {
 
     case 'drag':
       window.dispatchEvent(new CustomEvent('collab:remote-drag', {
-        detail: { imgIdx: msg.imgIdx, x: msg.x, y: msg.y, angle: msg.angle },
+        detail: { imgIdx: msg.imgIdx, x: msg.x, y: msg.y, angle: msg.angle, scale: msg.scale },
       }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
@@ -795,7 +796,7 @@ window.addEventListener('collab:encoding-ready', ({ detail: { imgIdx } }) => {
 
 window.addEventListener('collab:body-dragging', ({ detail }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'drag', imgIdx: detail.imgIdx, x: detail.x, y: detail.y, angle: detail.angle });
+  broadcast({ type: 'drag', imgIdx: detail.imgIdx, x: detail.x, y: detail.y, angle: detail.angle, scale: detail.scale });
 });
 
 window.addEventListener('collab:body-grabbing', ({ detail: { imgIdx } }) => {
@@ -837,56 +838,87 @@ window.addEventListener('collab:viewport-changed', ({ detail }) => {
 });
 
 // ── Sim undo ──────────────────────────────────────────────────────────────────
+// One unified, scoped entry type built by imageMerge.js:
+//   { bounds?: {x1,y1,x2,y2},  groups: [ {imgIdx, x, y, angle, scale} ] }
+// move/rotate/scale -> the dragged image (incl. scale); reset -> all groups;
+// resize -> bounds only (auto-scale re-derives from bounds on every peer). Scoping
+// means undo in a collab session reverts only the object(s) you touched, not a
+// peer's concurrent edit. imageMerge fires collab:undo-record on commit and exposes
+// applySimSnapshot()/captureSimSnapshot(); the stacks live here.
 
-window.addEventListener('collab:body-lift', ({ detail }) => {
-  preLiftState.set(detail.imgIdx, {
-    prevX: detail.prevX, prevY: detail.prevY, prevAngle: detail.prevAngle,
-  });
-});
+const _fmtCount = (n) => (n > 999 ? '999+' : String(n));
+function updateUndoBtn() {
+  btnUndo.disabled = simUndoStack.length === 0;
+  simUndoBadge.textContent = _fmtCount(simUndoStack.length);
+}
+function updateRedoBtn() {
+  btnRedo.disabled = simRedoStack.length === 0;
+  simRedoBadge.textContent = _fmtCount(simRedoStack.length);
+}
+updateUndoBtn();
+updateRedoBtn();
 
+// Read-only snapshot of the sim undo state (for diagnostics / tests).
+window.getUndoState = () => ({ undo: simUndoStack.length, redo: simRedoStack.length });
+
+// Final drag position -> peers (live sync). Undo recording is separate (below).
 window.addEventListener('collab:body-moved', ({ detail }) => {
-  const pre = preLiftState.get(detail.imgIdx);
-  if (pre) {
-    simUndoStack.push({ imgIdx: detail.imgIdx, x: pre.prevX, y: pre.prevY, angle: pre.prevAngle });
-    if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
-    preLiftState.delete(detail.imgIdx);
-    simRedoStack.length = 0;
-    updateRedoBtn();
-  }
   if (localPeerId) {
     broadcast({ type: 'positions', positions: { [detail.imgIdx]: { x: detail.x, y: detail.y, angle: detail.angle } } });
   }
-  updateUndoBtn();
 });
 
-function updateUndoBtn() { btnUndo.disabled = simUndoStack.length === 0; }
-function updateRedoBtn() { btnRedo.disabled = simRedoStack.length === 0; }
+// Record a committed action's pre-state.
+window.addEventListener('collab:undo-record', ({ detail }) => {
+  simUndoStack.push(detail);
+  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
+  simRedoStack.length = 0;
+  updateUndoBtn();
+  updateRedoBtn();
+});
 
-function _dispatchUndoRedo(eventPrefix, entry) {
-  if (!entry.type || entry.type === 'body-move') {
-    window.dispatchEvent(new CustomEvent(eventPrefix + '-body-move', { detail: entry }));
-  } else if (entry.type === 'reset') {
-    window.dispatchEvent(new CustomEvent(eventPrefix + '-reset', { detail: entry }));
-  } else if (entry.type === 'resize') {
-    window.dispatchEvent(new CustomEvent(eventPrefix + '-resize', { detail: entry }));
+// Apply a snapshot locally, then sync only the affected scope to peers.
+function _applySimSnapshot(entry) {
+  if (!window.applySimSnapshot) return;
+  window.applySimSnapshot(entry);
+  if (!localPeerId) return;
+  if (entry.bounds) {
+    // Bounds go via settings so peers re-derive auto-scale (applyRemoteSettings).
+    const b  = window.getSimBounds   ? window.getSimBounds()   : {};
+    const cs = window.getCollabState ? window.getCollabState() : {};
+    broadcast({ type: 'settings', settings: { outW: cs.outW, outH: cs.outH, simX1: b.simX1, simY1: b.simY1, simX2: b.simX2, simY2: b.simY2 } });
   }
+  if (entry.groups && entry.groups.length) {
+    const all = window.getSimPositions ? window.getSimPositions() : {};
+    const positions = {};
+    for (const g of entry.groups) if (all[g.imgIdx]) positions[g.imgIdx] = all[g.imgIdx];
+    broadcast({ type: 'positions', positions });
+    if (window.getScales) broadcast({ type: 'scales', scales: window.getScales() });
+  }
+}
+
+// Current state, scoped exactly like a given entry (the inverse for the other stack).
+function _captureLike(entry) {
+  return window.captureSimSnapshot(entry.groups.map(g => g.imgIdx), !!entry.bounds);
 }
 
 btnUndo.addEventListener('click', () => {
   const entry = simUndoStack.pop();
   if (!entry) return;
-  _dispatchUndoRedo('collab:undo', entry);
-  if (localPeerId && (!entry.type || entry.type === 'body-move'))
-    broadcast({ type: 'positions', positions: { [entry.imgIdx]: { x: entry.x, y: entry.y, angle: entry.angle } } });
+  simRedoStack.push(_captureLike(entry));
+  if (simRedoStack.length > SIM_UNDO_MAX) simRedoStack.shift();
+  _applySimSnapshot(entry);
   updateUndoBtn();
+  updateRedoBtn();
 });
 
 btnRedo.addEventListener('click', () => {
   const entry = simRedoStack.pop();
   if (!entry) return;
-  _dispatchUndoRedo('collab:redo', entry);
-  if (localPeerId && (!entry.type || entry.type === 'body-move'))
-    broadcast({ type: 'positions', positions: { [entry.imgIdx]: { x: entry.x, y: entry.y, angle: entry.angle } } });
+  simUndoStack.push(_captureLike(entry));
+  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
+  _applySimSnapshot(entry);
+  updateUndoBtn();
   updateRedoBtn();
 });
 
@@ -898,38 +930,6 @@ document.addEventListener('keydown', (e) => {
   if (!e.ctrlKey || e.key.toLowerCase() !== 'z') return;
   e.preventDefault();
   if (e.shiftKey) btnRedo.click(); else btnUndo.click();
-});
-
-window.addEventListener('collab:redo-push', ({ detail }) => {
-  simRedoStack.push(detail);
-  if (simRedoStack.length > SIM_UNDO_MAX) simRedoStack.shift();
-  updateRedoBtn();
-});
-
-window.addEventListener('collab:undo-push', ({ detail }) => {
-  simUndoStack.push(detail);
-  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
-  updateUndoBtn();
-});
-
-window.addEventListener('collab:pre-reset', ({ detail }) => {
-  simUndoStack.push({ type: 'reset', groups: detail.groups });
-  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
-  simRedoStack.length = 0;
-  updateUndoBtn();
-  updateRedoBtn();
-});
-
-window.addEventListener('collab:resize-done', ({ detail }) => {
-  simUndoStack.push({
-    type: 'resize',
-    x1: detail.oldX1, y1: detail.oldY1,
-    x2: detail.oldX2, y2: detail.oldY2,
-  });
-  if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
-  simRedoStack.length = 0;
-  updateUndoBtn();
-  updateRedoBtn();
 });
 
 // ── UI wiring ─────────────────────────────────────────────────────────────────

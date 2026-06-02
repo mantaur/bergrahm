@@ -17,7 +17,7 @@
   <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
 
   <link rel="stylesheet" href="../../../main.css">
-  <link rel="stylesheet" href="imageMerge.css?v=8">
+  <link rel="stylesheet" href="imageMerge.css?v=9">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
   <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
@@ -238,8 +238,8 @@
     <span id="sim-status" class="im-sim-status"></span>
     <div class="im-sim-btns">
       <button class="im-btn im-btn-sm im-btn-icon" id="btn-collab" title="Live session" aria-label="Live session"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="3"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><circle cx="18" cy="8" r="2.5"/><path d="M21 21v-1.5a3.5 3.5 0 0 0-2.5-3.35"/></svg><span id="collab-peer-badge" class="im-collab-badge im-hidden"></span></button>
-      <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-undo" disabled title="Undo"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-18 0"/><polyline points="3 7 3 12 8 12"/></svg></button>
-      <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-redo" disabled title="Redo"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 18 0"/><polyline points="21 7 21 12 16 12"/></svg></button>
+      <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-undo" disabled title="Undo"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-18 0"/><polyline points="3 7 3 12 8 12"/></svg><span id="sim-undo-badge" class="im-count-badge">0</span></button>
+      <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-redo" disabled title="Redo"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 18 0"/><polyline points="21 7 21 12 16 12"/></svg><span id="sim-redo-badge" class="im-count-badge">0</span></button>
       <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-reset" title="Reset positions"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-4.75"/></svg></button>
       <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
       <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
@@ -890,7 +890,7 @@ function chamferDist(mask, W, H) {
   <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=3"></script>
   <script src="viewport.js?v=1"></script>
-  <script src="imageMerge.js?v=22"></script>
+  <script src="imageMerge.js?v=25"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -1081,20 +1081,47 @@ function chamferDist(mask, W, H) {
     };
 
     window.applyRemoteSettings = function(s) {
+      // Apply a peer's settings DIRECTLY (no synthetic input/change events). Faking
+      // user keystrokes used to re-enter the width/height/blend handlers, which armed
+      // a debounced resize that pushed a phantom undo entry AND re-broadcast the same
+      // settings -> a self-sustaining echo between peers. Setting values directly and
+      // running only resizeSim() (which has no undo/broadcast side effects), and only
+      // when something actually changed, kills the loop.
       window._collabApplyingRemote = true;
-      if (s.outW != null) { state.outW = +s.outW; cfgWidth.value = state.outW; cfgWidth.dispatchEvent(new Event('input')); }
-      if (s.outH != null) { state.outH = +s.outH; cfgHeight.value = state.outH; cfgHeight.dispatchEvent(new Event('input')); }
+
+      var prevW = state.outW, prevH = state.outH;
+      var prevX1 = simX1, prevY1 = simY1, prevX2 = simX2, prevY2 = simY2;
+
+      if (s.outW != null) { state.outW = +s.outW; cfgWidth.value  = state.outW; }
+      if (s.outH != null) { state.outH = +s.outH; cfgHeight.value = state.outH; }
+
       if (s.fillColor !== undefined) {
         state.fillColor = s.fillColor;
         if (s.fillColor !== null) { cfgFill.value = s.fillColor; cfgFillTransparent.classList.remove('im-active'); }
         else { cfgFillTransparent.classList.add('im-active'); }
         if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
       }
-      if (s.blendMode) { cfgBlendMode.value = s.blendMode; cfgBlendMode.dispatchEvent(new Event('change')); }
+
+      if (s.blendMode) {
+        cfgBlendMode.value = s.blendMode;
+        var isDither = s.blendMode === 'dither';
+        cfgDitherFields.classList.toggle('im-hidden', !isDither);
+        cfgDitherExpField.classList.toggle('im-hidden', !isDither);
+      }
+
       if (s.minScale != null) state.minScale = +s.minScale;
       if (s.maxScale != null) state.maxScale = +s.maxScale;
+
       if (s.simX1 != null) { simX1 = +s.simX1; simY1 = +s.simY1; simX2 = +s.simX2; simY2 = +s.simY2; _simOutExplicit = true; _simViewDirty = true; }
       else if (s.simOutX != null) { simX1 = +s.simOutX; simY1 = +s.simOutY; simX2 = simX1 + state.outW; simY2 = simY1 + state.outH; _simOutExplicit = true; _simViewDirty = true; }
+
+      // Recompute only on a real change. resizeSim() refreshes the placed groups for
+      // the new size/bounds; it dispatches no undo or broadcast events.
+      var dimsChanged   = state.outW !== prevW || state.outH !== prevH;
+      var boundsChanged = simX1 !== prevX1 || simY1 !== prevY1 || simX2 !== prevX2 || simY2 !== prevY2;
+      if (dimsChanged && state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
+      if ((dimsChanged || boundsChanged) && simRafId !== null) resizeSim();
+
       window._collabApplyingRemote = false;
     };
 
@@ -1106,7 +1133,7 @@ function chamferDist(mask, W, H) {
       buildRankList();
     };
   </script>
-  <script type="module" src="collaborate.js?v=8"></script>
+  <script type="module" src="collaborate.js?v=11"></script>
 </body>
 
 </html>

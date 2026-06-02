@@ -25,6 +25,7 @@ const COLLAB_OUT_TYPES = [
   'collab:images-added', 'collab:image-removed', 'collab:polygon-changed',
   'collab:settings-changed', 'collab:rank-order-changed', 'collab:body-grabbing',
   'collab:body-moved', 'collab:body-releasing', 'collab:body-lift',
+  'collab:body-dragging',
   'collab:scales-changed', 'collab:canvas-resized', 'collab:encoding-ready',
   'collab:viewport-changed',
 ];
