@@ -2500,6 +2500,7 @@ if (btnAdvToggle && advPanel) {
   btnAdvToggle.addEventListener('click', () => {
     const open = !advPanel.classList.toggle('im-hidden'); // toggle() returns true when now hidden
     btnAdvToggle.setAttribute('aria-expanded', String(open));
+    btnAdvToggle.textContent = open ? 'Hide' : 'Show more';
   });
 }
 

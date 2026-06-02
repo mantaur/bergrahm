@@ -1010,13 +1010,16 @@ btnJoin.addEventListener('click', () => {
 
 btnLeave.addEventListener('click', leaveRoom);
 
+const _copyIconHtml  = btnCopy.innerHTML;
+const _checkIconHtml = '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
 btnCopy.addEventListener('click', () => {
   const code = roomInp.value.trim() || randomRoomCode();
   setRoomParam(code);
   const u = new URL(window.location.href);
   navigator.clipboard.writeText(u.toString()).then(() => {
-    btnCopy.textContent = 'Copied!';
-    setTimeout(() => { btnCopy.textContent = 'Copy link'; }, 1800);
+    btnCopy.innerHTML = _checkIconHtml;
+    btnCopy.title = 'Copied!';
+    setTimeout(() => { btnCopy.innerHTML = _copyIconHtml; btnCopy.title = 'Copy link'; }, 1800);
   });
 });
 
@@ -1028,6 +1031,10 @@ if (savedName) nameInp.value = savedName;
 const urlRoom = getRoomParam();
 if (urlRoom) {
   roomInp.value = urlRoom;
+  // Arriving via a shared link / QR scan: surface the session modal so the room
+  // is visible and a password can be supplied if the join is rejected.
+  modal.classList.remove('im-hidden');
+  _updateQR();
   setTimeout(() => joinRoom(urlRoom), 600);
 } else {
   roomInp.value = randomRoomCode();

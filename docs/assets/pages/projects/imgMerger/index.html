@@ -17,7 +17,7 @@
   <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
 
   <link rel="stylesheet" href="../../../main.css">
-  <link rel="stylesheet" href="imageMerge.css?v=10">
+  <link rel="stylesheet" href="imageMerge.css?v=11">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
   <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
@@ -101,13 +101,8 @@
               <span class="im-cfg-x">×</span>
               <input type="number" id="cfg-height" class="im-cfg-num" value="1920" min="1" inputmode="numeric">
               <span class="im-cfg-px">px</span>
+              <button class="im-btn im-btn-sm im-adv-toggle" id="btn-adv-toggle" type="button" aria-expanded="false">Show more</button>
             </div>
-
-            <!-- Advanced settings disclosure -->
-            <button class="im-adv-toggle" id="btn-adv-toggle" type="button" aria-expanded="false" aria-controls="adv-panel">
-              <svg class="im-adv-chevron" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-              <span>Advanced settings</span>
-            </button>
 
             <!-- Advanced panel -->
             <div class="im-adv-panel im-hidden" id="adv-panel">
@@ -282,12 +277,12 @@
       <label for="collab-room-inp">Room code</label>
       <div class="im-collab-room-row">
         <input id="collab-room-inp" type="text" maxlength="40" placeholder="my-room-123" autocomplete="off">
-        <button id="btn-collab-copy">Copy link</button>
+        <button id="btn-collab-copy" class="im-btn-icon" title="Copy link" aria-label="Copy link"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
     <div class="im-collab-field">
       <label for="collab-pass-inp">Room password <span class="im-collab-opt">(optional)</span></label>
-      <input id="collab-pass-inp" type="password" maxlength="40" placeholder="blank = open room" autocomplete="off">
+      <input id="collab-pass-inp" type="text" maxlength="40" placeholder="blank = open room" autocomplete="off">
     </div>
     <div id="collab-qr"></div>
     <div class="im-collab-status" id="collab-status">Not connected</div>
@@ -901,7 +896,7 @@ function chamferDist(mask, W, H) {
   <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=4"></script>
   <script src="viewport.js?v=2"></script>
-  <script src="imageMerge.js?v=28"></script>
+  <script src="imageMerge.js?v=29"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -1146,7 +1141,7 @@ function chamferDist(mask, W, H) {
       buildRankList();
     };
   </script>
-  <script type="module" src="collaborate.js?v=14"></script>
+  <script type="module" src="collaborate.js?v=15"></script>
 </body>
 
 </html>

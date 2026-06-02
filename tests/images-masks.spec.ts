@@ -67,14 +67,17 @@ test.describe('Advanced settings', () => {
 
     await expect(panel).toHaveClass(/im-hidden/);
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toHaveText('Show more');
 
     await toggle.click();
     await expect(panel).not.toHaveClass(/im-hidden/);
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveText('Hide');
 
     await toggle.click();
     await expect(panel).toHaveClass(/im-hidden/);
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toHaveText('Show more');
   });
 });
 
