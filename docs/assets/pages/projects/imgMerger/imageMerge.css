@@ -496,7 +496,25 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 .im-cfg-x  { font-size: .75em; color: #252525; }
 .im-cfg-px { font-size: .72em; color: #2c2c2c; }
 
-.im-adv-toggle { font-size: .72em; margin-left: auto; letter-spacing: .04em; }
+/* ── Advanced settings disclosure ── */
+.im-adv-toggle {
+  display: flex;
+  align-items: center;
+  gap: .45em;
+  width: calc(100% - 2em);
+  margin: .1em 1em .2em;
+  padding: .5em .2em;
+  background: none;
+  border: none;
+  border-top: 1px solid #202224;
+  color: #9a9da4;
+  font-size: .82em;
+  letter-spacing: .03em;
+  cursor: pointer;
+}
+.im-adv-toggle:hover { color: springgreen; }
+.im-adv-chevron { transition: transform .15s ease; flex: 0 0 auto; }
+.im-adv-toggle[aria-expanded="true"] .im-adv-chevron { transform: rotate(90deg); }
 
 /* ── Advanced panel ── */
 .im-adv-panel {
@@ -982,6 +1000,20 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 }
 
 .im-collab-header button:hover { color: #ccc; }
+
+.im-collab-role {
+  margin-right: auto;
+  margin-left: .6em;
+  padding: 1px 8px;
+  border-radius: 99px;
+  font-size: .62em;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.im-collab-role-host  { background: springgreen; color: #111; }
+.im-collab-role-guest { background: #2b6cff;     color: #fff; }
+.im-collab-opt { color: #6a6f7a; font-weight: 400; font-size: .9em; }
 
 .im-collab-field {
   display: flex;

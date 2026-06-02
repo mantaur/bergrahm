@@ -218,3 +218,19 @@ test('undo/redo count badges track stack depth', async ({ page }) => {
   await expect(undoBadge).toHaveText('3');
   await expect(redoBadge).toHaveText('0');
 });
+
+test('the center button frames the output artboard on the canvas', async ({ page }) => {
+  await setup(page);
+  // Jump the view far away from the artboard (easy to do by scrolling around).
+  await page.evaluate(() => (window as any).imViewport._set(1, 50000, 50000));
+  await page.locator('#btn-sim-center').click();
+  // After the eased tween, the artboard centre sits at the canvas centre.
+  await expect.poll(() => page.evaluate(() => {
+    const v = (window as any).imViewport;
+    const b = (window as any).getSimBounds();
+    const cx = (b.simX1 + b.simX2) / 2, cy = (b.simY1 + b.simY2) / 2;
+    const cv = document.getElementById('sim-canvas') as HTMLCanvasElement;
+    const ts = v.totalScale;
+    return Math.hypot((cx - v.offsetX) * ts - cv.width / 2, (cy - v.offsetY) * ts - cv.height / 2);
+  }), { timeout: 3000 }).toBeLessThan(8);
+});

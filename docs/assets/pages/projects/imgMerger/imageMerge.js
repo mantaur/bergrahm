@@ -2498,8 +2498,16 @@ const btnAdvToggle = document.getElementById('btn-adv-toggle');
 const advPanel     = document.getElementById('adv-panel');
 if (btnAdvToggle && advPanel) {
   btnAdvToggle.addEventListener('click', () => {
-    const open = advPanel.classList.toggle('im-hidden');
-    btnAdvToggle.textContent = open ? '... More' : '... Less';
+    const open = !advPanel.classList.toggle('im-hidden'); // toggle() returns true when now hidden
+    btnAdvToggle.setAttribute('aria-expanded', String(open));
+  });
+}
+
+// Recenter the view on the output artboard (easy to lose it on the big canvas).
+const btnSimCenter = document.getElementById('btn-sim-center');
+if (btnSimCenter) {
+  btnSimCenter.addEventListener('click', () => {
+    if (simRafId !== null) viewport.centerOnArtboard({ animate: true });
   });
 }
 

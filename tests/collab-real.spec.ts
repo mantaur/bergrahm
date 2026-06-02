@@ -24,14 +24,16 @@ test.describe('real collab (live broker)', () => {
       await a.locator('#btn-collab').click();
       await a.locator('#collab-room-inp').fill(room);
       await a.locator('#btn-collab-join').click();
-      await expect(a.locator('#collab-status')).toHaveText(/Connected/, { timeout: 25000 });
+      await expect(a.locator('#collab-status')).toHaveText(/Hosting/, { timeout: 25000 });
+      await expect(a.locator('#collab-role')).toHaveText('Host');
 
       // B joins the same room via the URL param (auto-join).
       await b.goto(PAGE + '?room=' + room);
-      await expect(b.locator('#collab-status')).toHaveText(/Connected/, { timeout: 25000 });
+      await expect(b.locator('#collab-status')).toHaveText(/Connected as guest/, { timeout: 25000 });
+      await expect(b.locator('#collab-role')).toHaveText('Guest');
 
       // Both sides see one peer.
-      await expect(a.locator('#collab-status')).toHaveText(/peer/, { timeout: 25000 });
+      await expect(a.locator('#collab-status')).toHaveText(/guest/, { timeout: 25000 });
       await expect(a.locator('#collab-peer-badge')).toBeVisible();
       await expect(b.locator('#collab-peer-badge')).toBeVisible();
 
@@ -57,6 +59,43 @@ test.describe('real collab (live broker)', () => {
       await a.locator('#rank-list > li').first().locator('.im-film-rm').click();
       await expect(a.locator('#rank-list > li')).toHaveCount(0);
       await expect(b.locator('#rank-list > li')).toHaveCount(0, { timeout: 25000 });
+    } finally {
+      await ctxA.close();
+      await ctxB.close();
+    }
+  });
+
+  test('a room password gates guests', async ({ browser }) => {
+    const room = 'pw-' + Math.random().toString(36).slice(2, 9);
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    await routeVendor(ctxA);
+    await routeVendor(ctxB);
+    const a = await ctxA.newPage();
+    const b = await ctxB.newPage();
+
+    try {
+      // Host sets a room password.
+      await a.goto(PAGE);
+      await a.locator('#btn-collab').click();
+      await a.locator('#collab-room-inp').fill(room);
+      await a.locator('#collab-pass-inp').fill('s3cret');
+      await a.locator('#btn-collab-join').click();
+      await expect(a.locator('#collab-status')).toHaveText(/Hosting/, { timeout: 25000 });
+
+      // Wrong password -> rejected.
+      await b.goto(PAGE);
+      await b.locator('#btn-collab').click();
+      await b.locator('#collab-room-inp').fill(room);
+      await b.locator('#collab-pass-inp').fill('nope');
+      await b.locator('#btn-collab-join').click();
+      await expect(b.locator('#collab-status')).toHaveText(/Wrong room password/, { timeout: 25000 });
+
+      // Correct password -> connects.
+      await b.locator('#collab-pass-inp').fill('s3cret');
+      await b.locator('#btn-collab-join').click();
+      await expect(b.locator('#collab-status')).toHaveText(/Connected as guest/, { timeout: 25000 });
+      await expect(a.locator('#collab-status')).toHaveText(/guest/, { timeout: 25000 });
     } finally {
       await ctxA.close();
       await ctxB.close();

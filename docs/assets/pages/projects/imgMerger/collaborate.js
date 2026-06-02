@@ -66,6 +66,8 @@ const simUndoBadge   = document.getElementById('sim-undo-badge');
 const simRedoBadge   = document.getElementById('sim-redo-badge');
 const nameInp        = document.getElementById('collab-name-inp');
 const roomInp        = document.getElementById('collab-room-inp');
+const passInp        = document.getElementById('collab-pass-inp');
+const roleEl         = document.getElementById('collab-role');
 const statusEl       = document.getElementById('collab-status');
 const cursorLayer    = document.getElementById('collab-cursor-layer');
 const guestPrompt    = document.getElementById('collab-guest-prompt');
@@ -85,6 +87,7 @@ let peer           = null;
 let localPeerId    = null;
 let isHost         = false;
 let currentRoom    = null;
+let roomPassword   = '';   // host: the password guests must supply (empty = open room)
 let hostConn       = null;              // guest's single connection to host
 let remotePeerCount = 0;               // count broadcast by host; used on guest side
 const guestConns = new Map();           // host's connections: peerId -> conn
@@ -149,6 +152,16 @@ function setStatus(text, connected) {
   statusEl.classList.toggle('im-collab-connected', !!connected);
 }
 
+// Show the local user's role (Host / Guest) clearly in the modal header.
+function _setRole() {
+  if (!roleEl) return;
+  if (!localPeerId) { roleEl.classList.add('im-hidden'); return; }
+  roleEl.textContent = isHost ? 'Host' : 'Guest';
+  roleEl.classList.toggle('im-collab-role-host', isHost);
+  roleEl.classList.toggle('im-collab-role-guest', !isHost);
+  roleEl.classList.remove('im-hidden');
+}
+
 const collabPeerBadge = document.getElementById('collab-peer-badge');
 
 function _broadcastPeerCount() {
@@ -161,11 +174,15 @@ function _broadcastPeerCount() {
 
 function updatePeerCount() {
   const count = isHost ? guestConns.size : (hostConn ? remotePeerCount : 0);
-  setStatus(
-    count === 0 ? 'Connected - waiting for others'
-                : `Connected (${count} peer${count > 1 ? 's' : ''})`,
-    true
-  );
+  let text;
+  if (isHost) {
+    text = count === 0 ? 'Hosting - waiting for guests'
+                       : `Hosting - ${count} guest${count > 1 ? 's' : ''} connected`;
+  } else {
+    text = count === 0 ? 'Connected as guest'
+                       : `Connected as guest - ${count} other${count > 1 ? 's' : ''}`;
+  }
+  setStatus(text, true);
   if (count > 0) {
     collabPeerBadge.textContent = count > 9 ? '9+' : count;
     collabPeerBadge.classList.remove('im-hidden');
@@ -413,6 +430,28 @@ function handleMsg(msg, fromPeerId) {
     case 'pong':
       if (isHost) _guestLastPong.set(fromPeerId, Date.now());
       break;
+
+    case 'join':
+      // Guest -> host handshake. Validate the room password before sending the
+      // session; a wrong-password guest is dropped and never receives it.
+      if (isHost) {
+        const conn = guestConns.get(fromPeerId);
+        if (roomPassword && msg.password !== roomPassword) {
+          if (conn && conn.open) conn.send(JSON.stringify({ type: 'auth-failed' }));
+          _dropGuest(fromPeerId);
+        } else if (conn) {
+          const cs = window.getCollabState ? window.getCollabState() : null;
+          if (cs && cs.imageCount > 0) sendSessionTo(conn);
+        }
+      }
+      break;
+
+    case 'auth-failed':
+      if (!isHost) {
+        leaveRoom();
+        setStatus('Wrong room password - try again');
+      }
+      break;
   }
 }
 
@@ -601,7 +640,9 @@ function joinAsHost(roomCode) {
     if (isHost) return; // signaling reconnect — data channels intact, skip reinit
     localPeerId = id;
     isHost      = true;
-    setStatus('Connected - waiting for others', true);
+    roomPassword = passInp ? passInp.value.trim() : ''; // this host sets the room password
+    _setRole();
+    setStatus('Hosting - waiting for guests', true);
     rafId = requestAnimationFrame(rafLoop);
     simCanvasEl.addEventListener('mousemove', onMouseMove);
     _startHostPing();
@@ -615,8 +656,8 @@ function joinAsHost(roomCode) {
     _broadcastPeerCount();
     conn.on('open', () => {
       _broadcastPeerCount();
-      const cs = window.getCollabState ? window.getCollabState() : null;
-      if (cs && cs.imageCount > 0) sendSessionTo(conn);
+      // Session is sent only after the guest's 'join' handshake is validated
+      // (see handleMsg 'join'), so a wrong-password guest never receives it.
     });
   });
 
@@ -651,11 +692,18 @@ function joinAsGuest(roomCode, retries = 0) {
     hostConn  = peer.connect(hid, { reliable: true });
 
     hostConn.on('open', () => {
-      setStatus('Connected', true);
+      _setRole();
+      setStatus('Connected as guest', true);
       updatePeerCount();
-      // No blocking "waiting for session" overlay: the host pushes its session
-      // automatically (on connect and on any later import), and the guest can
-      // always import a session file manually from the normal session UI.
+      // Authenticate: send our name + password attempt. The host replies with the
+      // session if it matches, or 'auth-failed' if not.
+      hostConn.send(JSON.stringify({
+        type: 'join',
+        name: nameInp.value.trim() || 'Anonymous',
+        password: passInp ? passInp.value.trim() : '',
+      }));
+      // No blocking overlay: the host pushes its session automatically, and the
+      // guest can always import a session file manually from the normal UI.
     });
 
     setupConn(hostConn, false);
@@ -726,6 +774,7 @@ function leaveRoom() {
   isHost          = false;
   remotePeerCount = 0;
   currentRoom     = null;
+  roomPassword    = '';
 
   simCanvasEl.removeEventListener('mousemove', onMouseMove);
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
@@ -745,6 +794,7 @@ function leaveRoom() {
   btnLeave.classList.add('im-hidden');
   btnCollab.classList.remove('im-collab-live');
   collabPeerBadge.classList.add('im-hidden');
+  _setRole();
   setStatus('Not connected');
 
   const u = new URL(window.location.href);

@@ -59,6 +59,25 @@ test.describe('Polygon mask', () => {
   });
 });
 
+test.describe('Advanced settings', () => {
+  test('disclosure toggles the advanced panel + aria-expanded', async ({ page }) => {
+    await addImage(page); // Output row + disclosure live in the now-visible paint area
+    const toggle = page.locator('#btn-adv-toggle');
+    const panel  = page.locator('#adv-panel');
+
+    await expect(panel).toHaveClass(/im-hidden/);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await toggle.click();
+    await expect(panel).not.toHaveClass(/im-hidden/);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    await toggle.click();
+    await expect(panel).toHaveClass(/im-hidden/);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
 test.describe('Image navigation', () => {
   test('prev/next moves through images and updates the index label', async ({ page }) => {
     await addImage(page, [FIXTURE_IMG, FIXTURE_IMG2]);
