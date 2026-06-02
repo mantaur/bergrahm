@@ -748,6 +748,25 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   background: #080a0b;
 }
 
+.im-recenter-rim {
+  position: fixed;
+  left: 0; top: 0;
+  z-index: 50;
+  width: 40px; height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(12,14,16,0.82);
+  border: 1px solid springgreen;
+  color: springgreen;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 0 12px rgba(0,255,127,0.25);
+}
+.im-recenter-rim:hover { background: rgba(0,255,127,0.18); }
+
 #sim-canvas-outer {
   position: relative;
   display: block;

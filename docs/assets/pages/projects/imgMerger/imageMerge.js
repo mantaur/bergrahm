@@ -1807,6 +1807,7 @@ function simTick(ts) {
   _lastSimTs = ts;
 
   viewport.stepAnim(ts); // advance any view tween / presenter-follow
+  _updateRecenterUI();
 
   if (_activeDragIdx !== null) {
     const now = performance.now();
@@ -2502,12 +2503,42 @@ if (btnAdvToggle && advPanel) {
   });
 }
 
-// Recenter the view on the output artboard (easy to lose it on the big canvas).
-const btnSimCenter = document.getElementById('btn-sim-center');
-if (btnSimCenter) {
-  btnSimCenter.addEventListener('click', () => {
-    if (simRafId !== null) viewport.centerOnArtboard({ animate: true });
-  });
+// Re-center affordances: a HUD button and a rim pointer, shown only while the
+// output artboard is off-screen (easy to lose on the big canvas).
+const btnSimCenter   = document.getElementById('btn-sim-center');
+const simRecenterRim = document.getElementById('sim-recenter-rim');
+function _recenter() { if (simRafId !== null) viewport.centerOnArtboard({ animate: true }); }
+if (btnSimCenter)   btnSimCenter.addEventListener('click', _recenter);
+if (simRecenterRim) simRecenterRim.addEventListener('click', _recenter);
+
+function _artboardInView() {
+  const ts = viewport.totalScale;
+  const vL = viewport.offsetX, vT = viewport.offsetY;
+  const vR = vL + simCanvas.width / ts, vB = vT + simCanvas.height / ts;
+  return simX1 < vR && simX2 > vL && simY1 < vB && simY2 > vT;
+}
+
+let _recenterShown = false;
+function _updateRecenterUI() {
+  const show = simRafId !== null && !_artboardInView();
+  if (show !== _recenterShown) {
+    _recenterShown = show;
+    if (btnSimCenter)   btnSimCenter.classList.toggle('im-hidden', !show);
+    if (simRecenterRim) simRecenterRim.classList.toggle('im-hidden', !show);
+  }
+  if (!show || !simRecenterRim) return;
+  // Aim the rim pointer from the viewport centre toward the artboard centre,
+  // clamped to the viewport edge (FPV damage-direction style).
+  const rect = simCanvas.getBoundingClientRect();
+  const cx = rect.width / 2, cy = rect.height / 2;
+  const ac = viewport.physicsToClient((simX1 + simX2) / 2, (simY1 + simY2) / 2);
+  const ang = Math.atan2((ac.y - rect.top) - cy, (ac.x - rect.left) - cx);
+  const pad = 26;
+  const t = Math.min((cx - pad) / (Math.abs(Math.cos(ang)) || 1e-6),
+                     (cy - pad) / (Math.abs(Math.sin(ang)) || 1e-6));
+  const ex = rect.left + cx + Math.cos(ang) * t;
+  const ey = rect.top  + cy + Math.sin(ang) * t;
+  simRecenterRim.style.transform = `translate(${ex}px, ${ey}px) translate(-50%, -50%) rotate(${ang}rad)`;
 }
 
 openStep('step-images');
