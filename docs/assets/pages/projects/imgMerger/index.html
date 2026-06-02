@@ -888,9 +888,9 @@ function chamferDist(mask, W, H) {
   </script>
 
   <script src="gpuCheck.js?v=1"></script>
-  <script src="sessionIO.js?v=3"></script>
+  <script src="sessionIO.js?v=4"></script>
   <script src="viewport.js?v=1"></script>
-  <script src="imageMerge.js?v=25"></script>
+  <script src="imageMerge.js?v=26"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -919,8 +919,8 @@ function chamferDist(mask, W, H) {
     window.getSimPositions = function() {
       var out = {};
       if (!simGroups) return out;
-      simGroups.forEach(function(g, i) {
-        if (g) out[i] = { x: g.x, y: g.y, angle: g.angle };
+      simGroups.forEach(function(g, id) {
+        out[id] = { x: g.x, y: g.y, angle: g.angle };
       });
       return out;
     };
@@ -936,7 +936,7 @@ function chamferDist(mask, W, H) {
     };
 
     window.getImagePacket = async function(imgIdx) {
-      var entry = state.images[imgIdx];
+      var entry = imgById(imgIdx);
       if (!entry || !entry.img) return null;
       var c = document.createElement('canvas');
       c.width = entry.w; c.height = entry.h;
@@ -946,8 +946,9 @@ function chamferDist(mask, W, H) {
       var encoding = enc
         ? { origW: enc.origW, origH: enc.origH, segments: _encodeSegments(enc.segments) }
         : null;
-      var g = simGroups[imgIdx];
+      var g = simGroups.get(imgIdx);
       return {
+        id: entry.id,
         name: entry.name, w: entry.w, h: entry.h,
         jpegBase64: jpegBase64, encoding: encoding,
         polygons: entry.polygons,
@@ -993,7 +994,7 @@ function chamferDist(mask, W, H) {
     }
 
     window.getImageBuffer = async function(imgIdx) {
-      var entry = state.images[imgIdx];
+      var entry = imgById(imgIdx);
       if (!entry || !entry.img) return null;
       var bm = await createImageBitmap(entry.img); // async, no main-thread GPU readback
       var id = _imgEncNextId++;
@@ -1001,9 +1002,10 @@ function chamferDist(mask, W, H) {
         _imgEncPending.set(id, res);
         _getImgEncWorker().postMessage({ id: id, bitmap: bm }, [bm]);
       });
-      var g = simGroups[imgIdx];
+      var g = simGroups.get(imgIdx);
       return {
         buffer: buf,
+        id: entry.id,
         name: entry.name, w: entry.w, h: entry.h,
         polygons: entry.polygons,
         currentPoly: entry.currentPoly || [],
@@ -1015,7 +1017,7 @@ function chamferDist(mask, W, H) {
     };
 
     window.getEncodingPacket = function(imgIdx) {
-      var entry = state.images[imgIdx];
+      var entry = imgById(imgIdx);
       var enc = yoloPool.embeddingCache.get(imgIdx);
       if (!entry || !enc) return null;
       return {
@@ -1041,8 +1043,9 @@ function chamferDist(mask, W, H) {
         simViewOffset: viewport.offset,
         simX1: simX1, simY1: simY1, simX2: simX2, simY2: simY2,
         images: state.images.map(function(entry, i) {
-          var pos = positions[i];
+          var pos = positions[entry.id];
           return {
+            id: entry.id,
             name: entry.name, w: entry.w, h: entry.h,
             polygons:    entry.polygons    || [],
             currentPoly: entry.currentPoly || [],
@@ -1051,14 +1054,14 @@ function chamferDist(mask, W, H) {
             simHidden:   entry.simHidden   || false,
             simPos:   pos ? { x: pos.x, y: pos.y } : null,
             simAngle: pos ? pos.angle : 0,
-            hasEncoding: yoloPool.embeddingCache.has(i),
+            hasEncoding: yoloPool.embeddingCache.has(entry.id),
           };
         }),
       };
     };
 
     window.getImageThumb = function(imgIdx) {
-      var entry = state.images[imgIdx];
+      var entry = imgById(imgIdx);
       return (entry && entry.thumbUrl) ? entry.thumbUrl : null;
     };
 
@@ -1126,14 +1129,13 @@ function chamferDist(mask, W, H) {
     };
 
     window.applyRemoteRankOrder = function(order) {
-      var n = state.images.length;
-      var valid = order.filter(function(i) { return i >= 0 && i < n; });
-      if (valid.length !== n) return;
+      var valid = order.filter(function(id) { return imgById(id); });
+      if (valid.length !== state.images.length) return;
       state.rankOrder = valid;
       buildRankList();
     };
   </script>
-  <script type="module" src="collaborate.js?v=11"></script>
+  <script type="module" src="collaborate.js?v=12"></script>
 </body>
 
 </html>

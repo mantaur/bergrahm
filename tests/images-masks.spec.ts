@@ -2,7 +2,7 @@
 
 import {
   test, expect, addImage, paintPolygon, openPaintStep,
-  polyCount, collabOut, FIXTURE_IMG, FIXTURE_IMG2,
+  polyCount, collabOut, imgIdAt, FIXTURE_IMG, FIXTURE_IMG2,
 } from './fixtures';
 
 test.describe('Add image', () => {
@@ -14,11 +14,11 @@ test.describe('Add image', () => {
     await expect(page.locator('#smeta-images')).toHaveText('1 image');
   });
 
-  test('emits collab:images-added', async ({ page }) => {
+  test('emits collab:images-added with the new image id', async ({ page }) => {
     await addImage(page);
     const events = await collabOut(page, 'collab:images-added');
     expect(events.length).toBeGreaterThanOrEqual(1);
-    expect(events.at(-1).detail.indices).toContain(0);
+    expect(events.at(-1).detail.ids).toContain(await imgIdAt(page, 0));
   });
 });
 

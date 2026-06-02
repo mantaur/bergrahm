@@ -152,8 +152,9 @@ const SessionIO = {
       simX1: cfg.simX1, simY1: cfg.simY1,
       simX2: cfg.simX2, simY2: cfg.simY2,
       images: state.images.map((entry, i) => {
-        const g = simGroups[i];
+        const g = simGroups.get(entry.id);
         return {
+          id: entry.id,
           name: entry.name, w: entry.w, h: entry.h,
           scale: entry.scale, scaleFixed: entry.scaleFixed || false,
           simHidden: entry.simHidden || false,
@@ -165,8 +166,8 @@ const SessionIO = {
       }),
     };
 
-    const encodings = state.images.map((_, i) => {
-      const cached = yoloPool.embeddingCache.get(i);
+    const encodings = state.images.map((entry) => {
+      const cached = yoloPool.embeddingCache.get(entry.id);
       if (!cached) return null;
       return {
         origW: cached.origW, origH: cached.origH,

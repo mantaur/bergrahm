@@ -14,17 +14,31 @@ const state = {
   yoloDecodeSize:  512,
   yoloWorkerCount: 4,
 
-  // images[i] = { file, name, img, thumbUrl, w, h, polygons, currentPoly }
+  // images[i] = { id, file, name, img, thumbUrl, w, h, polygons, currentPoly }
   images: [],
 
-  // rank order: array of indices into state.images, index 0 = highest importance
+  // rank order: array of image ids, position 0 = highest importance
   rankOrder: [],
 
   // painter state
-  paintIdx: 0,   // which image is being painted (index into rankOrder)
-  undoStack: [], // per-image undo stacks
+  paintIdx: 0,          // which image is being painted (position in rankOrder)
+  undoStack: new Map(), // id -> mask-undo snapshots[]
 
 };
+
+// Image identity: images are addressed by a stable `id` (assigned at creation,
+// shared verbatim across peers), NOT by array position. The name `imgIdx` used
+// throughout this file now carries that id, not an index — so removing or
+// reordering images never invalidates a held reference. simGroups, undo entries,
+// the SAM cache, and in-flight collab messages are all keyed by id.
+let _imgIdSeq = 0;
+function newImgId() {
+  return (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'im-' + Date.now().toString(36) + '-' + (++_imgIdSeq);
+}
+function imgById(id)    { return state.images.find(e => e.id === id) || null; }
+function imgIdxById(id) { return state.images.findIndex(e => e.id === id); }
 
 // ── Icon SVGs ─────────────────────────────────────────────────────────────────
 const EYE_OPEN   = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8c1.5-3.5 4-5 7-5s5.5 1.5 7 5c-1.5 3.5-4 5-7 5s-5.5-1.5-7-5z"/><circle cx="8" cy="8" r="2.2"/></svg>';
@@ -198,7 +212,7 @@ function _broadcastSettingsNow() {
 // Broadcast per-image scales to peers (so they rebuild groups at the right size).
 function _broadcastScales() {
   window.dispatchEvent(new CustomEvent('collab:scales-changed', {
-    detail: { scales: state.images.map(e => e.scale) },
+    detail: { scales: Object.fromEntries(state.images.map(e => [e.id, e.scale])) },
   }));
 }
 
@@ -246,7 +260,7 @@ cfgUseYolo.addEventListener('change', () => {
 // ── Painter scale bar ─────────────────────────────────────────────────────────
 painterScaleAuto.addEventListener('change', () => {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry  = state.images[imgIdx];
+  const entry  = imgById(imgIdx);
   painterScaleInp.disabled = painterScaleAuto.checked;
   entry.scale = painterScaleAuto.checked ? null : parseFloat(painterScaleInp.value);
   if (painterScaleAuto.checked)
@@ -257,7 +271,7 @@ painterScaleAuto.addEventListener('change', () => {
 
 painterScaleInp.addEventListener('change', () => {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry  = state.images[imgIdx];
+  const entry  = imgById(imgIdx);
   let v = parseFloat(painterScaleInp.value);
   if (isNaN(v)) v = 1.0;
   v = Math.max(0.05, Math.min(20, v));
@@ -268,7 +282,7 @@ painterScaleInp.addEventListener('change', () => {
 });
 
 function updatePainterZoom(imgIdx) {
-  const entry        = state.images[imgIdx];
+  const entry        = imgById(imgIdx);
   const resolvedScale = entry.scale === null ? computeAutoScales()[imgIdx].scale : entry.scale;
   const displayW     = Math.min(DISPLAY_MAX_W, entry.w);
   const outputW      = entry.w * resolvedScale;
@@ -277,7 +291,7 @@ function updatePainterZoom(imgIdx) {
 }
 
 function updateScalePreview(imgIdx) {
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   const outW  = state.outW;
   const outH  = state.outH;
   const ctx   = scalePreviewCanvas.getContext('2d');
@@ -353,6 +367,7 @@ cfgImages.addEventListener('change', () => {
       URL.revokeObjectURL(url);
 
       state.images[idx] = {
+        id: newImgId(),
         file, name: file.name, img, thumbUrl, w, h,
         polygons:    [],
         currentPoly: [],
@@ -361,15 +376,18 @@ cfgImages.addEventListener('change', () => {
       };
       loaded++;
       if (loaded === files.length) {
-        // Append new indices to rankOrder and undoStack.
+        // Append the new images' ids to rankOrder and seed their undo stacks.
+        const newIds = [];
         for (let j = baseIdx; j < baseIdx + files.length; j++) {
-          state.rankOrder.push(j);
-          state.undoStack[j] = [];
+          const id = state.images[j].id;
+          newIds.push(id);
+          state.rankOrder.push(id);
+          state.undoStack.set(id, []);
         }
         paintArea.classList.remove('im-hidden');
         buildRankList();
         window.dispatchEvent(new CustomEvent('collab:images-added', {
-          detail: { indices: Array.from({ length: files.length }, (_, i) => baseIdx + i) },
+          detail: { ids: newIds },
         }));
         loadPainterImage(firstLoad ? 0 : Math.min(state.paintIdx, state.images.length - 1));
         unlockStep('step-paint');
@@ -387,7 +405,8 @@ cfgImages.addEventListener('change', () => {
             } else {
               // Append only — don't re-queue images already being encoded.
               for (let j = baseIdx; j < baseIdx + files.length; j++) {
-                if (!yoloPool.embeddingCache.has(j)) yoloPool.encodeQueue.push(j);
+                const id = state.images[j].id;
+                if (!yoloPool.embeddingCache.has(id)) yoloPool.encodeQueue.push(id);
               }
               yoloPool.encodeQueueBuilt = true;
               _respawnWorkersForEncoding(); // re-spawn any surplus workers killed after last batch
@@ -415,62 +434,32 @@ function buildRankList() {
 // opts.broadcast === false when applying a removal received from a peer, so the
 // removal isn't echoed back out (avoids a rebroadcast loop).
 function removeImage(imgIdx, opts = {}) {
-  if (imgIdx < 0 || imgIdx >= state.images.length) return; // stale/out-of-range (e.g. late remote msg)
+  const idx = imgIdxById(imgIdx);
+  if (idx === -1) return; // unknown / already-removed id (e.g. late remote msg)
   if (opts.broadcast !== false) {
     window.dispatchEvent(new CustomEvent('collab:image-removed', { detail: { imgIdx } }));
   }
 
-  // Compact state arrays, remapping all indices.
-  const remap = {};
-  const newImages    = [];
-  const newUndoStack = [];
-  state.images.forEach((entry, i) => {
-    if (i === imgIdx) return;
-    remap[i] = newImages.length;
-    newImages.push(entry);
-    newUndoStack.push(state.undoStack[i] || []);
-  });
+  // Stable ids: a removal is a plain delete -- nothing else needs remapping.
+  state.images.splice(idx, 1);
+  state.undoStack.delete(imgIdx);
+  state.rankOrder = state.rankOrder.filter(id => id !== imgIdx);
 
-  state.images    = newImages;
-  state.undoStack = newUndoStack;
-  state.rankOrder = state.rankOrder
-    .filter(i => i !== imgIdx)
-    .map(i => remap[i]);
-
-  // Remap SAM embedding cache.
-  const newCache = new Map();
-  yoloPool.embeddingCache.forEach((val, key) => {
-    if (remap[key] !== undefined) newCache.set(remap[key], val);
-  });
-  yoloPool.embeddingCache = newCache;
-  yoloPool.encodeQueue    = yoloPool.encodeQueue
-    .filter(i => i !== imgIdx)
-    .map(i => remap[i] ?? i);
-  yoloPool.encodeRetries.clear();
-
-  // Workers mid-encode will return old indices — discard those results and
-  // re-queue surviving images under their new indices so they get re-encoded.
+  // SAM: drop cache/queue entries for this id. If a worker is mid-encode for it,
+  // mark the id stale so onEncoded discards the incoming result.
+  yoloPool.embeddingCache.delete(imgIdx);
+  yoloPool.encodeQueue = yoloPool.encodeQueue.filter(id => id !== imgIdx);
+  yoloPool.encodeRetries.delete(imgIdx);
+  yoloPool.dots.delete(imgIdx);
   for (let wi = 0; wi < yoloPool.encoding.length; wi++) {
-    const oldEnc = yoloPool.encoding[wi];
-    if (oldEnc === null) continue;
-    yoloPool.staleEncodeSet.add(oldEnc); // onEncoded will discard this result
-    if (oldEnc !== imgIdx && remap[oldEnc] !== undefined) {
-      const newEnc = remap[oldEnc];
-      if (!yoloPool.embeddingCache.has(newEnc)) yoloPool.encodeQueue.push(newEnc);
+    if (yoloPool.encoding[wi] === imgIdx) {
+      yoloPool.staleEncodeSet.add(imgIdx);
+      yoloPool.encoding[wi] = null;
     }
-    yoloPool.encoding[wi] = null;
   }
 
-  // Remap simGroups to match the new image indices
-  if (simRafId !== null) {
-    const newSG = [];
-    simGroups.forEach((g, i) => {
-      if (i === imgIdx || !g) return;
-      const ni = remap[i];
-      if (ni !== undefined) { g.imgIdx = ni; newSG[ni] = g; }
-    });
-    simGroups = newSG;
-  }
+  // Drop the sim group (Map keyed by id).
+  if (simRafId !== null) simGroups.delete(imgIdx);
 
   if (state.images.length === 0) {
     buildRankList(); // clear the (now empty) filmstrip; also disables export
@@ -488,7 +477,7 @@ function removeImage(imgIdx, opts = {}) {
 }
 
 function createRankItem(imgIdx, rank) {
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   const li = document.createElement('li');
   li.className = 'im-rank-item';
   if (state.rankOrder[state.paintIdx] === imgIdx) li.classList.add('active-paint');
@@ -530,7 +519,7 @@ function createRankItem(imgIdx, rank) {
     entry.simHidden = !entry.simHidden;
     hideBtn.innerHTML = entry.simHidden ? EYE_CLOSED : EYE_OPEN;
     hideBtn.title = entry.simHidden ? 'Show in sim' : 'Hide in sim';
-    const g = simGroups[imgIdx];
+    const g = simGroups.get(imgIdx);
     if (!g || simRafId === null) return;
     if (entry.simHidden) {
       g.inWorld = false;
@@ -626,7 +615,7 @@ const DISPLAY_MAX_W = 860; // max display width for painter canvas
 function loadPainterImage(rankIdx) {
   state.paintIdx = rankIdx;
   const imgIdx  = state.rankOrder[rankIdx];
-  const entry   = state.images[imgIdx];
+  const entry   = imgById(imgIdx);
   if (!entry || !entry.img) return; // image not yet received during streaming collab join
 
   paintName.textContent = entry.name;
@@ -723,7 +712,7 @@ function canvasPx(cssPx) {
 }
 
 function redrawPolyOverlay(imgIdx) {
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
   // Completed polygons
@@ -788,7 +777,7 @@ function drawPoly(poly, fillStyle, strokeStyle, closed) {
 // ── Lasso interaction ─────────────────────────────────────────────────────────
 canvasWrap.addEventListener('click', (e) => {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry  = state.images[imgIdx];
+  const entry  = imgById(imgIdx);
   const pos    = getCanvasPos(e);
 
   // Seg mode: use click as a segment prompt
@@ -858,23 +847,27 @@ canvasWrap.addEventListener('touchend', (e) => {
 
 // ── Polygon undo ──────────────────────────────────────────────────────────────
 function pushPolyUndo(imgIdx) {
-  const entry = state.images[imgIdx];
-  state.undoStack[imgIdx].push({
+  const entry = imgById(imgIdx);
+  const stack = state.undoStack.get(imgIdx);
+  if (!entry || !stack) return;
+  stack.push({
     polygons:    entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
     currentPoly: currentPoly.map(v => ({ x: v.x, y: v.y })),
   });
-  if (state.undoStack[imgIdx].length > MAX_UNDO) state.undoStack[imgIdx].shift();
+  if (stack.length > MAX_UNDO) stack.shift();
 }
 
 function updateUndoBtn(imgIdx) {
-  btnUndo.disabled = state.undoStack[imgIdx].length === 0;
+  const stack = state.undoStack.get(imgIdx);
+  btnUndo.disabled = !stack || stack.length === 0;
 }
 
 btnUndo.addEventListener('click', () => {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry  = state.images[imgIdx];
-  if (!state.undoStack[imgIdx].length) return;
-  const snap = state.undoStack[imgIdx].pop();
+  const entry  = imgById(imgIdx);
+  const stack  = state.undoStack.get(imgIdx);
+  if (!stack || !stack.length) return;
+  const snap = stack.pop();
   entry.polygons = snap.polygons;
   // Restore currentPoly in-place so the entry.currentPoly reference stays valid
   currentPoly.length = 0;
@@ -888,7 +881,7 @@ btnUndo.addEventListener('click', () => {
 
 btnClearMask.addEventListener('click', () => {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry  = state.images[imgIdx];
+  const entry  = imgById(imgIdx);
   if (entry.polygons.length === 0 && currentPoly.length === 0) return;
   pushPolyUndo(imgIdx);
   entry.polygons = [];
@@ -1128,7 +1121,7 @@ function onEncodeError(wIdx, message) {
     } else {
       const failDot = yoloPool.dots.get(imgIdx);
       if (failDot) { failDot.classList.remove('im-yolo-encoding', 'im-yolo-pending'); failDot.classList.add('im-yolo-failed'); failDot.title = 'Encoding failed'; }
-      updateYoloStatus('Could not encode [' + (state.images[imgIdx]?.name ?? imgIdx) + ']  -  skipping.', true);
+      updateYoloStatus('Could not encode [' + (imgById(imgIdx)?.name ?? imgIdx) + ']  -  skipping.', true);
     }
   } else {
     // Failure during decode or init (imgIdx null) — just report it.
@@ -1143,7 +1136,7 @@ function sendEncode(wIdx, imgIdx) {
   yoloPool.encoding[wIdx] = imgIdx;
   const dot = yoloPool.dots.get(imgIdx);
   if (dot) { dot.classList.remove('im-yolo-pending'); dot.classList.add('im-yolo-encoding'); dot.title = 'Encoding...'; }
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   const tmp   = document.createElement('canvas');
   tmp.width   = entry.w;
   tmp.height  = entry.h;
@@ -1160,7 +1153,7 @@ function sendEncode(wIdx, imgIdx) {
 function buildEncodeQueue() {
   yoloPool.encodeQueueBuilt = true;
   yoloPool.encodeRetries.clear();
-  const sorted = [...state.images.keys()].sort((a, b) => {
+  const sorted = state.images.map(e => e.id).sort((a, b) => {
     const ra = state.rankOrder.indexOf(a);
     const rb = state.rankOrder.indexOf(b);
     return (ra === -1 ? Infinity : ra) - (rb === -1 ? Infinity : rb);
@@ -1219,7 +1212,7 @@ function pointInPoly(poly, x, y) {
 // If the click lands inside an existing polygon, remove it instead.
 function requestDecode(x, y) {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry  = state.images[imgIdx];
+  const entry  = imgById(imgIdx);
 
   // Deselect: remove the first polygon that contains the click point.
   for (let i = 0; i < entry.polygons.length; i++) {
@@ -1264,7 +1257,7 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
     updateYoloStatus('No region found  -  try clicking a different point.', true);
     return;
   }
-  const entry = state.images[forImgIdx];
+  const entry = imgById(forImgIdx);
 
   // Scale polygon from mask space back to original image space.
   const scaleX = entry.w / width;
@@ -1360,14 +1353,16 @@ function computeAutoScales() {
   const useW    = state.outW <= state.outH; // width is shorter (or tied)
   const shortOut = useW ? state.outW : state.outH;
 
-  return state.images.map(entry => {
-    if (entry.scale !== null) return { scale: entry.scale, wasClamped: false };
+  // Keyed by image id (not position) so callers can look up by id.
+  const out = {};
+  for (const entry of state.images) {
+    if (entry.scale !== null) { out[entry.id] = { scale: entry.scale, wasClamped: false }; continue; }
     const imgDim = useW ? entry.w : entry.h;
-    if (imgDim <= shortOut) return { scale: 1, wasClamped: false };
+    if (imgDim <= shortOut) { out[entry.id] = { scale: 1, wasClamped: false }; continue; }
     const ratio = imgDim / shortOut;
-    const scale = 1 / (Math.ceil(ratio / 0.01) * 0.01);
-    return { scale, wasClamped: false };
-  });
+    out[entry.id] = { scale: 1 / (Math.ceil(ratio / 0.01) * 0.01), wasClamped: false };
+  }
+  return out;
 }
 
 // ── Merge algorithm (delegated to Web Worker) ─────────────────────────────────
@@ -1455,7 +1450,7 @@ function resetMergeUI() {
 }
 
 // ── Force-directed placement sim ──────────────────────────────────────────────
-let simGroups          = [];   // indexed by imgIdx; null entry = image has no polygons
+let simGroups          = new Map();   // id -> sim group (only images that have polygons)
 let simRafId           = null;
 let _lastSimTs         = null;
 let simMergedImageData  = null; // truthy when merge complete; cleared when sim re-activates
@@ -1467,7 +1462,7 @@ let _pixelWorkerBlobUrl = null; // cached blob URL for the pixel render worker
 let simCornerDrag      = null; // { dir, id, startPx, startX1, startY1, startX2, startY2 }
 let simBodyDragging    = false; // true while a body is held by MouseConstraint
 let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gesture
-let _activeDragIdx     = -1;   // imgIdx currently being dragged locally; -1 if none
+let _activeDragIdx     = null; // id currently being dragged locally; null if none
 let _lastDragBroadcast = 0;    // timestamp of last collab:body-dragging dispatch
 const _remoteGrabs     = new Map(); // imgIdx -> { color } for bodies grabbed by peers
 const _remoteScalePreview = new Map(); // imgIdx -> scale, live (render-only) while a peer scales
@@ -1488,7 +1483,7 @@ viewport.init({
   canvas:      simCanvas,
   markDirty:   () => { _simViewDirty = true; },
   getArtboard: () => ({ x1: simX1, y1: simY1, x2: simX2, y2: simY2 }),
-  getGroup:    (i) => simGroups[i] || null,
+  getGroup:    (id) => simGroups.get(id) || null,
 });
 
 // RDP simplification (mirrored from merge worker for main-thread use)
@@ -1539,9 +1534,10 @@ function convexHull(pts) {
 }
 
 function buildSimGroup(imgIdx) {
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   const scale = computeAutoScales()[imgIdx].scale;
   const N     = state.images.length;
+  const colorIdx = imgIdxById(imgIdx); // position-based hue (cosmetic)
   const eps   = Math.max(1, 2 * scale);
 
   const polys = [];
@@ -1564,7 +1560,7 @@ function buildSimGroup(imgIdx) {
     scale,
     imgCentroidSim: { x: cx, y: cy },
     polysInSim:     polys,
-    color:          `hsl(${Math.round(imgIdx * 360 / Math.max(N, 1))}, 70%, 55%)`,
+    color:          `hsl(${Math.round(colorIdx * 360 / Math.max(N, 1))}, 70%, 55%)`,
     inWorld:        false,
   };
 }
@@ -1610,8 +1606,8 @@ function nearestGroup(phys, touchTolCssPx = 0) {
   const expandPhys = touchTolCssPx > 0
     ? touchTolCssPx / (viewport.totalScale) : 0;
   let best = null, bestD = Infinity;
-  for (const g of simGroups) {
-    if (!g || !g.inWorld) continue;
+  for (const g of simGroups.values()) {
+    if (!g.inWorld) continue;
     if (_physPointInGroup(phys, g, expandPhys)) {
       const d = Math.hypot(g.x - phys.x, g.y - phys.y);
       if (d < bestD) { bestD = d; best = g; }
@@ -1748,12 +1744,13 @@ function initSim(savedPositions = null) {
     (simX1 + simX2) / 2 - canvasW / 2 / (dispScale * initScale),
     (simY1 + simY2) / 2 - canvasH / 2 / (dispScale * initScale));
 
-  simGroups = [];
-  for (let i = 0; i < state.images.length; i++) {
-    simGroups.push(buildSimGroup(i));
+  simGroups = new Map();
+  for (const entry of state.images) {
+    const g = buildSimGroup(entry.id);
+    if (g) simGroups.set(entry.id, g);
   }
 
-  const active = simGroups.filter(g => g && !state.images[g.imgIdx].simHidden);
+  const active = [...simGroups.values()].filter(g => !imgById(g.imgIdx).simHidden);
   active.forEach((g, rank) => {
     const saved = savedPositions && savedPositions[g.imgIdx];
     const pos   = saved ? saved.pos : simGridPos(rank, active.length, W, H);
@@ -1792,7 +1789,7 @@ function dispatchBodyMoved(g) {
 
 function teardownSim() {
   if (simRafId !== null) { cancelAnimationFrame(simRafId); simRafId = null; }
-  simGroups  = [];
+  simGroups  = new Map();
   simBodyDragging = false;
   _lastSimTs = null;
   btnMerge.classList.add('im-hidden');
@@ -1813,10 +1810,10 @@ function simTick(ts) {
 
   viewport.stepAnim(ts); // advance any view tween / presenter-follow
 
-  if (_activeDragIdx >= 0) {
+  if (_activeDragIdx !== null) {
     const now = performance.now();
     if (now - _lastDragBroadcast > 33) {
-      const dg = simGroups[_activeDragIdx];
+      const dg = simGroups.get(_activeDragIdx);
       if (dg) {
         const detail = { imgIdx: _activeDragIdx, x: dg.x, y: dg.y, angle: dg.angle };
         // Carry the in-progress scale so peers can preview it live (like rotation).
@@ -1901,8 +1898,8 @@ function drawSim() {
   ctx.font      = `${fontSize}px sans-serif`;
   ctx.textAlign = 'center';
 
-  for (const g of simGroups) {
-    if (!g || !g.inWorld) continue;
+  for (const g of simGroups.values()) {
+    if (!g.inWorld) continue;
     const bx  = g.x;
     const by  = g.y;
     const ang = g.angle;
@@ -1935,7 +1932,7 @@ function drawSim() {
     }
 
     // Faint dashed rectangle showing full image bounds (rotation-aware)
-    const entry = state.images[g.imgIdx];
+    const entry = imgById(g.imgIdx);
     const drawScale = g.scale * scaleFactor;
     const imgCorners = [
       { x: 0, y: 0 }, { x: entry.w, y: 0 },
@@ -1968,12 +1965,12 @@ function drawSim() {
 
   // Draw dashed colored border around bodies grabbed by remote peers
   for (const [imgIdx, { color }] of _remoteGrabs) {
-    const g = simGroups[imgIdx];
+    const g = simGroups.get(imgIdx);
     if (!g || !g.inWorld) continue;
     const bx  = g.x, by = g.y;
     const ang = g.angle;
     const cos = Math.cos(ang), sin = Math.sin(ang);
-    const entry = state.images[imgIdx];
+    const entry = imgById(imgIdx);
     const corners = [
       { x: 0, y: 0 }, { x: entry.w, y: 0 },
       { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
@@ -2045,10 +2042,13 @@ function _clearMergedImage() {
 
 function extractPlacements() {
   const autoScales = computeAutoScales();
-  return state.rankOrder.filter(imgIdx => !state.images[imgIdx].simHidden).map(imgIdx => {
-    const entry = state.images[imgIdx];
-    const scale = autoScales[imgIdx].scale;
-    const g     = simGroups[imgIdx];
+  // The merge worker is positional: `imgIdx` here is the index into state.images
+  // (== the worker's `images` array), not the stable id.
+  return state.rankOrder.filter(id => !imgById(id).simHidden).map(id => {
+    const entry  = imgById(id);
+    const scale  = autoScales[id].scale;
+    const g      = simGroups.get(id);
+    const imgIdx = imgIdxById(id);
     if (!g) {
       return {
         imgIdx,
@@ -2080,9 +2080,9 @@ function extractPlacements() {
 btnSimReset.addEventListener('click', () => {
   if (simRafId === null) return;
   // Reset moves every placed group -> snapshot them all (scope = all groups).
-  recordSimUndo(captureSimSnapshot(simGroups.filter(Boolean).map(g => g.imgIdx), false));
+  recordSimUndo(captureSimSnapshot([...simGroups.values()].map(g => g.imgIdx), false));
   const W = state.outW, H = state.outH;
-  const active = simGroups.filter(g => g && !state.images[g.imgIdx].simHidden);
+  const active = [...simGroups.values()].filter(g => !imgById(g.imgIdx).simHidden);
   active.forEach((g, rank) => {
     const pos = simGridPos(rank, active.length, W, H);
     g.x = pos.x; g.y = pos.y; g.angle = 0;
@@ -2106,7 +2106,7 @@ btnScaleAll.addEventListener('click', () => {
   const autoScales = computeAutoScales();
   state.images.forEach((entry, i) => {
     if (entry.simHidden) return;
-    const base = entry.scale !== null ? entry.scale : autoScales[i].scale;
+    const base = entry.scale !== null ? entry.scale : autoScales[entry.id].scale;
     entry.scale = Math.max(0.05, base * factor);
     entry.scaleFixed = true;
   });
@@ -2117,8 +2117,8 @@ btnScaleAll.addEventListener('click', () => {
   _broadcastScales();
   if (simRafId !== null) {
     const savedPositions = {};
-    simGroups.forEach((g, i) => {
-      if (g) savedPositions[i] = { pos: { x: g.x, y: g.y }, angle: g.angle };
+    simGroups.forEach((g, id) => {
+      savedPositions[id] = { pos: { x: g.x, y: g.y }, angle: g.angle };
     });
     initSim(savedPositions);
     window.dispatchEvent(new CustomEvent('collab:canvas-resized'));
@@ -2163,12 +2163,12 @@ function resizeSim() {
   _simOutExplicit = false;
   // Output dimensions changed — auto-scale may differ, so imgCentroidSim is stale.
   // Rebuild all existing groups preserving their current positions.
-  simGroups.forEach((g, i) => { if (g) simRefreshGroup(i); });
+  for (const id of [...simGroups.keys()]) simRefreshGroup(id);
   _simViewDirty = true;
 }
 
 function simRefreshGroup(imgIdx) {
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   const hasPolys = entry && entry.polygons.length > 0;
 
   if (simRafId === null) {
@@ -2176,8 +2176,8 @@ function simRefreshGroup(imgIdx) {
     return;
   }
 
-  const old = simGroups[imgIdx];
-  if (old) simGroups[imgIdx] = null;
+  const old = simGroups.get(imgIdx) || null;
+  simGroups.delete(imgIdx);
 
   if (!hasPolys) return;
 
@@ -2189,13 +2189,13 @@ function simRefreshGroup(imgIdx) {
     g.x = old.x; g.y = old.y; g.angle = old.angle;
   } else {
     const rank = state.rankOrder.indexOf(imgIdx);
-    const n    = simGroups.filter(Boolean).length + 1;
+    const n    = simGroups.size + 1;
     const pos  = simGridPos(rank, n, state.outW, state.outH);
     g.x = pos.x; g.y = pos.y;
   }
 
   g.inWorld = !entry.simHidden;
-  simGroups[imgIdx] = g;
+  simGroups.set(imgIdx, g);
 
   if (g.inWorld) {
     _simViewDirty = true;
@@ -2369,7 +2369,7 @@ async function _renderPixels(placements, ownershipMap, previewScale, returnBlob 
   // Pre-scale each image bitmap to its final pixel size so the worker
   // only needs to composite, not scale.
   const imageBitmaps = await Promise.all(placements.map(p => {
-    const entry = state.images[p.imgIdx];
+    const entry = state.images[p.imgIdx]; // merge placements are positional
     const bw = Math.max(1, Math.round(entry.w * p.scale * ps));
     const bh = Math.max(1, Math.round(entry.h * p.scale * ps));
     return createImageBitmap(entry.img, { resizeWidth: bw, resizeHeight: bh, resizeQuality: ps < 1 ? 'medium' : 'high' });
@@ -2575,7 +2575,7 @@ window.addEventListener('resize', () => {
       _ctrlDrag = {
         pointerId: e.pointerId, group: g,
         center: { x: cx, y: cy },
-        initScale: state.images[g.imgIdx].scale ?? autoScale,
+        initScale: imgById(g.imgIdx).scale ?? autoScale,
         initAngle: g.angle,
         initDist: d0 > minPhys ? d0 : null,
         initCursorAngle: d0 > minPhys ? Math.atan2(dy0, dx0) : null,
@@ -2641,7 +2641,7 @@ window.addEventListener('resize', () => {
   function _endMouseDrag() {
     if (!_mouseDrag) return;
     simBodyDragging = false;
-    _activeDragIdx  = -1;
+    _activeDragIdx  = null;
     simCanvas.style.cursor = '';
     dispatchBodyMoved(_mouseDrag.group);
     window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: _mouseDrag.group.imgIdx } }));
@@ -2652,7 +2652,7 @@ window.addEventListener('resize', () => {
     if (!_ctrlDrag) return;
     const g = _ctrlDrag.group;
     if (pinchPreview && pinchPreview.imgIdx === g.imgIdx) {
-      const entry = state.images[g.imgIdx];
+      const entry = imgById(g.imgIdx);
       entry.scale = pinchPreview.scale;
       pinchPreview = null;
       const ri = state.rankOrder.indexOf(g.imgIdx);
@@ -2666,7 +2666,7 @@ window.addEventListener('resize', () => {
     simRefreshGroup(g.imgIdx);
     _broadcastScales(); // scale changed -> sync to peers before the final position
     simBodyDragging = false;
-    _activeDragIdx  = -1;
+    _activeDragIdx  = null;
     simCanvas.style.cursor = '';
     dispatchBodyMoved(g);
     window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: g.imgIdx } }));
@@ -2744,7 +2744,7 @@ window.addEventListener('resize', () => {
     window.dispatchEvent(new CustomEvent('collab:body-grabbing', { detail: { imgIdx: g.imgIdx } }));
     if (navigator.vibrate) navigator.vibrate(28);
     const autoScale = computeAutoScales()[g.imgIdx].scale;
-    pinchPreview = { imgIdx: g.imgIdx, scale: state.images[g.imgIdx].scale ?? autoScale };
+    pinchPreview = { imgIdx: g.imgIdx, scale: imgById(g.imgIdx).scale ?? autoScale };
   }
 
   function triggerCornerResize() {
@@ -2762,7 +2762,7 @@ window.addEventListener('resize', () => {
 
   function initGroupPinch(t1, t2) {
     const autoScale = computeAutoScales()[liftedGroup.imgIdx].scale;
-    const scale = state.images[liftedGroup.imgIdx].scale ?? autoScale;
+    const scale = imgById(liftedGroup.imgIdx).scale ?? autoScale;
     grpStart = {
       dist:      twoTouchDist(t1, t2),
       scale,
@@ -2801,7 +2801,7 @@ window.addEventListener('resize', () => {
 
   function commitScale() {
     if (!liftedGroup || !pinchPreview) return;
-    const entry = state.images[liftedGroup.imgIdx];
+    const entry = imgById(liftedGroup.imgIdx);
     entry.scale = pinchPreview.scale;
     _broadcastScales(); // sync the pinched scale to peers
     const ri = state.rankOrder.indexOf(liftedGroup.imgIdx);
@@ -2820,7 +2820,7 @@ window.addEventListener('resize', () => {
       dispatchBodyMoved(liftedGroup);
       window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: liftedGroup.imgIdx } }));
     }
-    _activeDragIdx = -1;
+    _activeDragIdx = null;
     liftedGroup  = null;
     liftedOffset = { x: 0, y: 0 };
     pinchPreview = null;
@@ -3088,7 +3088,7 @@ simCanvas.addEventListener('wheel', (e) => {
     drag.li.classList.remove('dragging');
 
     if (commit) {
-      const newOrder      = Array.from(rankList.children).map(li => parseInt(li.dataset.imgIdx));
+      const newOrder      = Array.from(rankList.children).map(li => li.dataset.imgIdx);
       const curImgIdx     = state.rankOrder[state.paintIdx];
       state.rankOrder     = newOrder;
       state.paintIdx      = newOrder.indexOf(curImgIdx);
@@ -3202,7 +3202,7 @@ async function _applyImportReplace(session, imgs, encodings) {
   // Wipe existing state
   state.images    = [];
   state.rankOrder = [];
-  state.undoStack = [];
+  state.undoStack = new Map();
   yoloPool.embeddingCache.clear();
   yoloPool.dots.clear();
   rankList.innerHTML = '';
@@ -3225,13 +3225,17 @@ async function _applyImportReplace(session, imgs, encodings) {
   state.minScale = session.minScale || 0.5; cfgMinScale.value = state.minScale; cfgMinScaleV.textContent = state.minScale + 'x';
   state.maxScale = session.maxScale || 2.0; cfgMaxScale.value = state.maxScale; cfgMaxScaleV.textContent = state.maxScale + 'x';
 
-  // Load images
-  await _loadSessionImages(session.images, imgs, 0);
+  // Assign each imported image a stable id (use the stored one; generate for old sessions).
+  const ids = (session.images || []).map(si => si.id || newImgId());
 
-  // Restore encodings
-  _restoreEncodings(encodings, 0);
+  // Load images + encodings under those ids.
+  await _loadSessionImages(session.images, imgs, 0, null, ids);
+  _restoreEncodings(encodings, ids.map((id, i) => (imgs[i] ? id : null)));
 
-  state.rankOrder = (session.rankOrder || []).filter(i => state.images[i]);
+  // rankOrder supports old (numeric index) and new (id) formats.
+  const order = (session.rankOrder || ids.map((_, i) => i))
+    .map(r => (typeof r === 'number' ? ids[r] : r));
+  state.rankOrder = order.filter(id => imgById(id));
   state.paintIdx  = Math.min(session.paintIdx || 0, Math.max(0, state.rankOrder.length - 1));
 
   paintArea.classList.remove('im-hidden');
@@ -3241,10 +3245,10 @@ async function _applyImportReplace(session, imgs, encodings) {
   panelSetOpen(true);
   updateStepMeta('step-images', imageCountLabel(state.images.length), true);
 
-  // Build saved positions and init sim
+  // Build saved positions (keyed by id) and init sim.
   const savedPositions = {};
   (session.images || []).forEach((si, i) => {
-    if (si.simPos) savedPositions[i] = { pos: si.simPos, angle: si.simAngle || 0 };
+    if (si.simPos) savedPositions[ids[i]] = { pos: si.simPos, angle: si.simAngle || 0 };
   });
   initSim(savedPositions);
 
@@ -3271,32 +3275,33 @@ async function _applyImportAdd(session, imgs, encodings) {
   const baseIdx = state.images.length;
   let addCount  = 0;
 
-  // Map imported index -> new index (-1 if image failed to load)
+  // Map imported position -> new array index (-1 if image failed to load).
   const remapIdx = (session.images || []).map((_si, i) => imgs[i] ? baseIdx + addCount++ : -1);
+  // Always fresh ids for added images (avoid colliding with an existing session).
+  const ids = (session.images || []).map(() => newImgId());
 
-  await _loadSessionImages(session.images, imgs, baseIdx, remapIdx);
-  _restoreEncodings(encodings, baseIdx, remapIdx);
+  await _loadSessionImages(session.images, imgs, baseIdx, remapIdx, ids);
+  _restoreEncodings(encodings, ids.map((id, i) => (remapIdx[i] >= 0 ? id : null)));
 
-  // Append to rankOrder (in the order they appear in the imported session's rankOrder)
-  const sessionRankOrder = (session.rankOrder || session.images.map((_, i) => i));
-  for (const si of sessionRankOrder) {
-    const ni = remapIdx[si];
-    if (ni >= 0) state.rankOrder.push(ni);
+  // Append to rankOrder in the imported session's order (old=index, new=id).
+  const orderPos = (session.rankOrder || (session.images || []).map((_, i) => i))
+    .map(r => (typeof r === 'number' ? r : (session.images || []).findIndex(si => si.id === r)))
+    .filter(i => i >= 0);
+  for (const i of orderPos) {
+    if (remapIdx[i] >= 0) state.rankOrder.push(ids[i]);
   }
 
   buildRankList();
   updateStepMeta('step-images', imageCountLabel(state.images.length), true);
 
-  // Add groups to running sim at their saved positions
+  // Add groups to the running sim at their saved positions.
   for (let i = 0; i < (session.images || []).length; i++) {
-    const ni = remapIdx[i];
-    if (ni < 0) continue;
+    if (remapIdx[i] < 0) continue;
     const si = session.images[i];
     if (simRafId !== null) {
-      simRefreshGroup(ni);
-      if (si.simPos && simGroups[ni]) {
-        placeGroup(simGroups[ni], si.simPos.x, si.simPos.y, si.simAngle || 0);
-      }
+      simRefreshGroup(ids[i]);
+      const g = simGroups.get(ids[i]);
+      if (si.simPos && g) placeGroup(g, si.simPos.x, si.simPos.y, si.simAngle || 0);
     }
   }
 
@@ -3305,7 +3310,7 @@ async function _applyImportAdd(session, imgs, encodings) {
   }
 }
 
-async function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
+async function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx, ids) {
   const list = sessionImages || [];
   for (let i = 0; i < list.length; i++) {
     const si = list[i];
@@ -3316,8 +3321,10 @@ async function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
     const w = si.w || img.naturalWidth;
     const h = si.h || img.naturalHeight;
     const thumbUrl = buildThumb(img, w, h);
+    const id = ids[i];
 
     state.images[newIdx] = {
+      id,
       file: null, name: si.name, img, thumbUrl, w, h,
       polygons:    si.polygons   || [],
       currentPoly: si.currentPoly || [],
@@ -3325,7 +3332,7 @@ async function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx) {
       scaleFixed:  si.scaleFixed  || false,
       simHidden:   si.simHidden   || false,
     };
-    state.undoStack[newIdx] = [];
+    state.undoStack.set(id, []);
 
     if ((i + 1) % 20 === 0) await new Promise(r => setTimeout(r, 0));
   }
@@ -3342,7 +3349,7 @@ window.addEventListener('collab:remote-session', async (e) => {
 });
 
 window.addEventListener('collab:remote-image', async (e) => {
-  const { name, w, h, jpegBase64, encoding, polygons, simPos, simAngle } = e.detail;
+  const { id, name, w, h, jpegBase64, encoding, polygons, simPos, simAngle } = e.detail;
   const img = new Image();
   await new Promise(res => {
     img.onload = res;
@@ -3350,17 +3357,18 @@ window.addEventListener('collab:remote-image', async (e) => {
   });
   const thumbUrl = buildThumb(img, w, h);
 
-  const idx = state.images.length;
-  state.images.push({ file: null, name, img, thumbUrl, w, h,
+  const newId = id || newImgId();
+  if (imgById(newId)) return; // already have this image (duplicate / echo)
+  state.images.push({ id: newId, file: null, name, img, thumbUrl, w, h,
     polygons: polygons || [], currentPoly: [], scale: null, simHidden: false });
-  state.undoStack.push([]);
-  state.rankOrder.push(idx);
+  state.undoStack.set(newId, []);
+  state.rankOrder.push(newId);
 
-  if (encoding) _restoreEncodings([encoding], idx);
+  if (encoding) _restoreEncodings([encoding], [newId]);
 
   buildRankList();
-  simRefreshGroup(idx);
-  if (simPos && simGroups[idx]) placeGroup(simGroups[idx], simPos.x, simPos.y, simAngle || 0);
+  simRefreshGroup(newId);
+  if (simPos && simGroups.get(newId)) placeGroup(simGroups.get(newId), simPos.x, simPos.y, simAngle || 0);
   const n = state.images.length;
   updateStepMeta('step-images', imageCountLabel(n), true);
   paintArea.classList.remove('im-hidden');
@@ -3378,21 +3386,21 @@ window.addEventListener('collab:remote-positions', (e) => {
     simX1 = rx1; simY1 = ry1; simX2 = rx2; simY2 = ry2;
     _simOutExplicit = true; _simViewDirty = true;
   }
-  for (const [idxStr, { x, y, angle }] of Object.entries(positions)) {
-    const g = simGroups[Number(idxStr)];
+  for (const [id, { x, y, angle }] of Object.entries(positions)) {
+    const g = simGroups.get(id);
     if (g) placeGroup(g, x, y, angle);
   }
 });
 
 window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
-  scales.forEach((scale, i) => {
-    const entry = state.images[i];
-    if (!entry) return;
+  for (const [id, scale] of Object.entries(scales)) {
+    const entry = imgById(id);
+    if (!entry) continue;
     entry.scale      = scale;
     entry.scaleFixed = scale !== null;
-    simRefreshGroup(i);
-    _remoteScalePreview.delete(i); // committed -> drop the live preview
-  });
+    simRefreshGroup(id);
+    _remoteScalePreview.delete(id); // committed -> drop the live preview
+  }
   buildRankList();
 });
 
@@ -3405,8 +3413,8 @@ window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
 function captureSimSnapshot(imgIdxs, withBounds) {
   const groups = [];
   for (const i of imgIdxs) {
-    const g = simGroups[i];
-    if (g) groups.push({ imgIdx: i, x: g.x, y: g.y, angle: g.angle, scale: state.images[i].scale });
+    const g = simGroups.get(i);
+    if (g) groups.push({ imgIdx: i, x: g.x, y: g.y, angle: g.angle, scale: imgById(i).scale });
   }
   const snap = { groups };
   if (withBounds) snap.bounds = { x1: simX1, y1: simY1, x2: simX2, y2: simY2 };
@@ -3432,12 +3440,12 @@ function applySimSnapshot(snap) {
     resizeSim();
   }
   for (const s of (snap.groups || [])) {
-    const entry = state.images[s.imgIdx];
+    const entry = imgById(s.imgIdx);
     if (!entry) continue;
     entry.scale      = s.scale;
     entry.scaleFixed = s.scale !== null;
     simRefreshGroup(s.imgIdx);
-    const g = simGroups[s.imgIdx];
+    const g = simGroups.get(s.imgIdx);
     if (g) { g.x = s.x; g.y = s.y; g.angle = s.angle; }
   }
   _clearMergedImage();
@@ -3447,13 +3455,13 @@ function applySimSnapshot(snap) {
 
 window.captureSimSnapshot = captureSimSnapshot;
 window.applySimSnapshot   = applySimSnapshot;
-window.getScales          = () => state.images.map(im => im.scale);
+window.getScales          = () => Object.fromEntries(state.images.map(im => [im.id, im.scale]));
 // Live remote scale preview for an image (read-only; for diagnostics / tests).
-window.getRemoteScalePreview = (i) => (_remoteScalePreview.has(i) ? _remoteScalePreview.get(i) : null);
+window.getRemoteScalePreview = (id) => (_remoteScalePreview.has(id) ? _remoteScalePreview.get(id) : null);
 
 window.addEventListener('collab:remote-drag', ({ detail: { imgIdx, x, y, angle, scale } }) => {
   if (simRafId === null) return;
-  const g = simGroups[imgIdx];
+  const g = simGroups.get(imgIdx);
   if (g) placeGroup(g, x, y, angle);
   // Live scale preview (render-only; the committed scale arrives via remote-scales).
   if (scale != null) { _remoteScalePreview.set(imgIdx, scale); _simViewDirty = true; }
@@ -3471,7 +3479,7 @@ window.addEventListener('collab:remote-release', ({ detail: { imgIdx } }) => {
 });
 
 window.addEventListener('collab:remote-polygon', ({ detail: { imgIdx, polygons } }) => {
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   if (!entry) return;
   entry.polygons = polygons;
   if (imgIdx === state.rankOrder[state.paintIdx]) redrawPolyOverlay(imgIdx);
@@ -3485,13 +3493,13 @@ window.addEventListener('collab:remote-viewport', ({ detail: { scale, offsetX, o
   viewport.follow(scale, offsetX, offsetY);
 });
 
-function _restoreEncodings(encodings, baseIdx, remapIdx) {
+function _restoreEncodings(encodings, ids) {
   if (!encodings) return;
   encodings.forEach((enc, i) => {
     if (!enc) return;
-    const newIdx = remapIdx ? remapIdx[i] : baseIdx + i;
-    if (newIdx < 0) return;
-    yoloPool.embeddingCache.set(newIdx, {
+    const id = ids[i];
+    if (id == null) return;
+    yoloPool.embeddingCache.set(id, {
       origW: enc.origW, origH: enc.origH,
       segments: enc.segments.map(s => ({
         classId: s.classId, className: s.className, score: s.score,
@@ -3504,10 +3512,10 @@ function _restoreEncodings(encodings, baseIdx, remapIdx) {
 
 window.addEventListener('collab:remote-encoding', (e) => {
   const { imgName, encoding } = e.detail;
-  const idx = state.images.findIndex(im => im.name === imgName);
-  if (idx < 0 || yoloPool.embeddingCache.has(idx)) return;
-  _restoreEncodings([encoding], idx);
-  const dot = yoloPool.dots.get(idx);
+  const entry = state.images.find(im => im.name === imgName);
+  if (!entry || yoloPool.embeddingCache.has(entry.id)) return;
+  _restoreEncodings([encoding], [entry.id]);
+  const dot = yoloPool.dots.get(entry.id);
   if (dot) {
     dot.classList.remove('im-yolo-encoding', 'im-yolo-pending');
     dot.classList.add('im-yolo-encoded');
@@ -3522,7 +3530,7 @@ function _updateFilmstripThumb(imgIdx) {
   if (!li) return;
   const imgEl = li.querySelector('.im-rank-thumb');
   if (!imgEl) return;
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   if (entry?.thumbUrl) {
     imgEl.src = entry.thumbUrl;
     imgEl.classList.remove('im-rank-thumb-pending');
@@ -3533,6 +3541,7 @@ window.addEventListener('collab:remote-session-meta', ({ detail: meta }) => {
   const n = meta.imageCount;
 
   state.images = meta.images.map(si => ({
+    id: si.id || newImgId(),
     file: null, name: si.name, img: null, thumbUrl: null,
     w: si.w, h: si.h,
     polygons:    si.polygons    || [],
@@ -3541,8 +3550,10 @@ window.addEventListener('collab:remote-session-meta', ({ detail: meta }) => {
     scaleFixed:  si.scaleFixed  || false,
     simHidden:   si.simHidden   || false,
   }));
-  state.undoStack = state.images.map(() => []);
-  state.rankOrder = meta.rankOrder || state.images.map((_, i) => i);
+  state.undoStack = new Map(state.images.map(e => [e.id, []]));
+  state.rankOrder = (meta.rankOrder && meta.rankOrder.length)
+    ? meta.rankOrder.slice()
+    : state.images.map(e => e.id);
   state.paintIdx  = Math.min(meta.paintIdx || 0, Math.max(0, state.rankOrder.length - 1));
 
   yoloPool.embeddingCache.clear();
@@ -3556,7 +3567,7 @@ window.addEventListener('collab:remote-session-meta', ({ detail: meta }) => {
 
   const savedPositions = {};
   meta.images.forEach((si, i) => {
-    if (si.simPos) savedPositions[i] = { pos: si.simPos, angle: si.simAngle || 0 };
+    if (si.simPos) savedPositions[state.images[i].id] = { pos: si.simPos, angle: si.simAngle || 0 };
   });
   if (simRafId !== null) teardownSim();
   if (n > 0) initSim(savedPositions);
@@ -3575,7 +3586,7 @@ window.addEventListener('collab:remote-session-meta', ({ detail: meta }) => {
 });
 
 window.addEventListener('collab:remote-image-thumb', ({ detail: { imgIdx, thumb } }) => {
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   if (!entry) return;
   entry.thumbUrl = thumb;
   _updateFilmstripThumb(imgIdx);
@@ -3583,7 +3594,7 @@ window.addEventListener('collab:remote-image-thumb', ({ detail: { imgIdx, thumb 
 
 window.addEventListener('collab:remote-image-full', ({ detail }) => {
   const { imgIdx, name, w, h, jpegBase64, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
-  const entry = state.images[imgIdx];
+  const entry = imgById(imgIdx);
   if (!entry) return;
   const img = new Image();
   img.onload = () => {

@@ -99,10 +99,17 @@ export async function closePanel(page: Page) {
   await expect(page.locator('#panel-wrap')).toHaveClass(/im-panel-hidden/);
 }
 
+// Stable id of the image at the given rank/array position (images are id-addressed).
+export function imgIdAt(page: Page, pos = 0): Promise<string> {
+  return page.evaluate((p) => (window as any).getSessionMeta().images[p].id, pos);
+}
+
 // Client-space coords of a sim group's centre (mirrors collaborate.js physicsToClient).
-export function groupClientPos(page: Page, imgIdx: number): Promise<{ x: number; y: number }> {
-  return page.evaluate((i) => {
-    const pos = (window as any).getSimPositions()[i];
+// `pos` is the image's position (0 = first image); resolved to its id internally.
+export function groupClientPos(page: Page, pos: number): Promise<{ x: number; y: number }> {
+  return page.evaluate((p) => {
+    const id = (window as any).getSessionMeta().images[p].id;
+    const pos = (window as any).getSimPositions()[id];
     const st = (window as any).getSimState();
     const canvas = document.getElementById('sim-canvas') as HTMLCanvasElement;
     const rect = canvas.getBoundingClientRect();
@@ -113,7 +120,7 @@ export function groupClientPos(page: Page, imgIdx: number): Promise<{ x: number;
       x: cx * rect.width / canvas.width + rect.left,
       y: cy * rect.height / canvas.height + rect.top,
     };
-  }, imgIdx);
+  }, pos);
 }
 
 export async function openPaintStep(page: Page) {
@@ -137,8 +144,13 @@ export function polyCount(page: Page, imgIdx: number): Promise<number> {
   }, imgIdx);
 }
 
-export function simPos(page: Page, imgIdx: number): Promise<{ x: number; y: number; angle: number } | null> {
-  return page.evaluate((i) => (window as any).getSimPositions?.()[i] ?? null, imgIdx);
+export function simPos(page: Page, pos: number): Promise<{ x: number; y: number; angle: number } | null> {
+  return page.evaluate((p) => {
+    const meta = (window as any).getSessionMeta?.();
+    const id = meta?.images?.[p]?.id;
+    if (id == null) return null;
+    return (window as any).getSimPositions?.()[id] ?? null;
+  }, pos);
 }
 
 export function imageScale(page: Page, imgIdx: number): Promise<number | null> {

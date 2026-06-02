@@ -17,12 +17,12 @@
 import type { Page } from '@playwright/test';
 import {
   test, expect, addImage, paintPolygon, closePanel,
-  simPos, groupClientPos, collabOut, emitRemote,
+  simPos, groupClientPos, collabOut, emitRemote, imgIdAt,
 } from './fixtures';
 
 const IDX = 0;
 
-function undoState(page: Page): Promise<{ undo: number; redo: number; preLift: number }> {
+function undoState(page: Page): Promise<{ undo: number; redo: number }> {
   return page.evaluate(() => (window as any).getUndoState());
 }
 
@@ -85,7 +85,7 @@ test('remote update for the actively-dragged image is ignored (self-guard)', asy
   const mid = await simPos(page, IDX);
 
   // A peer's (or a late buffered) update for the SAME image lands mid-drag.
-  const far = { imgIdx: IDX, x: before!.x + 5000, y: before!.y + 5000, angle: 1 };
+  const far = { imgIdx: await imgIdAt(page, IDX), x: before!.x + 5000, y: before!.y + 5000, angle: 1 };
   await emitRemote(page, 'collab:remote-drag', far);
   const after = await simPos(page, IDX);
   await page.mouse.up();
@@ -113,7 +113,7 @@ test('a remote echo after release moves the image but adds no undo entry', async
   // A buffered drag message arrives AFTER the drop (the channel was saturated
   // during the drag) and replays.
   await emitRemote(page, 'collab:remote-drag', {
-    imgIdx: IDX, x: posAfterDrop!.x + 300, y: posAfterDrop!.y + 300, angle: 0,
+    imgIdx: await imgIdAt(page, IDX), x: posAfterDrop!.x + 300, y: posAfterDrop!.y + 300, angle: 0,
   });
 
   const posAfterEcho = await simPos(page, IDX);

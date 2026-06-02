@@ -553,10 +553,11 @@ async function sendSessionTo(conn) {
     // Phase 1: instant skeleton — synchronous, no pixel reads
     conn.send(JSON.stringify({ type: 'session-meta', ...meta }));
 
-    // Phase 2: thumbnails — precomputed small JPEGs, sent synchronously
+    // Phase 2: thumbnails — precomputed small JPEGs, sent synchronously (keyed by id)
     for (let i = 0; i < meta.imageCount; i++) {
-      const thumb = window.getImageThumb?.(i);
-      if (thumb) conn.send(JSON.stringify({ type: 'image-thumb', imgIdx: i, thumb }));
+      const id = meta.images[i].id;
+      const thumb = window.getImageThumb?.(id);
+      if (thumb) conn.send(JSON.stringify({ type: 'image-thumb', imgIdx: id, thumb }));
     }
     conn.send(JSON.stringify({ type: 'session-thumbs-done', total: meta.imageCount }));
 
@@ -566,12 +567,13 @@ async function sendSessionTo(conn) {
     showSendProgress('Sending 1/' + meta.imageCount + '...', 0);
     for (let i = 0; i < meta.imageCount; i++) {
       showSendProgress('Sending ' + (i + 1) + '/' + meta.imageCount + '...', i / meta.imageCount * 100);
-      const packet = await window.getImageBuffer?.(i); // async JPEG encode, non-blocking
+      const id = meta.images[i].id;
+      const packet = await window.getImageBuffer?.(id); // async JPEG encode, non-blocking
       await _waitDrain(conn);
       if (packet) {
         const { buffer, ...imgMeta } = packet;
         try {
-          conn.send(JSON.stringify({ type: 'image-full-binary', imgIdx: i, ...imgMeta }));
+          conn.send(JSON.stringify({ type: 'image-full-binary', imgIdx: id, ...imgMeta }));
           await new Promise(r => setTimeout(r, 0)); // yield before blocking chunk loop
           conn.send(buffer);
         } catch (e) { console.warn('[collab] image-full send failed for index', i, e); }
@@ -762,9 +764,9 @@ window.addEventListener('collab:rank-order-changed', ({ detail: { order } }) => 
   broadcast({ type: 'rank-order', order });
 });
 
-window.addEventListener('collab:images-added', async ({ detail: { indices } }) => {
+window.addEventListener('collab:images-added', async ({ detail: { ids } }) => {
   if (!localPeerId) return;
-  const packets = await Promise.all(indices.map(idx => window.getImagePacket(idx)));
+  const packets = await Promise.all(ids.map(id => window.getImagePacket(id)));
   for (const packet of packets) {
     if (packet) broadcast({ type: 'image', ...packet });
   }

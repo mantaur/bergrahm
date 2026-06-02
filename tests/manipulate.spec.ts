@@ -3,7 +3,7 @@
 
 import {
   test, expect, addImage, paintPolygon, closePanel,
-  simPos, imageScale, groupClientPos, collabOut, emitRemote,
+  simPos, imageScale, groupClientPos, collabOut, emitRemote, imgIdAt,
 } from './fixtures';
 
 const IDX = 0;
@@ -130,7 +130,8 @@ test('Ctrl+drag broadcasts the committed scale to peers', async ({ page }) => {
   // so peers kept the old/auto scale).
   const events = await collabOut(page, 'collab:scales-changed');
   expect(events.length).toBeGreaterThanOrEqual(1);
-  expect(events[events.length - 1].detail.scales[IDX]).toBeCloseTo(scale as number, 2);
+  const id = await imgIdAt(page, IDX);
+  expect(events[events.length - 1].detail.scales[id]).toBeCloseTo(scale as number, 2);
 });
 
 test('Ctrl+drag streams the live scale, and an inbound remote scale previews', async ({ page }) => {
@@ -150,13 +151,14 @@ test('Ctrl+drag streams the live scale, and an inbound remote scale previews', a
   await page.keyboard.up('Control');
 
   // Inbound: a remote drag carrying scale sets a live (render-only) preview.
+  const id = await imgIdAt(page, IDX);
   const p = await simPos(page, IDX);
-  await emitRemote(page, 'collab:remote-drag', { imgIdx: IDX, x: p!.x, y: p!.y, angle: 0, scale: 2.5 });
-  expect(await page.evaluate(() => (window as any).getRemoteScalePreview(0))).toBeCloseTo(2.5, 2);
+  await emitRemote(page, 'collab:remote-drag', { imgIdx: id, x: p!.x, y: p!.y, angle: 0, scale: 2.5 });
+  expect(await page.evaluate((i) => (window as any).getRemoteScalePreview(i), id)).toBeCloseTo(2.5, 2);
 
   // The committed scale (remote-scales) clears the preview.
-  await emitRemote(page, 'collab:remote-scales', { scales: [2.5] });
-  expect(await page.evaluate(() => (window as any).getRemoteScalePreview(0))).toBeNull();
+  await emitRemote(page, 'collab:remote-scales', { scales: { [id]: 2.5 } });
+  expect(await page.evaluate((i) => (window as any).getRemoteScalePreview(i), id)).toBeNull();
 });
 
 test('undoing a resize leaves a moved mask in place; move-undo still works after', async ({ page }) => {
