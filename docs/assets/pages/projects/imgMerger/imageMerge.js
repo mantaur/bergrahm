@@ -26,11 +26,9 @@ const state = {
 
 };
 
-// Image identity: images are addressed by a stable `id` (assigned at creation,
-// shared verbatim across peers), NOT by array position. The name `imgIdx` used
-// throughout this file now carries that id, not an index — so removing or
-// reordering images never invalidates a held reference. simGroups, undo entries,
-// the SAM cache, and in-flight collab messages are all keyed by id.
+// Images are addressed by a stable `id` (assigned at creation, shared across
+// peers), not by array position -- so `imgIdx` here holds an id, and removing or
+// reordering never invalidates a held reference.
 let _imgIdSeq = 0;
 function newImgId() {
   return (window.crypto && crypto.randomUUID)
@@ -3401,6 +3399,7 @@ window.addEventListener('collab:remote-positions', (e) => {
     const g = simGroups.get(id);
     if (g) placeGroup(g, x, y, angle);
   }
+  if (mergeCanvas) _clearMergedImage(); // a peer moved a mask -> drop the stale merged preview
 });
 
 window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
@@ -3416,11 +3415,9 @@ window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
 });
 
 // ── Sim undo snapshots ──────────────────────────────────────────────────────────
-// One scoped snapshot type captures exactly what an action changed: the affected
-// images' full transforms (x/y/angle/scale, keyed by imgIdx) plus, for a resize,
-// the artboard bounds. Scoping keeps undo in a collab session local to the object(s)
-// you touched (a move-undo won't disturb a peer's separate mask). The undo/redo
-// stacks live in collaborate.js; here we only build (capture) and restore (apply).
+// A snapshot is scoped to what an action changed: the affected images' transforms
+// plus, for a resize, the artboard bounds -- so undo in a collab session reverts
+// only the object(s) you touched. The stacks live in collaborate.js.
 function captureSimSnapshot(imgIdxs, withBounds) {
   const groups = [];
   for (const i of imgIdxs) {
@@ -3436,8 +3433,8 @@ function recordSimUndo(snap) {
   window.dispatchEvent(new CustomEvent('collab:undo-record', { detail: snap }));
 }
 
-// Restore a snapshot. Bounds (resize) restore the artboard and let auto-scale groups
-// re-derive (positions preserved); listed groups restore x/y/angle/scale exactly.
+// Bounds restore the artboard (auto-scale re-derives, positions preserved);
+// listed groups restore their transform exactly.
 function applySimSnapshot(snap) {
   if (simRafId === null) return;
   if (snap.bounds) {
@@ -3474,12 +3471,13 @@ window.addEventListener('collab:remote-drag', ({ detail: { imgIdx, x, y, angle, 
   if (simRafId === null) return;
   const g = simGroups.get(imgIdx);
   if (g) placeGroup(g, x, y, angle);
-  // Live scale preview (render-only; the committed scale arrives via remote-scales).
   if (scale != null) { _remoteScalePreview.set(imgIdx, scale); _simViewDirty = true; }
+  if (mergeCanvas) _clearMergedImage();
 });
 
 window.addEventListener('collab:remote-grab', ({ detail: { imgIdx, color } }) => {
   _remoteGrabs.set(imgIdx, { color });
+  if (mergeCanvas) _clearMergedImage(); // peer started manipulating -> show live masks
   _simViewDirty = true;
 });
 

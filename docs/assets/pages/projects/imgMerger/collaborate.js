@@ -898,13 +898,8 @@ window.addEventListener('collab:viewport-changed', ({ detail }) => {
 });
 
 // ── Sim undo ──────────────────────────────────────────────────────────────────
-// One unified, scoped entry type built by imageMerge.js:
-//   { bounds?: {x1,y1,x2,y2},  groups: [ {imgIdx, x, y, angle, scale} ] }
-// move/rotate/scale -> the dragged image (incl. scale); reset -> all groups;
-// resize -> bounds only (auto-scale re-derives from bounds on every peer). Scoping
-// means undo in a collab session reverts only the object(s) you touched, not a
-// peer's concurrent edit. imageMerge fires collab:undo-record on commit and exposes
-// applySimSnapshot()/captureSimSnapshot(); the stacks live here.
+// imageMerge.js fires collab:undo-record with a scoped snapshot on commit and
+// exposes capture/applySimSnapshot(); the undo/redo stacks live here.
 
 const _fmtCount = (n) => (n > 999 ? '999+' : String(n));
 function updateUndoBtn() {

@@ -39,9 +39,8 @@ const viewport = (function () {
 
   function getState() { return { scale, offsetX: offset.x, offsetY: offset.y }; }
 
-  // Share the world point at the CENTRE of the view (+ scale), not the top-left
-  // offset, so followers with a different screen size/aspect pin the same focal
-  // point rather than the same corner.
+  // Share the world point at the view's CENTRE (+ scale), not the top-left offset,
+  // so followers with a different screen size pin the same focal point, not corner.
   function emit() {
     if (!_present) return;
     const ts = dispScale * scale;
@@ -151,9 +150,7 @@ const viewport = (function () {
     };
   }
 
-  // Track a remote presenter by the world point at the centre of their view, so a
-  // follower centres the same focal point regardless of its own canvas size.
-  // Subsequent calls just update the target.
+  // Track a presenter by their view centre, converting it to this canvas's offset.
   function follow(s, centerX, centerY) {
     const cs = clamp(s);
     const ts = dispScale * cs;

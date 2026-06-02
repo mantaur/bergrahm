@@ -895,8 +895,8 @@ function chamferDist(mask, W, H) {
 
   <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=4"></script>
-  <script src="viewport.js?v=2"></script>
-  <script src="imageMerge.js?v=29"></script>
+  <script src="viewport.js?v=3"></script>
+  <script src="imageMerge.js?v=30"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -1090,12 +1090,9 @@ function chamferDist(mask, W, H) {
     };
 
     window.applyRemoteSettings = function(s) {
-      // Apply a peer's settings DIRECTLY (no synthetic input/change events). Faking
-      // user keystrokes used to re-enter the width/height/blend handlers, which armed
-      // a debounced resize that pushed a phantom undo entry AND re-broadcast the same
-      // settings -> a self-sustaining echo between peers. Setting values directly and
-      // running only resizeSim() (which has no undo/broadcast side effects), and only
-      // when something actually changed, kills the loop.
+      // Apply directly (no synthetic input events): faking keystrokes re-entered the
+      // width/height/blend handlers, which armed a debounced resize that pushed a
+      // phantom undo entry and re-broadcast the settings -> a peer-to-peer echo loop.
       window._collabApplyingRemote = true;
 
       var prevW = state.outW, prevH = state.outH;
@@ -1141,7 +1138,7 @@ function chamferDist(mask, W, H) {
       buildRankList();
     };
   </script>
-  <script type="module" src="collaborate.js?v=15"></script>
+  <script type="module" src="collaborate.js?v=16"></script>
 </body>
 
 </html>
