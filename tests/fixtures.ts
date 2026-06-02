@@ -27,7 +27,7 @@ const COLLAB_OUT_TYPES = [
   'collab:body-moved', 'collab:body-releasing', 'collab:body-lift',
   'collab:body-dragging',
   'collab:scales-changed', 'collab:canvas-resized', 'collab:encoding-ready',
-  'collab:viewport-changed',
+  'collab:viewport-changed', 'collab:session-loaded',
 ];
 
 function jsFile(file: string) {

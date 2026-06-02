@@ -361,7 +361,7 @@ function handleMsg(msg, fromPeerId) {
 
     case 'viewport':
       window.dispatchEvent(new CustomEvent('collab:remote-viewport', {
-        detail: { scale: msg.scale, offsetX: msg.offsetX, offsetY: msg.offsetY },
+        detail: { scale: msg.scale, centerX: msg.centerX, centerY: msg.centerY },
       }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
@@ -653,8 +653,9 @@ function joinAsGuest(roomCode, retries = 0) {
     hostConn.on('open', () => {
       setStatus('Connected', true);
       updatePeerCount();
-      const cs = window.getCollabState ? window.getCollabState() : null;
-      if (!cs || cs.imageCount === 0) showGuestPrompt('Waiting for session from host...');
+      // No blocking "waiting for session" overlay: the host pushes its session
+      // automatically (on connect and on any later import), and the guest can
+      // always import a session file manually from the normal session UI.
     });
 
     setupConn(hostConn, false);
@@ -772,6 +773,13 @@ window.addEventListener('collab:images-added', async ({ detail: { ids } }) => {
   }
 });
 
+// A local session import: the host re-streams the whole session to every guest
+// (so they refresh as if newly joined); on a guest it just dismisses any prompt.
+window.addEventListener('collab:session-loaded', () => {
+  hideGuestPrompt();
+  if (isHost) for (const conn of guestConns.values()) { if (conn.open) sendSessionTo(conn); }
+});
+
 window.addEventListener('collab:image-removed', ({ detail: { imgIdx } }) => {
   if (!localPeerId) return;
   broadcast({ type: 'image-removed', imgIdx });
@@ -820,7 +828,7 @@ window.addEventListener('collab:polygon-changed', ({ detail: { imgIdx, polygons 
 const VP_THROTTLE_MS = 50;
 let _vpLastSent = 0, _vpTrailing = null, _vpTimer = null;
 function _sendViewport(d) {
-  broadcast({ type: 'viewport', scale: d.scale, offsetX: d.offsetX, offsetY: d.offsetY });
+  broadcast({ type: 'viewport', scale: d.scale, centerX: d.centerX, centerY: d.centerY });
 }
 window.addEventListener('collab:viewport-changed', ({ detail }) => {
   if (!localPeerId) return;

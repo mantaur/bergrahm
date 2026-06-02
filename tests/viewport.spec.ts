@@ -69,8 +69,11 @@ test.describe('Presenter / follow', () => {
     const ev = await collabOut(page, 'collab:viewport-changed');
     expect(ev.length).toBeGreaterThanOrEqual(2); // snap on enable + the centerOn
     expect(ev.at(-1).detail).toEqual(expect.objectContaining({
-      scale: expect.any(Number), offsetX: expect.any(Number), offsetY: expect.any(Number),
+      scale: expect.any(Number), centerX: expect.any(Number), centerY: expect.any(Number),
     }));
+    // Centre semantics: the shared point is the centreOn target, not a corner.
+    expect(ev.at(-1).detail.centerX).toBeCloseTo(5000, 0);
+    expect(ev.at(-1).detail.centerY).toBeCloseTo(5000, 0);
   });
 
   test('not presenting emits nothing', async ({ page }) => {
@@ -79,28 +82,23 @@ test.describe('Presenter / follow', () => {
   });
 
   test('a remote viewport is smoothly followed to its target', async ({ page }) => {
-    const target = await page.evaluate(() => {
+    // Presenter shares a centre point; the follower converts it to its own offset.
+    const expectedOffset = await page.evaluate(() => {
       const st = (window as any).getSimState();
       const cv = document.getElementById('sim-canvas') as HTMLCanvasElement;
       const ts = st.dispScale * 1;
-      return { scale: 1, offsetX: 8000 - cv.width / 2 / ts, offsetY: 2000 - cv.height / 2 / ts };
+      return { x: 8000 - cv.width / 2 / ts, y: 2000 - cv.height / 2 / ts };
     });
-    await emitRemote(page, 'collab:remote-viewport', target);
+    await emitRemote(page, 'collab:remote-viewport', { scale: 1, centerX: 8000, centerY: 2000 });
 
     await expect.poll(async () => {
       const st = await page.evaluate(() => (window as any).getSimState());
-      return Math.hypot(st.viewOffset.x - target.offsetX, st.viewOffset.y - target.offsetY);
+      return Math.hypot(st.viewOffset.x - expectedOffset.x, st.viewOffset.y - expectedOffset.y);
     }, { timeout: 5000 }).toBeLessThan(2);
   });
 
   test('manual interaction breaks the follow', async ({ page }) => {
-    const target = await page.evaluate(() => {
-      const st = (window as any).getSimState();
-      const cv = document.getElementById('sim-canvas') as HTMLCanvasElement;
-      const ts = st.dispScale * 1;
-      return { scale: 1, offsetX: 8000 - cv.width / 2 / ts, offsetY: 2000 - cv.height / 2 / ts };
-    });
-    await emitRemote(page, 'collab:remote-viewport', target);
+    await emitRemote(page, 'collab:remote-viewport', { scale: 1, centerX: 8000, centerY: 2000 });
     expect(await page.evaluate(() => (window as any).imViewport.following)).toBe(true);
 
     // A manual wheel pan routes through viewport._apply, which cancels the follow.

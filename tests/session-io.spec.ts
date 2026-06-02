@@ -1,7 +1,7 @@
 // Session export + import. Consumes tests/fixtures/session.zip (2 imgs, img0 has
 // 1 polygon) produced by session.setup.ts.
 
-import { test, expect, addImage, paintPolygon, imageCount, polyCount, FIXTURE_IMG } from './fixtures';
+import { test, expect, addImage, paintPolygon, imageCount, polyCount, collabOut, FIXTURE_IMG } from './fixtures';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -34,6 +34,10 @@ test.describe('Session import', () => {
     await expect(page.locator('#step-paint')).not.toHaveClass(/im-step-locked/);
     await expect(page.locator('#rank-list > li')).toHaveCount(2);
     expect(await polyCount(page, 0)).toBe(1); // restored mask
+
+    // A local import fires collab:session-loaded so a host re-streams to guests
+    // (and any guest prompt is dismissed). See collaborate.js.
+    expect((await collabOut(page, 'collab:session-loaded')).length).toBeGreaterThanOrEqual(1);
   });
 
   test('shows confirm dialog when a session is already active', async ({ page }) => {

@@ -39,8 +39,19 @@ const viewport = (function () {
 
   function getState() { return { scale, offsetX: offset.x, offsetY: offset.y }; }
 
+  // Share the world point at the CENTRE of the view (+ scale), not the top-left
+  // offset, so followers with a different screen size/aspect pin the same focal
+  // point rather than the same corner.
   function emit() {
-    if (_present) window.dispatchEvent(new CustomEvent('collab:viewport-changed', { detail: getState() }));
+    if (!_present) return;
+    const ts = dispScale * scale;
+    window.dispatchEvent(new CustomEvent('collab:viewport-changed', {
+      detail: {
+        scale,
+        centerX: offset.x + canvas.width  / 2 / ts,
+        centerY: offset.y + canvas.height / 2 / ts,
+      },
+    }));
   }
 
   // Low-level write: clamp + store + mark dirty. No emit/cancel.
@@ -140,9 +151,17 @@ const viewport = (function () {
     };
   }
 
-  // Track a remote presenter; subsequent calls just update the target.
-  function follow(s, ox, oy) {
-    const target = { scale: clamp(s), ox, oy };
+  // Track a remote presenter by the world point at the centre of their view, so a
+  // follower centres the same focal point regardless of its own canvas size.
+  // Subsequent calls just update the target.
+  function follow(s, centerX, centerY) {
+    const cs = clamp(s);
+    const ts = dispScale * cs;
+    const target = {
+      scale: cs,
+      ox: centerX - canvas.width  / 2 / ts,
+      oy: centerY - canvas.height / 2 / ts,
+    };
     if (_anim && _anim.mode === 'follow') _anim.target = target;
     else _anim = { mode: 'follow', target };
     _following = true;

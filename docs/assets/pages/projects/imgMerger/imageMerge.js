@@ -3179,6 +3179,7 @@ async function _doImportReplace(file) {
   try {
     const { session, imgs, encodings } = await SessionIO.import(file, (pct, text) => _sessionStatus(text));
     await _applyImportReplace(session, imgs, encodings);
+    window.dispatchEvent(new CustomEvent('collab:session-loaded'));
     _sessionStatus('');
   } catch (e) {
     _sessionStatus('Import failed: ' + e.message);
@@ -3190,6 +3191,7 @@ async function _doImportAdd(file) {
   try {
     const { session, imgs, encodings } = await SessionIO.import(file, (pct, text) => _sessionStatus(text));
     await _applyImportAdd(session, imgs, encodings);
+    window.dispatchEvent(new CustomEvent('collab:session-loaded'));
     _sessionStatus('');
   } catch (e) {
     _sessionStatus('Import failed: ' + e.message);
@@ -3488,9 +3490,9 @@ window.addEventListener('collab:remote-polygon', ({ detail: { imgIdx, polygons }
 
 // A presenter's viewport — smoothly track it until the user interacts (any manual
 // pan/zoom routes through viewport._apply, which cancels the follow).
-window.addEventListener('collab:remote-viewport', ({ detail: { scale, offsetX, offsetY } }) => {
+window.addEventListener('collab:remote-viewport', ({ detail: { scale, centerX, centerY } }) => {
   if (simRafId === null) return;
-  viewport.follow(scale, offsetX, offsetY);
+  viewport.follow(scale, centerX, centerY);
 });
 
 function _restoreEncodings(encodings, ids) {
