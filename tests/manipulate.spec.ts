@@ -219,28 +219,24 @@ test('undo/redo count badges track stack depth', async ({ page }) => {
   await expect(redoBadge).toHaveText('0');
 });
 
-test('re-center affordances appear only when the output is off-screen', async ({ page }) => {
+test('re-center pointer appears only when the output is off-screen', async ({ page }) => {
   await setup(page);
-  const hudBtn = page.locator('#btn-sim-center');
-  const rim    = page.locator('#sim-recenter-rim');
+  const rim = page.locator('#sim-recenter-rim');
 
-  // Output fits the view on load -> both affordances hidden.
-  await expect(hudBtn).toBeHidden();
-  await expect(rim).toBeHidden();
+  // Output fits the view on load -> pointer hidden (faded out).
+  await expect(rim).not.toHaveClass(/im-shown/);
 
-  // Scroll well past the artboard -> both appear.
+  // Scroll well past the artboard -> pointer fades in.
   await page.evaluate(() => {
     const b = (window as any).getSimBounds();
     (window as any).imViewport._set(4, b.simX2 + 60000, b.simY2 + 60000);
   });
-  await expect(hudBtn).toBeVisible();
-  await expect(rim).toBeVisible();
+  await expect(rim).toHaveClass(/im-shown/);
 
-  // Re-centering frames the artboard again, so both hide and the artboard centre
-  // returns to the canvas centre.
-  await hudBtn.click();
-  await expect(hudBtn).toBeHidden();
-  await expect(rim).toBeHidden();
+  // Re-centering frames the artboard again, so the pointer hides and the artboard
+  // centre returns to the canvas centre.
+  await rim.click();
+  await expect(rim).not.toHaveClass(/im-shown/);
   await expect.poll(() => page.evaluate(() => {
     const v = (window as any).imViewport, b = (window as any).getSimBounds();
     const cx = (b.simX1 + b.simX2) / 2, cy = (b.simY1 + b.simY2) / 2;

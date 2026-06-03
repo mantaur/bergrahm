@@ -2503,13 +2503,14 @@ if (btnAdvToggle && advPanel) {
   });
 }
 
-// Re-center affordances: a HUD button and a rim pointer, shown only while the
-// output artboard is off-screen (easy to lose on the big canvas).
-const btnSimCenter   = document.getElementById('btn-sim-center');
+// A rim pointer (fades in/out) aimed at the output artboard, shown only while it
+// is off-screen -- easy to lose on the big canvas.
 const simRecenterRim = document.getElementById('sim-recenter-rim');
-function _recenter() { if (simRafId !== null) viewport.centerOnArtboard({ animate: true }); }
-if (btnSimCenter)   btnSimCenter.addEventListener('click', _recenter);
-if (simRecenterRim) simRecenterRim.addEventListener('click', _recenter);
+if (simRecenterRim) {
+  simRecenterRim.addEventListener('click', () => {
+    if (simRafId !== null) viewport.centerOnArtboard({ animate: true });
+  });
+}
 
 function _artboardInView() {
   const ts = viewport.totalScale;
@@ -2520,24 +2521,27 @@ function _artboardInView() {
 
 let _recenterShown = false;
 function _updateRecenterUI() {
+  if (!simRecenterRim) return;
   const show = simRafId !== null && !_artboardInView();
   if (show !== _recenterShown) {
     _recenterShown = show;
-    if (btnSimCenter)   btnSimCenter.classList.toggle('im-hidden', !show);
-    if (simRecenterRim) simRecenterRim.classList.toggle('im-hidden', !show);
+    simRecenterRim.classList.toggle('im-shown', show);
   }
-  if (!show || !simRecenterRim) return;
-  // Aim the rim pointer from the viewport centre toward the artboard centre,
-  // clamped to the viewport edge (FPV damage-direction style).
+  if (!show) return;
+  // Aim from the viewport centre toward the artboard centre (FPV damage-direction
+  // style), clamped to an inset box that clears the app bar (top) and HUD (bottom).
   const rect = simCanvas.getBoundingClientRect();
-  const cx = rect.width / 2, cy = rect.height / 2;
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
   const ac = viewport.physicsToClient((simX1 + simX2) / 2, (simY1 + simY2) / 2);
-  const ang = Math.atan2((ac.y - rect.top) - cy, (ac.x - rect.left) - cx);
-  const pad = 26;
-  const t = Math.min((cx - pad) / (Math.abs(Math.cos(ang)) || 1e-6),
-                     (cy - pad) / (Math.abs(Math.sin(ang)) || 1e-6));
-  const ex = rect.left + cx + Math.cos(ang) * t;
-  const ey = rect.top  + cy + Math.sin(ang) * t;
+  const ang = Math.atan2(ac.y - cy, ac.x - cx);
+  const dx = Math.cos(ang), dy = Math.sin(ang);
+  const L = rect.left + 28, R = rect.right - 28, T = rect.top + 64, B = rect.bottom - 84;
+  let t = Infinity;
+  if (dx >  1e-6) t = Math.min(t, (R - cx) / dx);
+  else if (dx < -1e-6) t = Math.min(t, (L - cx) / dx);
+  if (dy >  1e-6) t = Math.min(t, (B - cy) / dy);
+  else if (dy < -1e-6) t = Math.min(t, (T - cy) / dy);
+  const ex = cx + dx * t, ey = cy + dy * t;
   simRecenterRim.style.transform = `translate(${ex}px, ${ey}px) translate(-50%, -50%) rotate(${ang}rad)`;
 }
 
