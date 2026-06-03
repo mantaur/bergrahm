@@ -5,6 +5,13 @@ import {
   polyCount, collabOut, imgIdAt, FIXTURE_IMG, FIXTURE_IMG2,
 } from './fixtures';
 
+test('the made-by credit replaces the app bar and links to the homepage', async ({ page }) => {
+  await expect(page.locator('.im-appbar')).toHaveCount(0); // top bar removed
+  const link = page.locator('.im-made-by a');
+  await expect(link).toHaveText('Bergrahm');
+  await expect(link).toHaveAttribute('href', /index\.html$/);
+});
+
 test.describe('Add image', () => {
   test('reveals paint area, unlocks paint step, updates meta', async ({ page }) => {
     await addImage(page);

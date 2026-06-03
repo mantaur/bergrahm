@@ -1,6 +1,6 @@
 // Merge -> preview -> download. Merge runs an inline Worker + OffscreenCanvas.
 
-import { test, expect, addImage, paintPolygon, closePanel, emitRemote, imgIdAt, simPos } from './fixtures';
+import { test, expect, addImage, paintPolygon, closePanel, emitRemote, imgIdAt, simPos, groupClientPos } from './fixtures';
 
 test('merge button appears after a mask is painted', async ({ page }) => {
   await addImage(page);
@@ -28,7 +28,7 @@ test('merge produces a downloadable result', async ({ page }) => {
   expect((await dl).suggestedFilename()).toBe('merged.png');
 });
 
-test('a remote move drops the merged preview so live masks show again', async ({ page }) => {
+test('a peer move keeps the merged preview; a local grab clears it', async ({ page }) => {
   await addImage(page);
   await paintPolygon(page);
   await closePanel(page);
@@ -37,12 +37,22 @@ test('a remote move drops the merged preview so live masks show again', async ({
   await expect(page.locator('#btn-download')).toBeVisible({ timeout: 30000 });
   await expect(page.locator('#btn-merge')).toBeHidden(); // merged preview is up
 
-  // A peer grabs/moves a mask: the preview hides every mask, so it must clear and
-  // return to the live view (merge button reappears, download hidden).
+  // A peer moves a mask: the preview is KEPT (the moving mask is drawn over it),
+  // not dropped.
   const id = await imgIdAt(page, 0);
   const p = await simPos(page, 0);
-  await emitRemote(page, 'collab:remote-drag', { imgIdx: id, x: p!.x + 200, y: p!.y + 150, angle: 0 });
+  await emitRemote(page, 'collab:remote-grab', { imgIdx: id, color: '#fff' });
+  await emitRemote(page, 'collab:remote-drag', { imgIdx: id, x: p!.x + 60, y: p!.y + 40, angle: 0 });
+  await page.waitForTimeout(150);
+  await expect(page.locator('#btn-merge')).toBeHidden();
+  await expect(page.locator('#btn-download')).toBeVisible();
+  await emitRemote(page, 'collab:remote-release', { imgIdx: id });
 
+  // The local user grabbing a mask DOES clear the preview.
+  const c = await groupClientPos(page, 0);
+  await page.mouse.move(c.x, c.y);
+  await page.mouse.down();
+  await page.mouse.up();
   await expect(page.locator('#btn-merge')).toBeVisible();
   await expect(page.locator('#btn-download')).toBeHidden();
 });

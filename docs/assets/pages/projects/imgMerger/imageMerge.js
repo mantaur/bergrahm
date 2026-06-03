@@ -1834,6 +1834,7 @@ function simTick(ts) {
         simCtx.scale(viewport.totalScale, viewport.totalScale);
         simCtx.translate(-viewport.offsetX, -viewport.offsetY);
         simCtx.drawImage(mergeCanvas, mergeX1, mergeY1, state.outW, state.outH);
+        _drawRemoteGrabs(simCtx, viewport.totalScale); // peers' moving masks, over the preview
         simCtx.restore();
       }
       drawMergedMaskOverlay();
@@ -1962,20 +1963,45 @@ function drawSim() {
     ctx.globalAlpha = 1;
   }
 
-  // Draw dashed colored border around bodies grabbed by remote peers
+  // When a merged preview is up the grabbed bodies are drawn over it instead
+  // (simTick), so they stay visible; otherwise draw them here.
+  if (!mergeCanvas) _drawRemoteGrabs(ctx, totalScale);
+
+  ctx.restore();
+}
+
+// Masks peers are currently moving: the mask outline plus a dashed border in the
+// peer's colour. Drawn in drawSim, or over the merged preview so a peer's edits
+// stay visible without dropping the local user's preview.
+function _drawRemoteGrabs(ctx, totalScale) {
   for (const [imgIdx, { color }] of _remoteGrabs) {
     const g = simGroups.get(imgIdx);
     if (!g || !g.inWorld) continue;
-    const bx  = g.x, by = g.y;
-    const ang = g.angle;
-    const cos = Math.cos(ang), sin = Math.sin(ang);
     const entry = imgById(imgIdx);
+    if (!entry) continue;
+    const bx = g.x, by = g.y, ang = g.angle;
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    const sf = _remoteScalePreview.has(imgIdx) ? _remoteScalePreview.get(imgIdx) / g.scale : 1;
+
+    for (const poly of g.polysInSim) {
+      ctx.beginPath();
+      for (let i = 0; i < poly.length; i++) {
+        const lx = (poly[i].x - g.imgCentroidSim.x) * sf;
+        const ly = (poly[i].y - g.imgCentroidSim.y) * sf;
+        const rx = bx + lx * cos - ly * sin, ry = by + lx * sin + ly * cos;
+        if (i === 0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
+      }
+      ctx.closePath();
+      ctx.globalAlpha = 0.5; ctx.fillStyle   = g.color; ctx.fill();
+      ctx.globalAlpha = 1;   ctx.strokeStyle = g.color; ctx.lineWidth = 1.5 / totalScale; ctx.stroke();
+    }
+
     const corners = [
       { x: 0, y: 0 }, { x: entry.w, y: 0 },
       { x: entry.w, y: entry.h }, { x: 0, y: entry.h },
     ].map(c => {
-      const lx = c.x * g.scale - g.imgCentroidSim.x;
-      const ly = c.y * g.scale - g.imgCentroidSim.y;
+      const lx = (c.x * g.scale - g.imgCentroidSim.x) * sf;
+      const ly = (c.y * g.scale - g.imgCentroidSim.y) * sf;
       return { x: bx + lx * cos - ly * sin, y: by + lx * sin + ly * cos };
     });
     ctx.beginPath();
@@ -1990,8 +2016,6 @@ function drawSim() {
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   }
-
-  ctx.restore();
 }
 
 
@@ -3434,7 +3458,6 @@ window.addEventListener('collab:remote-positions', (e) => {
     const g = simGroups.get(id);
     if (g) placeGroup(g, x, y, angle);
   }
-  if (mergeCanvas) _clearMergedImage(); // a peer moved a mask -> drop the stale merged preview
 });
 
 window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
@@ -3507,12 +3530,10 @@ window.addEventListener('collab:remote-drag', ({ detail: { imgIdx, x, y, angle, 
   const g = simGroups.get(imgIdx);
   if (g) placeGroup(g, x, y, angle);
   if (scale != null) { _remoteScalePreview.set(imgIdx, scale); _simViewDirty = true; }
-  if (mergeCanvas) _clearMergedImage();
 });
 
 window.addEventListener('collab:remote-grab', ({ detail: { imgIdx, color } }) => {
   _remoteGrabs.set(imgIdx, { color });
-  if (mergeCanvas) _clearMergedImage(); // peer started manipulating -> show live masks
   _simViewDirty = true;
 });
 
