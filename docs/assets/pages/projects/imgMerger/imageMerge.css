@@ -769,17 +769,18 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   justify-content: center;
   border-radius: 50%;
   background: rgba(12,14,16,0.72);
-  border: 1px solid rgba(255,255,255,0.12);
-  color: #e8eaf0;
+  border: 1px solid springgreen;
+  color: springgreen;
   cursor: pointer;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 0 12px rgba(0,255,127,0.25);
   opacity: 0;
   pointer-events: none;
   transition: opacity .25s ease, background .2s;
 }
 .im-recenter-rim.im-shown { opacity: 1; pointer-events: auto; }
-.im-recenter-rim:hover { background: rgba(40,44,52,0.92); }
+.im-recenter-rim:hover { background: rgba(0,255,127,0.18); }
 
 #sim-canvas-outer {
   position: relative;

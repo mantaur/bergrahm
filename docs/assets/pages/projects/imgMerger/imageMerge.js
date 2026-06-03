@@ -1882,7 +1882,7 @@ function drawSim() {
   for (let x = gx0; x <= vx1; x += gridStep) { ctx.moveTo(x, vy0); ctx.lineTo(x, vy1); }
   for (let y = gy0; y <= vy1; y += gridStep) { ctx.moveTo(vx0, y); ctx.lineTo(vx1, y); }
   ctx.stroke();
-  ctx.font      = `${Math.round(10 / totalScale)}px sans-serif`;
+  ctx.font      = `${Math.round(14 / totalScale)}px sans-serif`;
   ctx.fillStyle = 'rgba(255,255,255,0.22)';
   ctx.textBaseline = 'top';
   ctx.textAlign    = 'left';
