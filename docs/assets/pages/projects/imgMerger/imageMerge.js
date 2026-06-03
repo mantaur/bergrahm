@@ -2,7 +2,6 @@
 const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   || window.matchMedia('(pointer: coarse)').matches;
 
-// State
 const state = {
   // config
   outW: 1080,
@@ -557,7 +556,6 @@ function createRankItem(imgIdx, rank) {
   li.appendChild(editBtn);
   li.appendChild(btnGroup);
 
-  // Drag events
   li.addEventListener('dragstart', onDragStart);
   li.addEventListener('dragover',  onDragOver);
   li.addEventListener('dragleave', onDragLeave);
@@ -590,7 +588,6 @@ function onDrop(e) {
   e.currentTarget.classList.remove('drag-over');
   const destIdx = Array.from(rankList.children).indexOf(e.currentTarget);
   if (dragSrcIdx === null || dragSrcIdx === destIdx) return;
-  // reorder rankOrder
   const moved = state.rankOrder.splice(dragSrcIdx, 1)[0];
   state.rankOrder.splice(destIdx, 0, moved);
   // keep paintIdx tracking the same image
@@ -804,7 +801,6 @@ canvasWrap.addEventListener('click', (e) => {
     }
   }
 
-  // Otherwise add a vertex
   pushPolyUndo(imgIdx);
   currentPoly.push({ x: pos.x, y: pos.y });
   redrawPolyOverlay(imgIdx);
@@ -1447,7 +1443,7 @@ function resetMergeUI() {
   simMergedImageData = null;
 }
 
-// ── Force-directed placement sim ──────────────────────────────────────────────
+// ── Mask placement canvas (pan / zoom / drag; no physics) ─────────────────────
 let simGroups          = new Map();   // id -> sim group (only images that have polygons)
 let simRafId           = null;
 let _lastSimTs         = null;
@@ -1458,13 +1454,13 @@ let simLastOwnershipMap = null; // ownershipMap from last merge — used for ful
 let _activePixelWorker  = null; // running pixel-render worker (preview or download)
 let _pixelWorkerBlobUrl = null; // cached blob URL for the pixel render worker
 let simCornerDrag      = null; // { dir, id, startPx, startX1, startY1, startX2, startY2 }
-let simBodyDragging    = false; // true while a body is held by MouseConstraint
+let simBodyDragging    = false; // true while a body is being dragged
 let pinchPreview       = null; // { imgIdx, scale } drawn live during pinch gesture
 let _activeDragIdx     = null; // id currently being dragged locally; null if none
 let _lastDragBroadcast = 0;    // timestamp of last collab:body-dragging dispatch
 const _remoteGrabs     = new Map(); // imgIdx -> { color } for bodies grabbed by peers
 const _remoteScalePreview = new Map(); // imgIdx -> scale, live (render-only) while a peer scales
-const SIM_WORLD        = 10000; // fixed physics world size, independent of output canvas
+const WORLD_SPAN       = 10000; // world units spanned by the canvas at zoom 1 (base px/unit scale)
 let simX1              = 0;    // output rect TL x in world space
 let simY1              = 0;    // output rect TL y in world space
 let simX2              = 0;    // output rect BR x in world space
@@ -1733,7 +1729,7 @@ function initSim(savedPositions = null) {
   simX2 = state.outW;
   simY2 = state.outH;
 
-  const dispScale = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
+  const dispScale = Math.min(canvasW / WORLD_SPAN, canvasH / WORLD_SPAN);
   viewport.setDispScale(dispScale);
   const fitTotal  = Math.min(canvasW / state.outW, canvasH / state.outH) * 0.82;
   const initScale = Math.max(0.1, Math.min(10, fitTotal / dispScale));
@@ -2552,7 +2548,7 @@ function _updateRecenterUI() {
   }
   if (!show) return;
   // Aim from the viewport centre toward the artboard centre (FPV damage-direction
-  // style), clamped to an inset box that clears the app bar (top) and HUD (bottom).
+  // style), clamped to an inset box that keeps it clear of the HUD and toggle.
   const rect = simCanvas.getBoundingClientRect();
   const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
   const ac = viewport.physicsToClient((simX1 + simX2) / 2, (simY1 + simY2) / 2);
@@ -2579,7 +2575,7 @@ function _onSimCanvasResize() {
   simCanvas.width  = canvasW;
   simCanvas.height = canvasH;
   const oldDisp = viewport.dispScale;
-  const newDisp = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
+  const newDisp = Math.min(canvasW / WORLD_SPAN, canvasH / WORLD_SPAN);
   viewport.setDispScale(newDisp);
   // Keep visual zoom constant across the disp-scale change (offset unchanged).
   viewport._set(viewport.scale * oldDisp / newDisp, viewport.offsetX, viewport.offsetY);
