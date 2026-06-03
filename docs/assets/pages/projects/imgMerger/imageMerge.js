@@ -1728,10 +1728,10 @@ function initSim(savedPositions = null) {
   simMergedImageData = null;
   mergeCanvas = null;
 
-  simX1 = (SIM_WORLD - state.outW) / 2;
-  simY1 = (SIM_WORLD - state.outH) / 2;
-  simX2 = simX1 + state.outW;
-  simY2 = simY1 + state.outH;
+  simX1 = 0;
+  simY1 = 0;
+  simX2 = state.outW;
+  simY2 = state.outH;
 
   const dispScale = Math.min(canvasW / SIM_WORLD, canvasH / SIM_WORLD);
   viewport.setDispScale(dispScale);
