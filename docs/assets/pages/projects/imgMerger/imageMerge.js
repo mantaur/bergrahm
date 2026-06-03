@@ -1882,13 +1882,12 @@ function drawSim() {
   for (let x = gx0; x <= vx1; x += gridStep) { ctx.moveTo(x, vy0); ctx.lineTo(x, vy1); }
   for (let y = gy0; y <= vy1; y += gridStep) { ctx.moveTo(vx0, y); ctx.lineTo(vx1, y); }
   ctx.stroke();
-  ctx.font      = `${Math.round(14 / totalScale)}px sans-serif`;
+  ctx.font      = `${Math.round(18 / totalScale)}px sans-serif`;
   ctx.fillStyle = 'rgba(255,255,255,0.22)';
   ctx.textBaseline = 'top';
   ctx.textAlign    = 'left';
   for (let x = gx0; x <= vx1; x += gridStep) if (x !== 0) ctx.fillText(x, x + 4 * px, vy0 + 4 * px);
-  ctx.textAlign = 'right';
-  for (let y = gy0; y <= vy1; y += gridStep) if (y !== 0) ctx.fillText(y, vx0 - 4 * px, y + 4 * px);
+  for (let y = gy0; y <= vy1; y += gridStep) if (y !== 0) ctx.fillText(y, vx0 + 4 * px, y + 4 * px);
 
   ctx.strokeStyle = '#555';
   ctx.lineWidth   = px;
