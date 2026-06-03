@@ -86,6 +86,7 @@ body > .wrapper { max-width: unset; padding: 0; margin: 0; background: transpare
   z-index: 300;
   transform: translateX(0);
   transition: transform 0.32s cubic-bezier(.16,1,.3,1);
+  padding-top: 2.8rem; /* clear the floating toggle button (top-right) */
   scrollbar-width: thin;
   scrollbar-color: #181818 transparent;
 }
@@ -118,10 +119,10 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 
 /* ── Made-by credit (top of drawer) ── */
 .im-made-by {
-  padding: 0.7rem 3rem 0.55rem 1rem; /* right padding clears the toggle FAB */
+  padding: 0.8rem 1rem 1rem;
   font-size: 0.82em;
   color: #8a8f99;
-  border-bottom: 1px solid #1a1c1e;
+  border-top: 1px solid #1a1c1e;
 }
 .im-made-by a { color: #cdd2db; text-decoration: none; font-weight: 600; }
 .im-made-by a:hover { color: springgreen; }
