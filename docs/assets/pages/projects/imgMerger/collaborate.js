@@ -87,7 +87,6 @@ let peer           = null;
 let localPeerId    = null;
 let isHost         = false;
 let currentRoom    = null;
-let roomPassword   = '';   // host: the password guests must supply (empty = open room)
 let hostConn       = null;              // guest's single connection to host
 let remotePeerCount = 0;               // count broadcast by host; used on guest side
 const guestConns = new Map();           // host's connections: peerId -> conn
@@ -432,11 +431,12 @@ function handleMsg(msg, fromPeerId) {
       break;
 
     case 'join':
-      // Guest -> host handshake. Validate the room password before sending the
-      // session; a wrong-password guest is dropped and never receives it.
+      // Guest -> host handshake. Validate against the room password, read live so
+      // the host can set or change it any time; a wrong-password guest is dropped.
       if (isHost) {
         const conn = guestConns.get(fromPeerId);
-        if (roomPassword && msg.password !== roomPassword) {
+        const pw = passInp ? passInp.value.trim() : '';
+        if (pw && msg.password !== pw) {
           if (conn && conn.open) conn.send(JSON.stringify({ type: 'auth-failed' }));
           _dropGuest(fromPeerId);
         } else if (conn) {
@@ -640,7 +640,6 @@ function joinAsHost(roomCode) {
     if (isHost) return; // signaling reconnect — data channels intact, skip reinit
     localPeerId = id;
     isHost      = true;
-    roomPassword = passInp ? passInp.value.trim() : ''; // this host sets the room password
     _setRole();
     setStatus('Hosting - waiting for guests', true);
     rafId = requestAnimationFrame(rafLoop);
@@ -774,7 +773,6 @@ function leaveRoom() {
   isHost          = false;
   remotePeerCount = 0;
   currentRoom     = null;
-  roomPassword    = '';
 
   simCanvasEl.removeEventListener('mousemove', onMouseMove);
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
