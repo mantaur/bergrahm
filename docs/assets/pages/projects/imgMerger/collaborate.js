@@ -128,8 +128,8 @@ function setRoomParam(code) {
 
 function hostIdFor(roomCode) { return HOST_PREFIX + roomCode; }
 
-function physicsToClient(physX, physY) {
-  return window.imViewport.physicsToClient(physX, physY);
+function worldToClient(physX, physY) {
+  return window.imViewport.worldToClient(physX, physY);
 }
 
 function _updateQR() {
@@ -265,7 +265,7 @@ function rafLoop() {
   if (remoteCursors.size === 0) { rafId = null; return; }
   for (const [peerId, cursor] of remoteCursors) {
     const el  = upsertCursorEl(peerId, cursor);
-    const pos = physicsToClient(cursor.x, cursor.y);
+    const pos = worldToClient(cursor.x, cursor.y);
     el.style.transform = `translate(${pos.x}px,${pos.y}px)`;
   }
   rafId = requestAnimationFrame(rafLoop);
@@ -275,7 +275,7 @@ function rafLoop() {
 
 function onMouseMove(e) {
   if (!localPeerId || !window.imViewport) return;
-  const phys = window.imViewport.canvasToPhysics(e.clientX, e.clientY);
+  const phys = window.imViewport.canvasToWorld(e.clientX, e.clientY);
   broadcast({
     type: 'cursor', id: localPeerId,
     x: phys.x, y: phys.y,

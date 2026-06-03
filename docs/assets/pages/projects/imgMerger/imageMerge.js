@@ -1559,7 +1559,7 @@ function buildSimGroup(imgIdx) {
   };
 }
 
-// canvasToPhysics / clientToCanvasPx now live on the viewport (viewport.js).
+// canvasToWorld / clientToCanvasPx now live on the viewport (viewport.js).
 
 function getCornerHandlePositions() {
   const ts = viewport.totalScale;
@@ -1571,7 +1571,7 @@ function getCornerHandlePositions() {
   ];
 }
 
-// expandPhys: expand each polygon's vertices outward from its centroid (physics units)
+// expandPhys: expand each polygon's vertices outward from its centroid (world units)
 function _physPointInGroup(phys, g, expandPhys = 0) {
   const dx = phys.x - g.x, dy = phys.y - g.y;
   const cos = Math.cos(g.angle), sin = Math.sin(g.angle);
@@ -1862,7 +1862,7 @@ function drawSim() {
   const H  = state.outH;
 
   const totalScale = viewport.totalScale;
-  const px = 1 / totalScale; // 1 screen pixel in physics units
+  const px = 1 / totalScale; // 1 screen pixel in world units
   const vx0 = viewport.offsetX;
   const vy0 = viewport.offsetY;
   const vx1 = vx0 + DW / totalScale;
@@ -2551,7 +2551,7 @@ function _updateRecenterUI() {
   // style), clamped to an inset box that keeps it clear of the HUD and toggle.
   const rect = simCanvas.getBoundingClientRect();
   const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-  const ac = viewport.physicsToClient((simX1 + simX2) / 2, (simY1 + simY2) / 2);
+  const ac = viewport.worldToClient((simX1 + simX2) / 2, (simY1 + simY2) / 2);
   const ang = Math.atan2(ac.y - cy, ac.x - cx);
   const dx = Math.cos(ang), dy = Math.sin(ang);
   const L = rect.left + 28, R = rect.right - 28, T = rect.top + 64, B = rect.bottom - 84;
@@ -2594,7 +2594,7 @@ window.addEventListener('resize', () => {
     const canvasPx = viewport.clientToCanvasPx(e.clientX, e.clientY);
     const corner = nearestCornerHandle(canvasPx);
     if (corner) { simCanvas.style.cursor = corner.dir + '-resize'; return; }
-    const g = nearestGroup(viewport.canvasToPhysics(e.clientX, e.clientY));
+    const g = nearestGroup(viewport.canvasToWorld(e.clientX, e.clientY));
     if (g && !_remoteGrabs.has(g.imgIdx)) {
       simCanvas.style.cursor = e.ctrlKey ? 'crosshair' : 'grab';
     } else {
@@ -2622,7 +2622,7 @@ window.addEventListener('resize', () => {
       _clearMergedImage();
       return;
     }
-    const phys = viewport.canvasToPhysics(e.clientX, e.clientY);
+    const phys = viewport.canvasToWorld(e.clientX, e.clientY);
     const g    = nearestGroup(phys);
     if (!g || _remoteGrabs.has(g.imgIdx)) return;
     e.preventDefault();
@@ -2661,14 +2661,14 @@ window.addEventListener('resize', () => {
       return;
     }
     if (_mouseDrag && e.pointerId === _mouseDrag.pointerId) {
-      const phys = viewport.canvasToPhysics(e.clientX, e.clientY);
+      const phys = viewport.canvasToWorld(e.clientX, e.clientY);
       _mouseDrag.group.x = phys.x + _mouseDrag.offsetX;
       _mouseDrag.group.y = phys.y + _mouseDrag.offsetY;
       _simViewDirty = true;
       return;
     }
     if (_ctrlDrag && e.pointerId === _ctrlDrag.pointerId) {
-      const phys = viewport.canvasToPhysics(e.clientX, e.clientY);
+      const phys = viewport.canvasToWorld(e.clientX, e.clientY);
       const dx = phys.x - _ctrlDrag.center.x;
       const dy = phys.y - _ctrlDrag.center.y;
       const dist = Math.hypot(dx, dy);
@@ -2766,7 +2766,7 @@ window.addEventListener('resize', () => {
   let lpStartCPx  = null;   // canvas px at corner-lp start
   let panLastPx   = null;   // canvas px for single-finger pan delta
   let liftedGroup = null;   // simGroup being manipulated
-  let liftedOffset = { x: 0, y: 0 }; // body-center minus finger in physics coords
+  let liftedOffset = { x: 0, y: 0 }; // body-center minus finger in world coords
   let liftedId    = -1;     // identifier of primary finger
 
   let grpStart    = null;   // { dist, scale, angle, bodyAngle } for group pinch
@@ -2793,7 +2793,7 @@ window.addEventListener('resize', () => {
   function triggerLift() {
     lpTimer = null;
     if (simRafId === null || !lpTouch) return;
-    const fingerPhys = viewport.canvasToPhysics(lpTouch.clientX, lpTouch.clientY);
+    const fingerPhys = viewport.canvasToWorld(lpTouch.clientX, lpTouch.clientY);
     const g = nearestGroup(fingerPhys, 40);
     if (!g) return;
     liftedGroup  = g;
@@ -2893,7 +2893,7 @@ window.addEventListener('resize', () => {
       dist:   twoTouchDist(t1, t2),
       scale:  viewport.scale,
       offset: { x: viewport.offsetX, y: viewport.offsetY },
-      mid:    viewport.canvasToPhysics((t1.clientX + t2.clientX) / 2, (t1.clientY + t2.clientY) / 2),
+      mid:    viewport.canvasToWorld((t1.clientX + t2.clientX) / 2, (t1.clientY + t2.clientY) / 2),
     };
   }
 
@@ -3006,7 +3006,7 @@ window.addEventListener('resize', () => {
     } else if (mode === 'lifted') {
       const t = findTouch(all, liftedId);
       if (t && liftedGroup) {
-        const phys = viewport.canvasToPhysics(t.clientX, t.clientY);
+        const phys = viewport.canvasToWorld(t.clientX, t.clientY);
         liftedGroup.x = phys.x + liftedOffset.x;
         liftedGroup.y = phys.y + liftedOffset.y;
         simMergedImageData = null;

@@ -65,7 +65,7 @@ const viewport = (function () {
     const ts = dispScale * scale;
     return { x: px / ts + offset.x, y: py / ts + offset.y };
   }
-  function canvasToPhysics(clientX, clientY) {
+  function canvasToWorld(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     return worldFromCanvasPx(
       (clientX - rect.left) / rect.width  * canvas.width,
@@ -78,7 +78,7 @@ const viewport = (function () {
       y: (clientY - rect.top)  / rect.height * canvas.height,
     };
   }
-  function physicsToClient(worldX, worldY) {
+  function worldToClient(worldX, worldY) {
     const rect = canvas.getBoundingClientRect();
     const ts = dispScale * scale;
     const cx = (worldX - offset.x) * ts;
@@ -117,7 +117,7 @@ const viewport = (function () {
 
   function setZoom(s, opts = {}) {
     const rect = canvas.getBoundingClientRect();
-    const c = canvasToPhysics(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const c = canvasToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
     centerOn(c.x, c.y, { scale: s, animate: opts.animate, durationMs: opts.durationMs });
   }
 
@@ -215,7 +215,7 @@ const viewport = (function () {
     setDispScale(d) { dispScale = d; },
 
     // Transforms
-    canvasToPhysics, clientToCanvasPx, physicsToClient, worldFromCanvasPx,
+    canvasToWorld, clientToCanvasPx, worldToClient, worldFromCanvasPx,
 
     // Gesture funnels + internal funnel (used by imageMerge handlers)
     panByCanvasPx, zoomAtCanvasPx,

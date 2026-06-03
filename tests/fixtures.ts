@@ -104,7 +104,7 @@ export function imgIdAt(page: Page, pos = 0): Promise<string> {
   return page.evaluate((p) => (window as any).getSessionMeta().images[p].id, pos);
 }
 
-// Client-space coords of a sim group's centre (mirrors collaborate.js physicsToClient).
+// Client-space coords of a sim group's centre (mirrors collaborate.js worldToClient).
 // `pos` is the image's position (0 = first image); resolved to its id internally.
 export function groupClientPos(page: Page, pos: number): Promise<{ x: number; y: number }> {
   return page.evaluate((p) => {
