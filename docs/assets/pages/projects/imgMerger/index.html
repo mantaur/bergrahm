@@ -232,7 +232,7 @@
       <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-reset" title="Reset positions"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-4.75"/></svg></button>
       <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
       <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
-      <button class="im-btn im-hidden" id="btn-download" title="Download PNG"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+      <button class="im-btn im-btn-sm im-btn-icon im-hidden" id="btn-download" title="Download PNG"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
     </div>
   </div>
   <!-- Points from the viewport rim toward the off-screen output (FPV-style). -->
@@ -314,7 +314,25 @@ let gFineRadius = FINE_RADIUS;
 let gTopK       = TOP_K;
 let gSilent     = false;
 
+// Chamfer jobs run in a pool the main thread owns -- the blob merge worker can't
+// nest workers reliably on Firefox -- so we ship each job out and await it.
+const _chamferPending = new Map();
+let _chamferSeq = 0;
+function requestChamfer(mask, W, H) {
+  return new Promise((resolve) => {
+    const id = ++_chamferSeq;
+    _chamferPending.set(id, resolve);
+    self.postMessage({ type: 'chamfer-req', id, mask: mask.buffer, W, H }, [mask.buffer]);
+  });
+}
+
 self.onmessage = async function (e) {
+  if (e.data && e.data.type === 'chamfer-res') {
+    const resolve = _chamferPending.get(e.data.id);
+    if (resolve) { _chamferPending.delete(e.data.id); resolve(e.data.dist ? new Float32Array(e.data.dist) : null); }
+    return;
+  }
+
   const { images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp,
           coarseStep, fineStep, fineRadius, topK, silent, precomputedPlacements } = e.data;
 
@@ -585,72 +603,19 @@ function pointInTriangle(p, a, b, c) {
   return (ab >= 0 && bc >= 0 && ca >= 0) || (ab <= 0 && bc <= 0 && ca <= 0);
 }
 
-// ── Parallel chamfer sub-worker ───────────────────────────────────────────────
-// Each sub-worker receives { mask: ArrayBuffer, W, H } and posts back a
-// Float32Array buffer.  The mask buffer is transferred (zero-copy).
-const CHAMFER_WORKER_SRC = `
-self.onmessage = function(e) {
-  var mask = new Uint8Array(e.data.mask), W = e.data.W, H = e.data.H;
-  var INF = 1e9, n = W * H;
-  var d = new Float32Array(n);
-  for (var i = 0; i < n; i++) d[i] = mask[i] ? 0 : INF;
-  var v, i;
-  for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) {
-    i = y*W+x; if (d[i]===0) continue; v=d[i];
-    if (x>0)     v=Math.min(v,d[i-1]+3);
-    if (y>0) {
-      if (x>0)   v=Math.min(v,d[i-W-1]+4);
-                 v=Math.min(v,d[i-W]+3);
-      if (x<W-1) v=Math.min(v,d[i-W+1]+4);
-    }
-    d[i]=v;
-  }
-  for (var y=H-1; y>=0; y--) for (var x=W-1; x>=0; x--) {
-    i=y*W+x; if (d[i]===0) continue; v=d[i];
-    if (x<W-1)   v=Math.min(v,d[i+1]+3);
-    if (y<H-1) {
-      if (x<W-1) v=Math.min(v,d[i+W+1]+4);
-                 v=Math.min(v,d[i+W]+3);
-      if (x>0)   v=Math.min(v,d[i+W-1]+4);
-    }
-    d[i]=v;
-  }
-  self.postMessage(d.buffer, [d.buffer]);
-};
-`;
-
-let _chamferBlobUrl = null;
-function _getChamferBlobUrl() {
-  if (!_chamferBlobUrl)
-    _chamferBlobUrl = URL.createObjectURL(new Blob([CHAMFER_WORKER_SRC], { type: 'application/javascript' }));
-  return _chamferBlobUrl;
-}
-
-// Run chamferDist for each item with at most 8 workers in flight at once.
-// count: number of items.
-// getEntry(j): called synchronously just before worker j starts; returns { mask: Uint8Array }.
-//   The mask buffer is transferred to the worker (zero-copy; detached after call).
-// onResult(j, dist): called when worker j finishes; dist is Float32Array or null on error.
-// onDone(completed, total): progress callback called after each result.
+// Throttle chamfer jobs to 8 in flight (each runs in the main thread's pool).
+// getEntry(j) -> { mask } whose buffer is transferred out; onResult(j, dist) gets
+// a Float32Array or null on error; onDone(done, total) reports progress.
 async function parallelChamfer(count, W, H, getEntry, onResult, onDone) {
   const CONCURRENCY = Math.min(8, count);
-  const url = _getChamferBlobUrl();
   let completed = 0;
   let nextIdx = CONCURRENCY;
 
-  function runOne(j) {
+  async function runOne(j) {
     const { mask } = getEntry(j);
-    return new Promise(resolve => {
-      const w = new Worker(url);
-      w.onmessage = e => {
-        w.terminate();
-        if (onDone) onDone(++completed, count);
-        onResult(j, new Float32Array(e.data));
-        resolve();
-      };
-      w.onerror = () => { w.terminate(); onResult(j, null); resolve(); };
-      w.postMessage({ mask: mask.buffer, W, H }, [mask.buffer]);
-    });
+    const dist = await requestChamfer(mask, W, H);
+    if (onDone) onDone(++completed, count);
+    onResult(j, dist);
   }
 
   async function lane(j) {
@@ -717,7 +682,7 @@ async function computeVoronoiMap(images, placements, W, H) {
 
 // ── Dither ownership map ───────────────────────────────────────────────────────
 // Each pixel is assigned to an image by weighted random sampling.
-// Weight = 1 / (chamferDist + 1). Essential-region pixels (dist=0) always win.
+// Weight = 1 / (chamfer dist + 1). Essential-region pixels (dist=0) always win.
 // Only images whose bounding box covers the pixel are eligible (per-user spec).
 async function computeDitherMap(images, placements, W, H, seed, exp) {
   const N = placements.length;
@@ -838,55 +803,12 @@ function rasterizePolygons(polygons, W, H, mask) {
     }
   }
 }
-
-
-// 2-pass chamfer distance transform (3-4 weights).
-// Returns Float32Array(W*H): 0 at seed pixels, distance elsewhere.
-function chamferDist(mask, W, H) {
-  const INF = 1e9;
-  const d = new Float32Array(W * H);
-  for (let i = 0; i < W * H; i++) d[i] = mask[i] ? 0 : INF;
-
-  // Forward pass (top-left → bottom-right)
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      if (d[i] === 0) continue;
-      let v = d[i];
-      if (x > 0)         v = Math.min(v, d[i - 1]     + 3);
-      if (y > 0) {
-        if (x > 0)       v = Math.min(v, d[i - W - 1] + 4);
-                         v = Math.min(v, d[i - W]     + 3);
-        if (x < W - 1)   v = Math.min(v, d[i - W + 1] + 4);
-      }
-      d[i] = v;
-    }
-  }
-
-  // Backward pass (bottom-right → top-left)
-  for (let y = H - 1; y >= 0; y--) {
-    for (let x = W - 1; x >= 0; x--) {
-      const i = y * W + x;
-      if (d[i] === 0) continue;
-      let v = d[i];
-      if (x < W - 1)     v = Math.min(v, d[i + 1]     + 3);
-      if (y < H - 1) {
-        if (x < W - 1)   v = Math.min(v, d[i + W + 1] + 4);
-                         v = Math.min(v, d[i + W]     + 3);
-        if (x > 0)       v = Math.min(v, d[i + W - 1] + 4);
-      }
-      d[i] = v;
-    }
-  }
-
-  return d;
-}
   </script>
 
   <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=4"></script>
   <script src="viewport.js?v=4"></script>
-  <script src="imageMerge.js?v=40"></script>
+  <script src="imageMerge.js?v=44"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 

@@ -1408,6 +1408,8 @@ function startMerge() {
         .catch(err => { updateSimStatus('Render error: ' + err.message); resetMergeUI(); });
     } else if (msg.type === 'progress') {
       updateSimStatus('Merging... ' + msg.pct + '%');
+    } else if (msg.type === 'chamfer-req') {
+      _runChamferJob(msg.id, msg.mask, msg.W, msg.H);
     } else if (msg.type === 'error') {
       cleanupWorker();
       updateSimStatus('Worker error: ' + msg.text);
@@ -1430,6 +1432,23 @@ function startMerge() {
     seed:      parseInt(cfgSeed.value, 10) || 0,
     ditherExp: parseInt(cfgDitherExp.value, 10) || 4,
   });
+}
+
+// Run a chamfer job the merge worker delegated out (it can't nest workers on
+// Firefox). Worker-per-job is fine: the merge worker caps in-flight jobs at 8.
+let _chamferWorkerUrl = null;
+function _runChamferJob(id, maskBuf, W, H) {
+  if (!_chamferWorkerUrl) _chamferWorkerUrl = new URL('chamferWorker.js?v=1', location.href).href;
+  const w = new Worker(_chamferWorkerUrl);
+  w.onmessage = (ev) => {
+    w.terminate();
+    if (activeWorker) activeWorker.postMessage({ type: 'chamfer-res', id, dist: ev.data }, [ev.data]);
+  };
+  w.onerror = () => {
+    w.terminate();
+    if (activeWorker) activeWorker.postMessage({ type: 'chamfer-res', id, dist: null });
+  };
+  w.postMessage({ mask: maskBuf, W, H }, [maskBuf]);
 }
 
 function cancelMerge() {
@@ -1827,24 +1846,6 @@ function simTick(ts) {
 
   if (simBodyDragging || simCornerDrag || pinchPreview) _simViewDirty = true;
 
-  if (simMergedImageData) {
-    if (_simViewDirty) {
-      _simViewDirty = false;
-      drawSim();
-      if (mergeCanvas) {
-        simCtx.save();
-        simCtx.scale(viewport.totalScale, viewport.totalScale);
-        simCtx.translate(-viewport.offsetX, -viewport.offsetY);
-        simCtx.drawImage(mergeCanvas, mergeX1, mergeY1, state.outW, state.outH);
-        _drawRemoteGrabs(simCtx, viewport.totalScale); // peers' moving masks, over the preview
-        simCtx.restore();
-      }
-      drawMergedMaskOverlay();
-      drawCornerHandles();
-    }
-    return;
-  }
-
   if (_simViewDirty) {
     _simViewDirty = false;
     drawSim();
@@ -1889,7 +1890,11 @@ function drawSim() {
   ctx.textBaseline = 'top';
   ctx.textAlign    = 'left';
   for (let x = gx0; x <= vx1; x += gridStep) if (x !== 0) ctx.fillText(x, x + 4 * px, vy0 + 4 * px);
-  for (let y = gy0; y <= vy1; y += gridStep) if (y !== 0) ctx.fillText(y, vx0 + 4 * px, y + 4 * px);
+  for (let y = gy0; y <= vy1; y += gridStep) if (y !== 0) ctx.fillText(y, vx0 + 8 * px, y + 4 * px);
+
+  // Merged preview: baked composite as a backdrop; live masks render over it
+  // below, so peer moves stay visible without dropping the preview.
+  if (mergeCanvas) ctx.drawImage(mergeCanvas, mergeX1, mergeY1, W, H);
 
   ctx.strokeStyle = '#555';
   ctx.lineWidth   = px;
@@ -1910,8 +1915,6 @@ function drawSim() {
     let pp = pinchPreview && pinchPreview.imgIdx === g.imgIdx ? pinchPreview : null;
     if (!pp && _remoteScalePreview.has(g.imgIdx)) pp = { imgIdx: g.imgIdx, scale: _remoteScalePreview.get(g.imgIdx) };
     const scaleFactor = pp ? pp.scale / g.scale : 1;
-
-    if (mergeCanvas) continue;
 
     for (const poly of g.polysInSim) {
       ctx.beginPath();
@@ -1964,9 +1967,7 @@ function drawSim() {
     ctx.globalAlpha = 1;
   }
 
-  // When a merged preview is up the grabbed bodies are drawn over it instead
-  // (simTick), so they stay visible; otherwise draw them here.
-  if (!mergeCanvas) _drawRemoteGrabs(ctx, totalScale);
+  _drawRemoteGrabs(ctx, totalScale);
 
   ctx.restore();
 }
@@ -2019,37 +2020,6 @@ function _drawRemoteGrabs(ctx, totalScale) {
   }
 }
 
-
-function drawMergedMaskOverlay() {
-  if (!simLastPlacements) return;
-  const ctx = simCtx;
-  const W   = state.outW;
-  const ds  = Math.max(1, Math.round(W / 400));
-  const N   = state.images.length;
-
-  ctx.save();
-  ctx.scale(viewport.totalScale, viewport.totalScale);
-  ctx.translate(-viewport.offsetX + mergeX1, -viewport.offsetY + mergeY1);
-
-  for (const p of simLastPlacements) {
-    const entry = state.images[p.imgIdx];
-    if (!entry.polygons || entry.polygons.length === 0) continue;
-    const color = `hsl(${Math.round(p.imgIdx * 360 / Math.max(N, 1))}, 70%, 55%)`;
-
-    for (const poly of entry.polygons) {
-      const out = poly.map(v => transformPolyVert(v, p));
-      ctx.beginPath();
-      ctx.moveTo(out[0].x, out[0].y);
-      for (let i = 1; i < out.length; i++) ctx.lineTo(out[i].x, out[i].y);
-      ctx.closePath();
-      ctx.globalAlpha = 0.28;
-      ctx.fillStyle   = color;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-  }
-  ctx.restore();
-}
 
 function updateSimStatus(text) { simStatusEl.textContent = text; }
 
@@ -2191,7 +2161,7 @@ function resizeSim() {
   _simViewDirty = true;
 }
 
-function simRefreshGroup(imgIdx) {
+function simRefreshGroup(imgIdx, keepMerged = false) {
   const entry = imgById(imgIdx);
   const hasPolys = entry && entry.polygons.length > 0;
 
@@ -2205,7 +2175,9 @@ function simRefreshGroup(imgIdx) {
 
   if (!hasPolys) return;
 
-  _clearMergedImage();
+  // Local edits drop the preview to re-enter editing; a peer's edit keeps it so
+  // the rescaled/reshaped mask just re-renders live over the baked composite.
+  if (!keepMerged) _clearMergedImage();
   const g = buildSimGroup(imgIdx);
   if (!g) return;
 
@@ -2227,18 +2199,6 @@ function simRefreshGroup(imgIdx) {
   }
 }
 
-
-function transformPolyVert(v, p) {
-  const angle = p.angle || 0;
-  if (!angle) return { x: p.x + v.x * p.scale, y: p.y + v.y * p.scale };
-  const lx = v.x * p.scale - p.imgCentroidX;
-  const ly = v.y * p.scale - p.imgCentroidY;
-  const cos = Math.cos(angle), sin = Math.sin(angle);
-  return {
-    x: p.pivotX + lx * cos - ly * sin,
-    y: p.pivotY + lx * sin + ly * cos,
-  };
-}
 
 function hexToRgb(hex) {
   return [
@@ -2867,7 +2827,11 @@ window.addEventListener('resize', () => {
   }
 
   function commitScale() {
-    if (!liftedGroup || !pinchPreview) return;
+    // Only after a real pinch. A plain lift+drag seeds pinchPreview with the
+    // current scale but never changes it -- committing then would needlessly
+    // fix an auto-scaled image and broadcast a scales message that wipes peers'
+    // merged previews (simRefreshGroup -> _clearMergedImage).
+    if (!liftedGroup || !pinchPreview || !grpStart) return;
     const entry = imgById(liftedGroup.imgIdx);
     entry.scale = pinchPreview.scale;
     _broadcastScales(); // sync the pinched scale to peers
@@ -3467,7 +3431,7 @@ window.addEventListener('collab:remote-scales', ({ detail: { scales } }) => {
     if (!entry) continue;
     entry.scale      = scale;
     entry.scaleFixed = scale !== null;
-    simRefreshGroup(id);
+    simRefreshGroup(id, true); // remote edit -> keep the merged preview
     _remoteScalePreview.delete(id); // committed -> drop the live preview
   }
   buildRankList();
@@ -3549,7 +3513,7 @@ window.addEventListener('collab:remote-polygon', ({ detail: { imgIdx, polygons }
   if (!entry) return;
   entry.polygons = polygons;
   if (imgIdx === state.rankOrder[state.paintIdx]) redrawPolyOverlay(imgIdx);
-  simRefreshGroup(imgIdx);
+  simRefreshGroup(imgIdx, true); // remote edit -> keep the merged preview
 });
 
 // A presenter's viewport — smoothly track it until the user interacts (any manual
