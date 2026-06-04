@@ -79,6 +79,7 @@ body > .wrapper { max-width: unset; padding: 0; margin: 0; background: transpare
   top: 0; right: 0;
   width: 340px;
   height: 100%;
+  box-sizing: border-box; /* keep padding-top inside 100% so the footer stays on-screen */
   display: flex;
   flex-direction: column;
   overflow: hidden;
