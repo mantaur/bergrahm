@@ -124,6 +124,7 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   padding: 0.8rem 1rem 1rem;
   font-size: 0.82em;
   color: #8a8f99;
+  text-align: center;
   border-top: 1px solid #1a1c1e;
 }
 .im-made-by a { color: #cdd2db; text-decoration: none; font-weight: 600; }
