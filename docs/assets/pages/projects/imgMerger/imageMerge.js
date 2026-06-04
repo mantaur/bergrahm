@@ -819,24 +819,30 @@ canvasWrap.addEventListener('mouseleave', () => {
   redrawPolyOverlay(state.rankOrder[state.paintIdx]);
 });
 
+// Touch: a tap adds/closes a vertex; a drag scrolls the drawer (touch-action: pan-y).
+let _paintTouch = null;
+const TAP_SLOP = 10; // px of movement that reclassifies a tap as a scroll
+
 canvasWrap.addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  const t = e.changedTouches[0];
-  canvasWrap.dispatchEvent(new MouseEvent('click', {
-    clientX: t.clientX, clientY: t.clientY, bubbles: true
-  }));
-}, { passive: false });
+  _paintTouch = e.touches.length === 1
+    ? { x: e.touches[0].clientX, y: e.touches[0].clientY, moved: false }
+    : null; // multi-touch is never a paint tap
+}, { passive: true });
 
 canvasWrap.addEventListener('touchmove', (e) => {
-  e.preventDefault();
-  const t = e.changedTouches[0];
-  canvasWrap.dispatchEvent(new MouseEvent('mousemove', {
-    clientX: t.clientX, clientY: t.clientY, bubbles: true
-  }));
-}, { passive: false });
+  if (!_paintTouch) return;
+  const t = e.touches[0];
+  if (Math.hypot(t.clientX - _paintTouch.x, t.clientY - _paintTouch.y) > TAP_SLOP) {
+    _paintTouch.moved = true; // a scroll, not a tap
+  }
+}, { passive: true });
 
 canvasWrap.addEventListener('touchend', (e) => {
-  e.preventDefault();
+  const pt = _paintTouch;
+  _paintTouch = null;
+  if (!pt || pt.moved || e.touches.length > 0) return; // scroll/drag or multi-touch
+  e.preventDefault(); // suppress the compatibility click; we paint at the tap point
+  canvasWrap.dispatchEvent(new MouseEvent('click', { clientX: pt.x, clientY: pt.y, bubbles: true }));
 }, { passive: false });
 
 // ── Polygon undo ──────────────────────────────────────────────────────────────

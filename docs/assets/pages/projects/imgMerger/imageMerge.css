@@ -730,6 +730,7 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   display: block;
   cursor: crosshair;
   background: #0c0d0e;
+  touch-action: pan-y; /* a vertical drag scrolls the drawer; a tap paints */
 }
 
 #paint-canvas, #mask-canvas {
