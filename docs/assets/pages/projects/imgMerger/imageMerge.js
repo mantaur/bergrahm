@@ -140,9 +140,9 @@ detectEncodingCapability().then(({ tier }) => {
 });
 
 cfgBlendMode.addEventListener('change', () => {
-  const isDither = cfgBlendMode.value === 'dither';
-  cfgDitherFields.classList.toggle('im-hidden', !isDither);
-  cfgDitherExpField.classList.toggle('im-hidden', !isDither);
+  const mode = cfgBlendMode.value;
+  cfgDitherFields.classList.toggle('im-hidden', mode !== 'dither');           // seed: dither only
+  cfgDitherExpField.classList.toggle('im-hidden', mode !== 'dither' && mode !== 'gradient'); // sharpness: both
   if (!window._collabApplyingRemote) _broadcastSettings();
 });
 
@@ -1401,9 +1401,9 @@ function startMerge() {
     const msg = e.data;
     if (msg.type === 'done') {
       cleanupWorker();
-      simLastOwnershipMap = msg.ownershipMap;
+      simLastOwnership = msg.ownership;
       updateSimStatus('Rendering...');
-      _renderPixels(msg.placements, msg.ownershipMap, 0.25)
+      _renderPixels(msg.placements, msg.ownership, 0.25)
         .then(({ pixels, PW, PH }) => _applyMergePreview(pixels, PW, PH, msg.placements))
         .catch(err => { updateSimStatus('Render error: ' + err.message); resetMergeUI(); });
     } else if (msg.type === 'progress') {
@@ -1475,7 +1475,7 @@ let _lastSimTs         = null;
 let simMergedImageData  = null; // truthy when merge complete; cleared when sim re-activates
 let _simViewDirty       = true;
 let simLastPlacements   = null; // placements from last merge — used for mask overlay + download
-let simLastOwnershipMap = null; // ownershipMap from last merge — used for full-res download
+let simLastOwnership    = null; // ownership from last merge -- reused for full-res download
 let _activePixelWorker  = null; // running pixel-render worker (preview or download)
 let _pixelWorkerBlobUrl = null; // cached blob URL for the pixel render worker
 let simCornerDrag      = null; // { dir, id, startPx, startX1, startY1, startX2, startY2 }
@@ -2026,7 +2026,7 @@ function updateSimStatus(text) { simStatusEl.textContent = text; }
 function _clearMergedImage() {
   simMergedImageData  = null;
   simLastPlacements   = null;
-  simLastOwnershipMap = null;
+  simLastOwnership    = null;
   mergeCanvas         = null;
   if (_activePixelWorker) { _activePixelWorker.terminate(); _activePixelWorker = null; }
   btnDownload.classList.add('im-hidden');
@@ -2214,9 +2214,24 @@ function hexToRgb(hex) {
 // never needs to know about image scale — just position and rotation.
 
 function _pixelWorkerBody() {
+  // sRGB <-> linear-light LUTs so gradient blending averages in linear space.
+  const S2L = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const c = i / 255;
+    S2L[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+  const L2S = new Uint8ClampedArray(4097);
+  for (let i = 0; i <= 4096; i++) {
+    const v = i / 4096;
+    L2S[i] = Math.round((v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255);
+  }
+  const lin2srgb = (v) => L2S[v <= 0 ? 0 : v >= 1 ? 4096 : (v * 4096) | 0];
+
   self.onmessage = async ({ data: msg }) => {
     try {
-      const { imageBitmaps, placements, ownershipMap, W, H, PW, PH, fillColor } = msg;
+      const { imageBitmaps, placements, ownership, W, H, PW, PH, fillColor } = msg;
+      const { owner, ownerA, ownerB, blend } = ownership || {}; // owner: hard modes; ownerA/B+blend: gradient
+      const gradient = !!ownerA;
 
       const imgData = [];
       for (let k = 0; k < placements.length; k++) {
@@ -2268,6 +2283,11 @@ function _pixelWorkerBody() {
 
       const imgDataByIdx = new Map();
       for (const id of imgData) { if (id) imgDataByIdx.set(id.imgIdx, id); }
+      const sampleOwner = (o, ox, oy) => {
+        if (o < 0) return null;
+        const id = imgDataByIdx.get(o);
+        return id ? _sample(id, ox, oy) : null;
+      };
 
       const fillTransparent = fillColor === null;
       const fr = fillTransparent ? 0 : parseInt(fillColor.slice(1, 3), 16);
@@ -2283,12 +2303,21 @@ function _pixelWorkerBody() {
           const out4 = oi * 4;
           const fullOx = Math.min(W - 1, Math.round(ox * scaleX));
           const fullOy = Math.min(H - 1, Math.round(oy * scaleY));
-          const owner = ownershipMap ? ownershipMap[fullOy * W + fullOx] : -1;
+          const mi = fullOy * W + fullOx;
 
           let pixel = null;
-          if (owner >= 0) {
-            const id = imgDataByIdx.get(owner);
-            if (id) pixel = _sample(id, ox, oy);
+          if (gradient) {
+            const pa = sampleOwner(ownerA[mi], ox, oy);
+            const b  = ownerB[mi];
+            const wB = b >= 0 ? blend[mi] / 255 : 0;
+            const pb = wB > 0 ? sampleOwner(b, ox, oy) : null;
+            pixel = pa && pb
+              ? [ lin2srgb(S2L[pa[0]] * (1 - wB) + S2L[pb[0]] * wB),
+                  lin2srgb(S2L[pa[1]] * (1 - wB) + S2L[pb[1]] * wB),
+                  lin2srgb(S2L[pa[2]] * (1 - wB) + S2L[pb[2]] * wB) ]
+              : (pa || pb);
+          } else {
+            pixel = sampleOwner(owner ? owner[mi] : -1, ox, oy);
           }
           if (!pixel) {
             for (const id of imgData) {
@@ -2345,7 +2374,7 @@ function _makePixelWorker() {
 // previewScale=0.25 for fast preview; 1.0 for full-res download.
 // returnBlob=true: worker encodes PNG and resolves with { blob, PW, PH }.
 // returnBlob=false (default): resolves with { pixels: ArrayBuffer, PW, PH }.
-async function _renderPixels(placements, ownershipMap, previewScale, returnBlob = false) {
+async function _renderPixels(placements, ownership, previewScale, returnBlob = false) {
   const ps = previewScale;
   const PW = Math.max(1, Math.round(state.outW * ps));
   const PH = Math.max(1, Math.round(state.outH * ps));
@@ -2388,7 +2417,7 @@ async function _renderPixels(placements, ownershipMap, previewScale, returnBlob 
       reject(new Error(err.message || 'Pixel worker error'));
     };
     worker.postMessage(
-      { imageBitmaps, placements: scaledPlacements, ownershipMap,
+      { imageBitmaps, placements: scaledPlacements, ownership,
         W: state.outW, H: state.outH, PW, PH, fillColor: state.fillColor, returnBlob },
       imageBitmaps
     );
@@ -2421,10 +2450,10 @@ function _applyMergePreview(pixels, PW, PH, placements) {
 
 // ── Download ──────────────────────────────────────────────────────────────────
 btnDownload.addEventListener('click', () => {
-  if (!simLastPlacements || !simLastOwnershipMap) return;
+  if (!simLastPlacements || !simLastOwnership) return;
   btnDownload.disabled = true;
   updateSimStatus('Preparing full-res download...');
-  _renderPixels(simLastPlacements, simLastOwnershipMap, 1.0, true)
+  _renderPixels(simLastPlacements, simLastOwnership, 1.0, true)
     .then(({ blob }) => {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');

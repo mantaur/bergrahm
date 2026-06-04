@@ -1,6 +1,6 @@
 // Merge -> preview -> download. Merge runs an inline Worker + OffscreenCanvas.
 
-import { test, expect, addImage, paintPolygon, closePanel, emitRemote, imgIdAt, simPos, groupClientPos } from './fixtures';
+import { test, expect, addImage, paintPolygon, closePanel, emitRemote, imgIdAt, simPos, groupClientPos, FIXTURE_IMG, FIXTURE_IMG2 } from './fixtures';
 
 test('merge button appears after a mask is painted', async ({ page }) => {
   await addImage(page);
@@ -23,6 +23,30 @@ test('merge produces a downloadable result', async ({ page }) => {
   await expect(page.locator('#sim-status')).toHaveText(/Merged/);
 
   // Full-res download is a PNG named merged.png.
+  const dl = page.waitForEvent('download');
+  await page.locator('#btn-download').click();
+  expect((await dl).suggestedFilename()).toBe('merged.png');
+});
+
+test('gradient mode merges and downloads (blends two images)', async ({ page }) => {
+  await addImage(page, [FIXTURE_IMG, FIXTURE_IMG2]);
+  await paintPolygon(page);                  // mask on image 0
+  await page.locator('#btn-next-img').click();
+  await paintPolygon(page);                  // mask on image 1 -> a transition zone exists
+
+  // Switch to gradient blend (set directly so it works regardless of panel state).
+  await page.evaluate(() => {
+    const sel = document.getElementById('cfg-blend-mode') as HTMLSelectElement;
+    sel.value = 'gradient';
+    sel.dispatchEvent(new Event('change'));
+  });
+
+  await closePanel(page);
+  await page.locator('#btn-merge').click();
+
+  await expect(page.locator('#btn-download')).toBeVisible({ timeout: 30000 });
+  await expect(page.locator('#sim-status')).toHaveText(/Merged/);
+
   const dl = page.waitForEvent('download');
   await page.locator('#btn-download').click();
   expect((await dl).suggestedFilename()).toBe('merged.png');

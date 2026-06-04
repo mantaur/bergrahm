@@ -107,6 +107,7 @@
                   <select id="cfg-blend-mode" class="im-select">
                     <option value="voronoi">Voronoi</option>
                     <option value="dither">Dither</option>
+                    <option value="gradient">Gradient</option>
                   </select>
                 </div>
                 <div class="im-field im-hidden" id="cfg-dither-fields">
@@ -114,7 +115,7 @@
                   <input type="number" id="cfg-seed" value="42" min="0" step="1" inputmode="numeric">
                 </div>
                 <div class="im-field im-hidden" id="cfg-dither-exp-field">
-                  <label for="cfg-dither-exp">Dither sharpness <span class="im-hint-small">· higher = narrower</span></label>
+                  <label for="cfg-dither-exp">Transition sharpness <span class="im-hint-small">· higher = narrower</span></label>
                   <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1" inputmode="numeric">
                 </div>
                 <div class="im-field">
@@ -336,11 +337,11 @@ self.onmessage = async function (e) {
   const { images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp,
           coarseStep, fineStep, fineRadius, topK, silent, precomputedPlacements } = e.data;
 
-  // Shortcut: skip placement search, compute ownership map only.
+  // Shortcut: skip placement search, compute ownership only.
   if (precomputedPlacements) {
     try {
-      const ownershipMap = await computeOwnershipMap(images, precomputedPlacements, outW, outH, blendMode, seed | 0, Math.max(1, ditherExp | 0) || 4);
-      self.postMessage({ type: 'done', placements: precomputedPlacements, ownershipMap }, [ownershipMap.buffer]);
+      const ownership = await computeOwnershipMap(images, precomputedPlacements, outW, outH, blendMode, seed | 0, ditherExp);
+      postDone(precomputedPlacements, ownership);
     } catch (err) {
       self.postMessage({ type: 'error', text: err.message });
     }
@@ -353,12 +354,19 @@ self.onmessage = async function (e) {
   gTopK       = topK        || TOP_K;
   gSilent     = !!silent;
   try {
-    const { placements, ownershipMap } = await runMerge(images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp);
-    self.postMessage({ type: 'done', placements, ownershipMap }, [ownershipMap.buffer]);
+    const { placements, ownership } = await runMerge(images, rankOrder, outW, outH, minScale, maxScale, useScaleRange, blendMode, seed, ditherExp);
+    postDone(placements, ownership);
   } catch (err) {
     self.postMessage({ type: 'error', text: err.message });
   }
 };
+
+// Post the merge result; transfer whatever ownership buffers it carries.
+function postDone(placements, ownership) {
+  const transfer = [];
+  for (const key of ['owner', 'ownerA', 'ownerB', 'blend']) if (ownership[key]) transfer.push(ownership[key].buffer);
+  self.postMessage({ type: 'done', placements, ownership }, transfer);
+}
 
 function postLog(text, cls) {
   if (gSilent) return;
@@ -421,8 +429,8 @@ async function runMerge(images, rankOrder, W, H, minScale, maxScale, useScaleRan
   }
 
   postLog('Computing ownership map...');
-  const ownershipMap = await computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp);
-  return { placements, ownershipMap };
+  const ownership = await computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp);
+  return { placements, ownership };
 }
 
 function findBestPlacement(entry, forbiddenTris, W, H) {
@@ -627,8 +635,10 @@ async function parallelChamfer(count, W, H, getEntry, onResult, onDone) {
 
 // ── Ownership map dispatcher ───────────────────────────────────────────────────
 async function computeOwnershipMap(images, placements, W, H, blendMode, seed, ditherExp) {
-  if (blendMode === 'dither') return computeDitherMap(images, placements, W, H, seed | 0, Math.max(1, ditherExp | 0) || 4);
-  return computeVoronoiMap(images, placements, W, H);
+  const exp = Math.max(1, ditherExp | 0) || 4;
+  if (blendMode === 'gradient') return computeGradientMap(images, placements, W, H, exp);
+  if (blendMode === 'dither')   return { owner: await computeDitherMap(images, placements, W, H, seed | 0, exp) };
+  return { owner: await computeVoronoiMap(images, placements, W, H) };
 }
 
 // Transform a single vertex from image space to output space,
@@ -680,16 +690,11 @@ async function computeVoronoiMap(images, placements, W, H) {
   return ownerMap;
 }
 
-// ── Dither ownership map ───────────────────────────────────────────────────────
-// Each pixel is assigned to an image by weighted random sampling.
-// Weight = 1 / (chamfer dist + 1). Essential-region pixels (dist=0) always win.
-// Only images whose bounding box covers the pixel are eligible (per-user spec).
-async function computeDitherMap(images, placements, W, H, seed, exp) {
-  const N = placements.length;
-  const M = W * H;
-  const ownerMap = new Int16Array(M).fill(-1);
-  if (N === 0) return ownerMap;
-
+// Per-pixel two nearest placements by chamfer distance (shared by dither +
+// gradient). Returns { top0Dist, top1Dist, top0K, top1K } in placement-index
+// space (k = -1 where unreached), or null if no placement has polygons.
+async function _computeTop2(images, placements, W, H) {
+  const N = placements.length, M = W * H;
   const bboxes   = new Array(N).fill(null);
   const activeKs = [];
 
@@ -711,10 +716,9 @@ async function computeDitherMap(images, placements, W, H, seed, exp) {
     };
   }
 
-  if (activeKs.length === 0) return ownerMap;
+  if (activeKs.length === 0) return null;
   postProgress(15);
 
-  // Track the two nearest-distance placements per pixel (streaming; no accumulation).
   const top0Dist = new Float32Array(M).fill(Infinity);
   const top1Dist = new Float32Array(M).fill(Infinity);
   const top0K    = new Int16Array(M).fill(-1);
@@ -746,9 +750,21 @@ async function computeDitherMap(images, placements, W, H, seed, exp) {
     (done, total) => postProgress(15 + Math.round(done / total * 50))
   );
 
+  return { top0Dist, top1Dist, top0K, top1K };
+}
+
+// ── Dither ownership map ───────────────────────────────────────────────────────
+// Int16Array(W*H) of imgIdx: each pixel picks one of its two nearest images by
+// weighted random sampling (weight = dist^exp). Essential pixels (dist=0) win.
+async function computeDitherMap(images, placements, W, H, seed, exp) {
+  const M = W * H;
+  const ownerMap = new Int16Array(M).fill(-1);
+  const t = await _computeTop2(images, placements, W, H);
+  if (!t) return ownerMap;
+  const { top0Dist, top1Dist, top0K, top1K } = t;
+
   postProgress(65);
   const reportStep = Math.max(1, Math.round(H / 20));
-
   for (let y = 0; y < H; y++) {
     if (y % reportStep === 0) postProgress(65 + Math.round(y / H * 35));
     for (let x = 0; x < W; x++) {
@@ -762,8 +778,40 @@ async function computeDitherMap(images, placements, W, H, seed, exp) {
       ownerMap[i] = placements[pixelRand(seed, i) < w0 / (w0 + w1) ? k0 : k1].imgIdx;
     }
   }
-
   return ownerMap;
+}
+
+// ── Gradient ownership ─────────────────────────────────────────────────────────
+// Like dither, but instead of picking one owner it stores a continuous blend of
+// the two nearest images (averaged at render time). blend = weight of the
+// farther image B in 0..255 (small near A, ~128 at the seam).
+async function computeGradientMap(images, placements, W, H, exp) {
+  const M = W * H;
+  const ownerA = new Int16Array(M).fill(-1);
+  const ownerB = new Int16Array(M).fill(-1);
+  const blend  = new Uint8Array(M);
+  const t = await _computeTop2(images, placements, W, H);
+  if (!t) return { ownerA, ownerB, blend };
+  const { top0Dist, top1Dist, top0K, top1K } = t;
+
+  postProgress(65);
+  const reportStep = Math.max(1, Math.round(H / 20));
+  for (let y = 0; y < H; y++) {
+    if (y % reportStep === 0) postProgress(65 + Math.round(y / H * 35));
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const k0 = top0K[i];
+      if (k0 < 0) continue;
+      ownerA[i] = placements[k0].imgIdx;
+      const k1 = top1K[i];
+      if (k1 < 0 || top0Dist[i] === 0) continue; // pure nearest
+      ownerB[i] = placements[k1].imgIdx;
+      const dA = Math.pow(top0Dist[i], exp);
+      const dB = Math.pow(top1Dist[i], exp);
+      blend[i] = Math.round(dA / (dA + dB) * 255);
+    }
+  }
+  return { ownerA, ownerB, blend };
 }
 
 // Wang hash — deterministic float in [0, 1) from seed + pixel index.
@@ -808,7 +856,7 @@ function rasterizePolygons(polygons, W, H, mask) {
   <script src="gpuCheck.js?v=1"></script>
   <script src="sessionIO.js?v=4"></script>
   <script src="viewport.js?v=4"></script>
-  <script src="imageMerge.js?v=44"></script>
+  <script src="imageMerge.js?v=45"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -1022,9 +1070,8 @@ function rasterizePolygons(polygons, W, H, mask) {
 
       if (s.blendMode) {
         cfgBlendMode.value = s.blendMode;
-        var isDither = s.blendMode === 'dither';
-        cfgDitherFields.classList.toggle('im-hidden', !isDither);
-        cfgDitherExpField.classList.toggle('im-hidden', !isDither);
+        cfgDitherFields.classList.toggle('im-hidden', s.blendMode !== 'dither');
+        cfgDitherExpField.classList.toggle('im-hidden', s.blendMode !== 'dither' && s.blendMode !== 'gradient');
       }
 
       if (s.minScale != null) state.minScale = +s.minScale;
