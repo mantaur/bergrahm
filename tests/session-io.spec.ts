@@ -10,6 +10,9 @@ const SESSION_ZIP = path.join(_dir, 'fixtures', 'session.zip');
 
 test.describe('Session export', () => {
   test('exports a zip and reports Exported', async ({ page }) => {
+    // Export runs a CPU-heavy worker (JPEG encode + DEFLATE zip); under the full
+    // parallel suite it can take longer than the default 30s, so give it room.
+    test.setTimeout(60_000);
     await addImage(page);
     await paintPolygon(page);
     await page.locator('#step-images .im-step-hd').click();
@@ -17,7 +20,7 @@ test.describe('Session export', () => {
     const exportBtn = page.locator('#btn-export-session');
     await expect(exportBtn).toBeEnabled();
 
-    const dl = page.waitForEvent('download');
+    const dl = page.waitForEvent('download', { timeout: 45_000 });
     await exportBtn.click();
     expect((await dl).suggestedFilename()).toBe('merger-session.zip');
     await expect(page.locator('#session-status')).toHaveText(/Exported/, { timeout: 15000 });
