@@ -1386,13 +1386,9 @@ function startMerge() {
     polygons: entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
   }));
 
-  const workerSrc  = document.getElementById('merge-worker-src').textContent;
-  const workerBlob = URL.createObjectURL(new Blob([workerSrc], { type: 'application/javascript' }));
-  activeWorker = new Worker(workerBlob);
-  activeWorker._blobUrl = workerBlob;
+  activeWorker = new Worker(new URL('mergeWorker.js?v=1', location.href));
 
   function cleanupWorker() {
-    URL.revokeObjectURL(activeWorker._blobUrl);
     activeWorker.terminate();
     activeWorker = null;
   }
@@ -1453,7 +1449,6 @@ function _runChamferJob(id, maskBuf, W, H) {
 
 function cancelMerge() {
   if (activeWorker) {
-    URL.revokeObjectURL(activeWorker._blobUrl);
     activeWorker.terminate();
     activeWorker = null;
     updateSimStatus('Merge cancelled.');
