@@ -8,7 +8,7 @@ const state = {
   outH: 1920,
   minScale: 0.5,
   maxScale: 2.0,
-  fillColor: '#181a1b',
+  fillColor: '#ff69b4',
   useYolo: false,
   yoloDecodeSize:  512,
   yoloWorkerCount: 4,
@@ -52,6 +52,9 @@ const cfgSeed            = document.getElementById('cfg-seed');
 const cfgDitherExp       = document.getElementById('cfg-dither-exp');
 const cfgWidth      = document.getElementById('cfg-width');
 const cfgHeight     = document.getElementById('cfg-height');
+const cfgSizePreset = document.getElementById('cfg-size-preset');
+const cfgSlides     = document.getElementById('cfg-slides');
+const cfgFullSize   = document.getElementById('cfg-full-size');
 const cfgUseScaleRange = document.getElementById('cfg-use-scale-range');
 const cfgMinScale      = document.getElementById('cfg-min-scale');
 const cfgMinScaleV     = document.getElementById('cfg-min-scale-val');
@@ -146,19 +149,69 @@ cfgBlendMode.addEventListener('change', () => {
   if (!window._collabApplyingRemote) _broadcastSettings();
 });
 
-cfgWidth.addEventListener('input', () => {
-  state.outW = parseInt(cfgWidth.value) || 1080;
+// W/H inputs are the FULL output. The preset is a per-slide format; Slides (N)
+// multiplies the preset width (carousel) and slices the download into N frames.
+let _slideBaseW = 1080, _slideBaseH = 1920; // per-slide size from the last preset
+
+function slidesN() { return Math.max(1, parseInt(cfgSlides.value) || 1); }
+
+function _commitFullSize(w, h) {
+  state.outW = w; state.outH = h;
   if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
   scheduleResizeSim();
   if (!window._collabApplyingRemote) _broadcastSettings();
+  _updateCarouselHint();
+}
+
+function _updateCarouselHint() {
+  const n = slidesN();
+  cfgFullSize.textContent = n > 1 ? n + ' slides of ' + Math.round(state.outW / n) + '×' + state.outH : '';
+  btnDownload.title = n > 1 ? 'Download ' + n + ' slides (zip)' : 'Download PNG';
+}
+
+// Reflect the current output size in the preset dropdown + carousel hint (after a
+// session load, remote settings, undo or corner-resize set the size directly).
+function _syncCarouselUI() {
+  _slideBaseW = Math.round(state.outW / slidesN());
+  _slideBaseH = state.outH;
+  const per = _slideBaseW + 'x' + _slideBaseH;
+  cfgSizePreset.value = [...cfgSizePreset.options].some(o => o.value === per) ? per : 'custom';
+  _updateCarouselHint();
+}
+window.syncCarouselUI = _syncCarouselUI;
+
+cfgWidth.addEventListener('input', () => {
+  cfgSizePreset.value = 'custom';
+  _commitFullSize(parseInt(cfgWidth.value) || 1080, parseInt(cfgHeight.value) || 1920);
 });
 
 cfgHeight.addEventListener('input', () => {
-  state.outH = parseInt(cfgHeight.value) || 1920;
-  if (state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
-  scheduleResizeSim();
-  if (!window._collabApplyingRemote) _broadcastSettings();
+  cfgSizePreset.value = 'custom';
+  _commitFullSize(parseInt(cfgWidth.value) || 1080, parseInt(cfgHeight.value) || 1920);
 });
+
+cfgSizePreset.addEventListener('change', () => {
+  if (cfgSizePreset.value === 'custom') return;
+  const [w, h] = cfgSizePreset.value.split('x').map(Number);
+  _slideBaseW = w; _slideBaseH = h;
+  const n = slidesN();
+  cfgWidth.value = w * n; cfgHeight.value = h;
+  _commitFullSize(w * n, h);
+});
+
+cfgSlides.addEventListener('input', () => {
+  const n = slidesN();
+  if (cfgSizePreset.value !== 'custom') {
+    cfgWidth.value = _slideBaseW * n; cfgHeight.value = _slideBaseH;
+    _commitFullSize(_slideBaseW * n, _slideBaseH);
+  } else {
+    // Custom size: slides only controls how the current width is sliced.
+    _updateCarouselHint();
+    if (!window._collabApplyingRemote) _broadcastSettings();
+  }
+});
+
+_syncCarouselUI(); // reflect the default size in the preset dropdown on load
 
 cfgFill.addEventListener('input', () => {
   state.fillColor = cfgFill.value;
@@ -190,7 +243,7 @@ function _broadcastSettings() {
     _broadcastSettingsTimer = null;
     window.dispatchEvent(new CustomEvent('collab:settings-changed', {
       detail: { outW: state.outW, outH: state.outH, fillColor: state.fillColor, blendMode: cfgBlendMode.value,
-                simX1, simY1, simX2, simY2 },
+                slides: slidesN(), simX1, simY1, simX2, simY2 },
     }));
   }, 200);
 }
@@ -202,7 +255,7 @@ function _broadcastSettingsNow() {
   _settingsThrottleTs = now;
   window.dispatchEvent(new CustomEvent('collab:settings-changed', {
     detail: { outW: state.outW, outH: state.outH, fillColor: state.fillColor, blendMode: cfgBlendMode.value,
-              simX1, simY1, simX2, simY2 },
+              slides: slidesN(), simX1, simY1, simX2, simY2 },
   }));
 }
 
@@ -1715,6 +1768,7 @@ function updateCornerResize(canvasPx) {
   state.outH = Math.round(y2 - y1);
   cfgWidth.value  = state.outW;
   cfgHeight.value = state.outH;
+  _syncCarouselUI();
   _simViewDirty = true;
   _broadcastSettingsNow();
 }
@@ -2437,33 +2491,78 @@ function _applyMergePreview(pixels, PW, PH, placements) {
   const placed = placements.length, total = state.images.length;
   updateSimStatus(
     placed === total
-      ? 'Merged - drag to re-arrange'
-      : 'Merged (' + placed + '/' + total + ' placed) - drag to re-arrange'
+      ? 'Merged - drag'
+      : 'Merged ' + placed + '/' + total + ' - drag'
   );
   btnDownload.classList.remove('im-hidden');
 }
 
 // ── Download ──────────────────────────────────────────────────────────────────
-btnDownload.addEventListener('click', () => {
+btnDownload.addEventListener('click', async () => {
   if (!simLastPlacements || !simLastOwnership) return;
+  const n = slidesN();
   btnDownload.disabled = true;
-  updateSimStatus('Preparing full-res download...');
-  _renderPixels(simLastPlacements, simLastOwnership, 1.0, true)
-    .then(({ blob }) => {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.download = 'merged.png';
-      link.href = url;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      btnDownload.disabled = false;
-      updateSimStatus('Merged - drag to re-arrange');
-    })
-    .catch(err => {
-      updateSimStatus('Download error: ' + err.message);
-      btnDownload.disabled = false;
-    });
+  try {
+    if (n > 1) {
+      updateSimStatus('Slicing ' + n + '...');
+      const { pixels, PW, PH } = await _renderPixels(simLastPlacements, simLastOwnership, 1.0, false);
+      await _downloadSlices(pixels, PW, PH, n);
+      updateSimStatus('Saved ' + n + ' slides');
+    } else {
+      updateSimStatus('Saving...');
+      const { blob } = await _renderPixels(simLastPlacements, simLastOwnership, 1.0, true);
+      _triggerDownload(blob, 'merged.png');
+      updateSimStatus('Merged - drag');
+    }
+  } catch (err) {
+    updateSimStatus('Download error: ' + err.message);
+  } finally {
+    btnDownload.disabled = false;
+  }
 });
+
+function _triggerDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.download = name;
+  link.href = url;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// Slice the full-res render into N equal columns and download them as a zip.
+async function _downloadSlices(pixels, PW, PH, n) {
+  const fullCanvas = document.createElement('canvas');
+  fullCanvas.width = PW; fullCanvas.height = PH;
+  fullCanvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), PW, PH), 0, 0);
+
+  const JSZip = await _loadJSZip();
+  const zip = new JSZip();
+  const sliceW = Math.round(PW / n);
+  for (let k = 0; k < n; k++) {
+    const x = k * sliceW;
+    const w = (k === n - 1) ? PW - x : sliceW; // last slice takes the remainder
+    const c = document.createElement('canvas');
+    c.width = w; c.height = PH;
+    c.getContext('2d').drawImage(fullCanvas, x, 0, w, PH, 0, 0, w, PH);
+    const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+    zip.file('slide-' + String(k + 1).padStart(2, '0') + '.png', blob);
+  }
+  _triggerDownload(await zip.generateAsync({ type: 'blob' }), 'carousel.zip');
+}
+
+let _jszipPromise = null;
+function _loadJSZip() {
+  if (self.JSZip) return Promise.resolve(self.JSZip);
+  if (!_jszipPromise) _jszipPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    s.onload = () => resolve(self.JSZip);
+    s.onerror = () => reject(new Error('Failed to load JSZip'));
+    document.head.appendChild(s);
+  });
+  return _jszipPromise;
+}
 
 // ── Accordion controller ──────────────────────────────────────────────────────
 
@@ -3180,6 +3279,7 @@ btnExportSession.addEventListener('click', async () => {
         blendMode:    cfgBlendMode.value,
         seed:         parseInt(cfgSeed.value) || 42,
         ditherExp:    parseInt(cfgDitherExp.value) || 4,
+        slides:       slidesN(),
         useScaleRange: cfgUseScaleRange.checked,
         simViewScale:  viewport.scale,
         simViewOffset: viewport.offset,
@@ -3267,14 +3367,16 @@ async function _applyImportReplace(session, imgs, encodings) {
   // Restore config to DOM + state
   state.outW = session.outW;         cfgWidth.value  = session.outW;
   state.outH = session.outH;         cfgHeight.value = session.outH;
-  state.fillColor = session.fillColor !== undefined ? session.fillColor : '#181a1b';
+  cfgSlides.value = session.slides || 1;
+  _syncCarouselUI();
+  state.fillColor = session.fillColor !== undefined ? session.fillColor : '#ff69b4';
   if (state.fillColor === null) {
     cfgFillTransparent.classList.add('im-active');
   } else {
     cfgFill.value = state.fillColor;
     cfgFillTransparent.classList.remove('im-active');
   }
-  cfgBlendMode.value = session.blendMode || 'voronoi';
+  cfgBlendMode.value = session.blendMode || 'gradient';
   cfgBlendMode.dispatchEvent(new Event('change'));
   cfgSeed.value      = session.seed    || 42;
   cfgDitherExp.value = session.ditherExp || 4;
@@ -3491,6 +3593,7 @@ function applySimSnapshot(snap) {
     state.outH = Math.round(b.y2 - b.y1);
     cfgWidth.value  = state.outW;
     cfgHeight.value = state.outH;
+    _syncCarouselUI();
     _simOutExplicit = true;   // keep these exact bounds; resizeSim refreshes groups
     resizeSim();
   }

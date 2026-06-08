@@ -501,6 +501,9 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 
 .im-cfg-lbl { font-size: .75em; color: #3c3c3c; white-space: nowrap; }
 
+.im-preset-select { flex: 1 1 12em; min-width: 0; }
+.im-slides-num { width: 3.4em; }
+
 .im-cfg-num {
   width: 4.8em;
   background: #0e0f10;

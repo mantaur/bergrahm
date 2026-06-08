@@ -17,7 +17,7 @@
   <meta name="Description" content="Image merger tool — merge images while preserving essential regions">
 
   <link rel="stylesheet" href="../../../main.css">
-  <link rel="stylesheet" href="imageMerge.css?v=22">
+  <link rel="stylesheet" href="imageMerge.css?v=23">
   <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
   <title>Image Merger</title>
   <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
@@ -82,14 +82,30 @@
               <p class="im-film-hint">Drag to reorder · tap to edit mask</p>
             </div>
 
-            <!-- Output size + advanced toggle -->
+            <!-- Output size + presets + advanced toggle -->
             <div class="im-cfg-row">
               <span class="im-cfg-lbl">Output</span>
+              <select id="cfg-size-preset" class="im-select im-preset-select">
+                <option value="custom">Custom</option>
+                <option value="1080x1080">1:1 Square (IG/FB)</option>
+                <option value="1080x1350">4:5 Portrait (IG)</option>
+                <option value="1080x1920">9:16 Story/Reel (IG/TikTok/Shorts)</option>
+                <option value="1920x1080">16:9 Landscape (YouTube/X)</option>
+                <option value="1280x720">16:9 Thumbnail (YouTube)</option>
+                <option value="1200x630">1.91:1 Link (FB/LinkedIn)</option>
+                <option value="1000x1500">2:3 Pin (Pinterest)</option>
+                <option value="1500x500">3:1 Header (X)</option>
+              </select>
+              <button class="im-btn im-btn-sm im-adv-toggle" id="btn-adv-toggle" type="button" aria-expanded="false">Show more</button>
+            </div>
+            <div class="im-cfg-row">
               <input type="number" id="cfg-width" class="im-cfg-num" value="1080" min="1" inputmode="numeric">
               <span class="im-cfg-x">×</span>
               <input type="number" id="cfg-height" class="im-cfg-num" value="1920" min="1" inputmode="numeric">
               <span class="im-cfg-px">px</span>
-              <button class="im-btn im-btn-sm im-adv-toggle" id="btn-adv-toggle" type="button" aria-expanded="false">Show more</button>
+              <span class="im-cfg-lbl im-slides-lbl">Slides</span>
+              <input type="number" id="cfg-slides" class="im-cfg-num im-slides-num" value="1" min="1" inputmode="numeric">
+              <span class="im-hint-small" id="cfg-full-size"></span>
             </div>
 
             <!-- Advanced panel -->
@@ -99,7 +115,7 @@
                   <label>Fill color</label>
                   <div class="im-fill-row">
                     <button id="cfg-fill-transparent" class="im-fill-checker" title="Transparent"></button>
-                    <input type="color" id="cfg-fill" value="#181a1b">
+                    <input type="color" id="cfg-fill" value="#ff69b4">
                   </div>
                 </div>
                 <div class="im-field">
@@ -107,14 +123,14 @@
                   <select id="cfg-blend-mode" class="im-select">
                     <option value="voronoi">Voronoi</option>
                     <option value="dither">Dither</option>
-                    <option value="gradient">Gradient</option>
+                    <option value="gradient" selected>Gradient</option>
                   </select>
                 </div>
                 <div class="im-field im-hidden" id="cfg-dither-fields">
                   <label for="cfg-seed">Random seed</label>
                   <input type="number" id="cfg-seed" value="42" min="0" step="1" inputmode="numeric">
                 </div>
-                <div class="im-field im-hidden" id="cfg-dither-exp-field">
+                <div class="im-field" id="cfg-dither-exp-field">
                   <label for="cfg-dither-exp">Transition sharpness <span class="im-hint-small">· higher = narrower</span></label>
                   <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1" inputmode="numeric">
                 </div>
@@ -301,9 +317,9 @@
 
 
   <script src="gpuCheck.js?v=1"></script>
-  <script src="sessionIO.js?v=4"></script>
+  <script src="sessionIO.js?v=5"></script>
   <script src="viewport.js?v=4"></script>
-  <script src="imageMerge.js?v=46"></script>
+  <script src="imageMerge.js?v=47"></script>
   <script>
     // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -507,6 +523,8 @@
 
       if (s.outW != null) { state.outW = +s.outW; cfgWidth.value  = state.outW; }
       if (s.outH != null) { state.outH = +s.outH; cfgHeight.value = state.outH; }
+      if (s.slides != null) cfgSlides.value = s.slides;
+      if (window.syncCarouselUI) window.syncCarouselUI();
 
       if (s.fillColor !== undefined) {
         state.fillColor = s.fillColor;
