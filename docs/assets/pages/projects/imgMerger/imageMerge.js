@@ -6,12 +6,10 @@ const state = {
   // config
   outW: 1080,
   outH: 1920,
-  minScale: 0.5,
-  maxScale: 2.0,
   fillColor: '#ff69b4',
   useYolo: false,
   yoloDecodeSize:  512,
-  yoloWorkerCount: 4,
+  yoloWorkerCount: 1, // single encoder -- fast enough, and keeps the UI simple
 
   // images[i] = { id, file, name, img, thumbUrl, w, h, polygons, currentPoly }
   images: [],
@@ -44,7 +42,8 @@ const REMOVE_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const cfgUseYolo          = document.getElementById('cfg-use-yolo');
-const cfgYoloWorkers      = document.getElementById('cfg-yolo-workers');
+const btnYoloMobile       = document.getElementById('btn-yolo-mobile');
+const yoloMobileStatus    = document.getElementById('yolo-mobile-status');
 const cfgBlendMode       = document.getElementById('cfg-blend-mode');
 const cfgDitherFields    = document.getElementById('cfg-dither-fields');
 const cfgDitherExpField  = document.getElementById('cfg-dither-exp-field');
@@ -55,11 +54,6 @@ const cfgHeight     = document.getElementById('cfg-height');
 const cfgSizePreset = document.getElementById('cfg-size-preset');
 const cfgSlides     = document.getElementById('cfg-slides');
 const cfgFullSize   = document.getElementById('cfg-full-size');
-const cfgUseScaleRange = document.getElementById('cfg-use-scale-range');
-const cfgMinScale      = document.getElementById('cfg-min-scale');
-const cfgMinScaleV     = document.getElementById('cfg-min-scale-val');
-const cfgMaxScale      = document.getElementById('cfg-max-scale');
-const cfgMaxScaleV     = document.getElementById('cfg-max-scale-val');
 const cfgFill            = document.getElementById('cfg-fill');
 const cfgFillTransparent = document.getElementById('cfg-fill-transparent');
 const cfgImages     = document.getElementById('cfg-images');
@@ -92,6 +86,8 @@ const simWrap        = document.getElementById('sim-wrap');
 const simCanvas      = document.getElementById('sim-canvas');
 const simCtx         = simCanvas.getContext('2d');
 const btnSimReset    = document.getElementById('btn-sim-reset');
+const btnSimSelect   = document.getElementById('btn-sim-select');
+const simSelBadge    = document.getElementById('sim-select-badge');
 const btnMerge       = document.getElementById('btn-merge');
 const panelWrap      = document.getElementById('panel-wrap');
 const btnPanelToggle = document.getElementById('btn-panel-toggle');
@@ -136,10 +132,9 @@ detectEncodingCapability().then(({ tier }) => {
   const enable = tier === 'fast';
   cfgUseYolo.checked = enable;
   state.useYolo = enable;
-  if (enable) {
-    yoloControls.classList.remove('im-hidden');
-    if (state.images.length > 0 && yoloPool.workers.length === 0) initYoloPool();
-  }
+  if (enable) yoloControls.classList.remove('im-hidden');
+  ensureYoloEncoding();
+  _syncYoloMobile();
 });
 
 cfgBlendMode.addEventListener('change', () => {
@@ -266,45 +261,24 @@ function _broadcastScales() {
   }));
 }
 
-cfgMinScale.addEventListener('input', () => {
-  let v = parseFloat(cfgMinScale.value);
-  if (v > parseFloat(cfgMaxScale.value)) {
-    v = parseFloat(cfgMaxScale.value);
-    cfgMinScale.value = v;
-  }
-  cfgMinScaleV.textContent = v.toFixed(2) + '×';
-  state.minScale = v;
-});
-
-cfgMaxScale.addEventListener('input', () => {
-  let v = parseFloat(cfgMaxScale.value);
-  if (v < parseFloat(cfgMinScale.value)) {
-    v = parseFloat(cfgMinScale.value);
-    cfgMaxScale.value = v;
-  }
-  cfgMaxScaleV.textContent = v.toFixed(2) + '×';
-  state.maxScale = v;
-});
-
-cfgUseScaleRange.addEventListener('change', () => {
-  const on = cfgUseScaleRange.checked;
-  cfgMinScale.disabled = !on;
-  cfgMaxScale.disabled = !on;
-});
-
 cfgUseYolo.addEventListener('change', () => {
   state.useYolo = cfgUseYolo.checked;
   yoloControls.classList.toggle('im-hidden', !state.useYolo);
-  if (state.useYolo && state.images.length > 0) {
-    state.yoloWorkerCount = Math.max(1, parseInt(cfgYoloWorkers.value) || 4);
-    if (yoloPool.workers.length === 0) {
-      initYoloPool();
-    } else if (yoloPool.readyCount > 0) {
-      buildEncodeQueue();
-    }
-  }
+  ensureYoloEncoding();
+  _syncYoloMobile();
   // Rebuild rank list to add or remove SAM dots.
   if (state.images.length > 0) buildRankList();
+});
+
+// Mobile-only auto-segment button (a proxy for the advanced checkbox).
+function _syncYoloMobile() {
+  if (!btnYoloMobile) return;
+  btnYoloMobile.textContent = state.useYolo ? 'Auto-detect: on' : 'Auto-detect subjects';
+  btnYoloMobile.classList.toggle('im-yolo-active', state.useYolo);
+}
+if (btnYoloMobile) btnYoloMobile.addEventListener('click', () => {
+  cfgUseYolo.checked = !cfgUseYolo.checked;
+  cfgUseYolo.dispatchEvent(new Event('change')); // runs the toggle handler above
 });
 
 // ── Painter scale bar ─────────────────────────────────────────────────────────
@@ -444,26 +418,7 @@ cfgImages.addEventListener('change', () => {
         panelSetOpen(true);
         const n = state.images.length;
         updateStepMeta('step-images', imageCountLabel(n), true);
-        // Start encoding if SAM is already checked and pool is live.
-        if (state.useYolo) {
-          state.yoloWorkerCount = Math.max(1, parseInt(cfgYoloWorkers.value) || 4);
-          if (yoloPool.workers.length === 0) {
-            initYoloPool(); // pool not started yet — it will call buildEncodeQueue when ready
-          } else if (yoloPool.readyCount > 0) {
-            if (firstLoad) {
-              buildEncodeQueue(); // full sorted queue build
-            } else {
-              // Append only — don't re-queue images already being encoded.
-              for (let j = baseIdx; j < baseIdx + files.length; j++) {
-                const id = state.images[j].id;
-                if (!yoloPool.embeddingCache.has(id)) yoloPool.encodeQueue.push(id);
-              }
-              yoloPool.encodeQueueBuilt = true;
-              _respawnWorkersForEncoding(); // re-spawn any surplus workers killed after last batch
-              drainEncodeQueue();
-            }
-          }
-        }
+        ensureYoloEncoding(); // start the model / queue the new images for segmentation
       }
     };
     img.src = url;
@@ -510,6 +465,7 @@ function removeImage(imgIdx, opts = {}) {
 
   // Drop the sim group (Map keyed by id).
   if (simRafId !== null) simGroups.delete(imgIdx);
+  if (selectedIds.delete(imgIdx)) _updateSelectionUI();
 
   if (state.images.length === 0) {
     buildRankList(); // clear the (now empty) filmstrip; also disables export
@@ -985,12 +941,13 @@ const yoloPool = {
 function updateYoloStatus(text, warn) {
   yoloStatus.textContent = text;
   yoloStatus.className   = 'im-yolo-status' + (warn ? ' im-log-warn' : '');
+  if (yoloMobileStatus) yoloMobileStatus.textContent = state.useYolo ? text : '';
 }
 
 function updateYoloWorkerCount() {
   const live  = yoloPool.ready.filter(Boolean).length;
   const total = YOLO_WORKER_COUNT;
-  yoloWorkerCountEl.textContent = live + '/' + total + ' workers';
+  yoloWorkerCountEl.textContent = total > 1 ? live + '/' + total + ' workers' : '';
   yoloWorkerCountEl.className   = 'im-yolo-worker-count' + (live < total ? ' im-log-warn' : '');
 }
 
@@ -1203,6 +1160,16 @@ function sendEncode(wIdx, imgIdx) {
 }
 
 // Build the encode queue sorted by rank order, so highest-priority images encode first.
+// Single, idempotent entry point for auto-segmentation -- call from any path
+// (toggle, images added, session import/load). Starts the pool (downloading the
+// model) if needed, otherwise (re)queues any un-encoded images.
+function ensureYoloEncoding() {
+  if (!state.useYolo || state.images.length === 0) return;
+  if (yoloPool.workers.length === 0) { initYoloPool(); return; } // queues itself when ready
+  buildEncodeQueue();
+  _respawnWorkersForEncoding(); // revive any slots killed after the last batch
+}
+
 function buildEncodeQueue() {
   yoloPool.encodeQueueBuilt = true;
   yoloPool.encodeRetries.clear();
@@ -1211,9 +1178,10 @@ function buildEncodeQueue() {
     const rb = state.rankOrder.indexOf(b);
     return (ra === -1 ? Infinity : ra) - (rb === -1 ? Infinity : rb);
   });
-  for (const imgIdx of sorted) {
-    if (!yoloPool.embeddingCache.has(imgIdx))
-      yoloPool.encodeQueue.push(imgIdx);
+  for (const id of sorted) {
+    if (yoloPool.embeddingCache.has(id)) continue;
+    if (yoloPool.encodeQueue.includes(id) || yoloPool.encoding.includes(id)) continue;
+    yoloPool.encodeQueue.push(id);
   }
   drainEncodeQueue();
 }
@@ -1439,7 +1407,7 @@ function startMerge() {
     polygons: entry.polygons.map(p => p.map(v => ({ x: v.x, y: v.y }))),
   }));
 
-  activeWorker = new Worker(new URL('mergeWorker.js?v=1', location.href));
+  activeWorker = new Worker(new URL('mergeWorker.js?v=2', location.href));
 
   function cleanupWorker() {
     activeWorker.terminate();
@@ -1855,11 +1823,101 @@ function dispatchBodyMoved(g) {
 }
 
 
+// ── Multi-select + move-together ──────────────────────────────────────────────
+// A selection is a set of image ids. Selected masks get a highlight outline and a
+// shared dashed box; dragging any member translates the whole set as one (translate
+// only). Desktop builds selections with shift/cmd-click + marquee + Ctrl/Cmd+A;
+// mobile uses a tap-to-toggle select mode (the btn-sim-select FAB toggle). The move
+// reuses the multi-image undo snapshot and the {id:pos} positions broadcast, so a
+// group move is one undo entry and syncs to peers like a single drag.
+const SEL_COLOR = '#38bdf8';
+let selectedIds      = new Set();
+let selectMode       = false;   // mobile: tap-to-toggle selection
+let _groupMove       = null;    // { ids, snap, start:Map(id->{x,y}), origin:{x,y}, pointerId }
+let _activeGroupDrag = null;    // ids whose positions broadcast live during a group drag
+let _marquee         = null;    // desktop drag-select rect, world coords
+
+function setSelection(ids) {
+  selectedIds = new Set([...ids].filter(id => simGroups.has(id)));
+  _simViewDirty = true;
+  _updateSelectionUI();
+}
+function clearSelection() {
+  if (selectedIds.size === 0) return;
+  selectedIds.clear();
+  _simViewDirty = true;
+  _updateSelectionUI();
+}
+function toggleSelect(id) {
+  if (!simGroups.has(id)) return;
+  if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+  _simViewDirty = true;
+  _updateSelectionUI();
+}
+function _updateSelectionUI() {
+  if (!simSelBadge) return;
+  simSelBadge.textContent = selectedIds.size;
+  simSelBadge.classList.toggle('im-hidden', selectedIds.size === 0);
+}
+function setSelectMode(on) {
+  selectMode = on;
+  if (btnSimSelect) btnSimSelect.classList.toggle('is-active', on);
+  if (!on) clearSelection();
+  updateSimStatus(on ? 'Tap masks to select, drag to move' : '');
+}
+
+function beginGroupMove(ids, origin, pointerId) {
+  const arr = ids.filter(id => simGroups.has(id) && !_remoteGrabs.has(id));
+  if (arr.length === 0) return false;
+  const start = new Map();
+  for (const id of arr) { const g = simGroups.get(id); start.set(id, { x: g.x, y: g.y }); }
+  _groupMove = { ids: arr, snap: captureSimSnapshot(arr, false), start, origin, pointerId };
+  _activeGroupDrag = arr;
+  simBodyDragging  = true;
+  _clearMergedImage();
+  for (const id of arr) window.dispatchEvent(new CustomEvent('collab:body-grabbing', { detail: { imgIdx: id } }));
+  return true;
+}
+function updateGroupMove(phys) {
+  if (!_groupMove) return;
+  const dx = phys.x - _groupMove.origin.x;
+  const dy = phys.y - _groupMove.origin.y;
+  for (const id of _groupMove.ids) {
+    const g = simGroups.get(id); if (!g) continue;
+    const s = _groupMove.start.get(id);
+    g.x = s.x + dx; g.y = s.y + dy;
+  }
+  _simViewDirty = true;
+}
+function endGroupMove() {
+  if (!_groupMove) return;
+  recordSimUndo(_groupMove.snap);
+  const positions = {};
+  for (const id of _groupMove.ids) {
+    const g = simGroups.get(id);
+    if (g) positions[id] = { x: g.x, y: g.y, angle: g.angle };
+    window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: id } }));
+  }
+  window.dispatchEvent(new CustomEvent('collab:bodies-moved', { detail: { positions } }));
+  _groupMove = null;
+  _activeGroupDrag = null;
+  simBodyDragging  = false;
+}
+
+window.getSelectedIds   = () => [...selectedIds];
+window.setSimSelectMode = setSelectMode;
+
+if (btnSimSelect) btnSimSelect.addEventListener('click', () => setSelectMode(!selectMode));
+
+
 function teardownSim() {
   if (simRafId !== null) { cancelAnimationFrame(simRafId); simRafId = null; }
   simGroups  = new Map();
   simBodyDragging = false;
   _lastSimTs = null;
+  selectMode = false;
+  if (btnSimSelect) btnSimSelect.classList.remove('is-active');
+  clearSelection();
   btnMerge.classList.add('im-hidden');
   btnDownload.classList.add('im-hidden');
 }
@@ -1889,6 +1947,19 @@ function simTick(ts) {
         if (pinchPreview && pinchPreview.imgIdx === _activeDragIdx) detail.scale = pinchPreview.scale;
         window.dispatchEvent(new CustomEvent('collab:body-dragging', { detail }));
       }
+      _lastDragBroadcast = now;
+    }
+  }
+
+  if (_activeGroupDrag) {
+    const now = performance.now();
+    if (now - _lastDragBroadcast > 33) {
+      const positions = {};
+      for (const id of _activeGroupDrag) {
+        const g = simGroups.get(id);
+        if (g) positions[id] = { x: g.x, y: g.y, angle: g.angle };
+      }
+      window.dispatchEvent(new CustomEvent('collab:bodies-dragging', { detail: { positions } }));
       _lastDragBroadcast = now;
     }
   }
@@ -2016,9 +2087,59 @@ function drawSim() {
     ctx.globalAlpha = 1;
   }
 
+  _drawSelection(ctx, totalScale);
+  _drawMarquee(ctx, totalScale);
   _drawRemoteGrabs(ctx, totalScale);
 
   ctx.restore();
+}
+
+// Highlight outline on each selected mask plus a dashed box around the whole set.
+function _drawSelection(ctx, totalScale) {
+  if (selectedIds.size === 0) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  ctx.strokeStyle = SEL_COLOR;
+  ctx.lineWidth   = 2.5 / totalScale;
+  for (const id of selectedIds) {
+    const g = simGroups.get(id);
+    if (!g || !g.inWorld) continue;
+    const cos = Math.cos(g.angle), sin = Math.sin(g.angle);
+    for (const poly of g.polysInSim) {
+      ctx.beginPath();
+      for (let i = 0; i < poly.length; i++) {
+        const lx = poly[i].x - g.imgCentroidSim.x;
+        const ly = poly[i].y - g.imgCentroidSim.y;
+        const rx = g.x + lx * cos - ly * sin;
+        const ry = g.y + lx * sin + ly * cos;
+        if (i === 0) ctx.moveTo(rx, ry); else ctx.lineTo(rx, ry);
+        if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+        if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+  if (minX === Infinity) return;
+  const pad = 8 / totalScale;
+  ctx.globalAlpha = 0.9;
+  ctx.lineWidth   = 1.5 / totalScale;
+  ctx.setLineDash([6 / totalScale, 4 / totalScale]);
+  ctx.strokeRect(minX - pad, minY - pad, maxX - minX + 2 * pad, maxY - minY + 2 * pad);
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+}
+
+function _drawMarquee(ctx, totalScale) {
+  if (!_marquee || !_marquee.moved) return;
+  const x = Math.min(_marquee.x0, _marquee.x1), y = Math.min(_marquee.y0, _marquee.y1);
+  const w = Math.abs(_marquee.x1 - _marquee.x0), h = Math.abs(_marquee.y1 - _marquee.y0);
+  ctx.fillStyle   = 'rgba(56,189,248,0.12)';
+  ctx.strokeStyle = SEL_COLOR;
+  ctx.lineWidth   = 1 / totalScale;
+  ctx.setLineDash([5 / totalScale, 4 / totalScale]);
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
 }
 
 // Masks peers are currently moving: the mask outline plus a dashed border in the
@@ -2679,7 +2800,7 @@ window.addEventListener('resize', () => {
 // ── Mouse interaction: drag (translate), Ctrl+drag (scale+rotate), corner resize
 (function () {
   simCanvas.addEventListener('mousemove', (e) => {
-    if (simRafId === null || simCornerDrag || _mouseDrag || _ctrlDrag) return;
+    if (simRafId === null || simCornerDrag || _mouseDrag || _ctrlDrag || _groupMove || _marquee) return;
     const canvasPx = viewport.clientToCanvasPx(e.clientX, e.clientY);
     const corner = nearestCornerHandle(canvasPx);
     if (corner) { simCanvas.style.cursor = corner.dir + '-resize'; return; }
@@ -2713,9 +2834,30 @@ window.addEventListener('resize', () => {
     }
     const phys = viewport.canvasToWorld(e.clientX, e.clientY);
     const g    = nearestGroup(phys);
-    if (!g || _remoteGrabs.has(g.imgIdx)) return;
+
+    // Shift/Cmd-click a mask -> toggle it in the selection (Figma-style; no move).
+    if (g && (e.shiftKey || e.metaKey) && !e.ctrlKey) {
+      e.preventDefault();
+      toggleSelect(g.imgIdx);
+      return;
+    }
+
+    // Empty space -> marquee drag-select (Shift/Cmd extends the current set).
+    if (!g || _remoteGrabs.has(g.imgIdx)) {
+      if (!g) {
+        e.preventDefault();
+        simCanvas.setPointerCapture(e.pointerId);
+        _marquee = {
+          pointerId: e.pointerId, x0: phys.x, y0: phys.y, x1: phys.x, y1: phys.y,
+          sx: e.clientX, sy: e.clientY, add: e.shiftKey || e.metaKey, moved: false,
+        };
+      }
+      return;
+    }
+
     e.preventDefault();
     simCanvas.setPointerCapture(e.pointerId);
+
     if (e.ctrlKey) {
       const autoScale = computeAutoScales()[g.imgIdx].scale;
       const cx = g.x, cy = g.y;
@@ -2732,11 +2874,23 @@ window.addEventListener('resize', () => {
       };
       simBodyDragging = true;
       simCanvas.style.cursor = 'crosshair';
-    } else {
-      _mouseDrag = { pointerId: e.pointerId, group: g, offsetX: g.x - phys.x, offsetY: g.y - phys.y };
-      simBodyDragging = true;
-      simCanvas.style.cursor = 'grabbing';
+      _clearMergedImage();
+      dispatchBodyLift(g);
+      _activeDragIdx = g.imgIdx;
+      window.dispatchEvent(new CustomEvent('collab:body-grabbing', { detail: { imgIdx: g.imgIdx } }));
+      return;
     }
+
+    // Plain drag: move the whole selection if this mask is part of a multi-select;
+    // otherwise drop the selection and drag this one alone.
+    if (selectedIds.has(g.imgIdx) && selectedIds.size > 1) {
+      beginGroupMove([...selectedIds], phys, e.pointerId);
+      return;
+    }
+    clearSelection();
+    _mouseDrag = { pointerId: e.pointerId, group: g, offsetX: g.x - phys.x, offsetY: g.y - phys.y };
+    simBodyDragging = true;
+    simCanvas.style.cursor = 'grabbing';
     _clearMergedImage();
     dispatchBodyLift(g);
     _activeDragIdx = g.imgIdx;
@@ -2745,6 +2899,17 @@ window.addEventListener('resize', () => {
 
   simCanvas.addEventListener('pointermove', (e) => {
     if (e.pointerType !== 'mouse') return;
+    if (_groupMove && e.pointerId === _groupMove.pointerId) {
+      updateGroupMove(viewport.canvasToWorld(e.clientX, e.clientY));
+      return;
+    }
+    if (_marquee && e.pointerId === _marquee.pointerId) {
+      const p = viewport.canvasToWorld(e.clientX, e.clientY);
+      _marquee.x1 = p.x; _marquee.y1 = p.y;
+      if (!_marquee.moved && Math.hypot(e.clientX - _marquee.sx, e.clientY - _marquee.sy) > 4) _marquee.moved = true;
+      _simViewDirty = true;
+      return;
+    }
     if (simCornerDrag && e.pointerId === simCornerDrag.id) {
       updateCornerResize(viewport.clientToCanvasPx(e.clientX, e.clientY));
       return;
@@ -2788,6 +2953,21 @@ window.addEventListener('resize', () => {
     }
   }, { passive: false });
 
+  function _finishMarquee() {
+    if (_marquee.moved) {
+      const minX = Math.min(_marquee.x0, _marquee.x1), maxX = Math.max(_marquee.x0, _marquee.x1);
+      const minY = Math.min(_marquee.y0, _marquee.y1), maxY = Math.max(_marquee.y0, _marquee.y1);
+      const picked = [...simGroups.values()]
+        .filter(g => g.inWorld && g.x >= minX && g.x <= maxX && g.y >= minY && g.y <= maxY)
+        .map(g => g.imgIdx);
+      setSelection(_marquee.add ? [...selectedIds, ...picked] : picked);
+    } else if (!_marquee.add) {
+      clearSelection(); // click on empty space clears
+    }
+    _marquee = null;
+    _simViewDirty = true;
+  }
+
   function _endMouseDrag() {
     if (!_mouseDrag) return;
     simBodyDragging = false;
@@ -2826,6 +3006,8 @@ window.addEventListener('resize', () => {
 
   simCanvas.addEventListener('pointerup', (e) => {
     if (e.pointerType !== 'mouse') return;
+    if (_groupMove && e.pointerId === _groupMove.pointerId) { endGroupMove(); return; }
+    if (_marquee   && e.pointerId === _marquee.pointerId)   { _finishMarquee(); return; }
     if (simCornerDrag && e.pointerId === simCornerDrag.id) { simCanvas.style.cursor = ''; finishCornerResize(); return; }
     if (_mouseDrag  && e.pointerId === _mouseDrag.pointerId)  _endMouseDrag();
     if (_ctrlDrag   && e.pointerId === _ctrlDrag.pointerId)   _endCtrlDrag();
@@ -2833,6 +3015,8 @@ window.addEventListener('resize', () => {
 
   simCanvas.addEventListener('pointercancel', (e) => {
     if (e.pointerType !== 'mouse') return;
+    if (_groupMove && e.pointerId === _groupMove.pointerId) { endGroupMove(); return; }
+    if (_marquee   && e.pointerId === _marquee.pointerId)   { _marquee = null; _simViewDirty = true; return; }
     if (simCornerDrag && e.pointerId === simCornerDrag.id) { simCanvas.style.cursor = ''; finishCornerResize(); return; }
     if (_mouseDrag  && e.pointerId === _mouseDrag.pointerId)  _endMouseDrag();
     if (_ctrlDrag   && e.pointerId === _ctrlDrag.pointerId)   _endCtrlDrag();
@@ -2857,6 +3041,7 @@ window.addEventListener('resize', () => {
   let liftedGroup = null;   // simGroup being manipulated
   let liftedOffset = { x: 0, y: 0 }; // body-center minus finger in world coords
   let liftedId    = -1;     // identifier of primary finger
+  let selPressGroup = null; // group under finger at select-mode press (tap/drag decision)
 
   let grpStart    = null;   // { dist, scale, angle, bodyAngle } for group pinch
   let viewStart   = null;   // { dist, scale, offset, mid } for viewport pinch
@@ -3003,7 +3188,9 @@ window.addEventListener('resize', () => {
   function reset() {
     if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
     if (mode === 'resize') finishCornerResize();
+    if (_groupMove) endGroupMove();
     releaseGroup();
+    selPressGroup = null;
     viewStart  = null;
     lpCorner   = null;
     lpStartCPx = null;
@@ -3032,6 +3219,13 @@ window.addEventListener('resize', () => {
         lpCorner   = corner;
         lpStartCPx = canvasPx;
         lpTimer    = setTimeout(triggerCornerResize, LP_MS);
+      } else if (selectMode) {
+        mode          = 'sel-press';
+        lpTouch       = t;
+        lpStartX      = t.clientX;
+        lpStartY      = t.clientY;
+        liftedId      = t.identifier;
+        selPressGroup = nearestGroup(viewport.canvasToWorld(t.clientX, t.clientY), 40);
       } else {
         mode     = 'lp';
         lpTouch  = t;
@@ -3044,6 +3238,9 @@ window.addEventListener('resize', () => {
     } else if (all.length === 2) {
       if (mode === 'lp') {
         clearTimeout(lpTimer); lpTimer = null;
+        mode = 'view';
+        initViewPinch(all[0], all[1]);
+      } else if (mode === 'sel-press') {
         mode = 'view';
         initViewPinch(all[0], all[1]);
       } else if (mode === 'idle') {
@@ -3096,6 +3293,25 @@ window.addEventListener('resize', () => {
         panLastPx = px;
       }
 
+    } else if (mode === 'sel-press') {
+      const t = findTouch(all, liftedId);
+      if (t && Math.hypot(t.clientX - lpStartX, t.clientY - lpStartY) > CANCEL_PX) {
+        if (selPressGroup) {
+          if (!selectedIds.has(selPressGroup.imgIdx)) setSelection([selPressGroup.imgIdx]);
+          const ids       = selectedIds.has(selPressGroup.imgIdx) ? [...selectedIds] : [selPressGroup.imgIdx];
+          const startPhys = viewport.canvasToWorld(lpStartX, lpStartY);
+          if (beginGroupMove(ids, startPhys, liftedId)) { mode = 'sel-move'; }
+          else { mode = 'pan'; panLastPx = viewport.clientToCanvasPx(t.clientX, t.clientY); }
+        } else {
+          mode = 'pan';
+          panLastPx = viewport.clientToCanvasPx(t.clientX, t.clientY);
+        }
+      }
+
+    } else if (mode === 'sel-move') {
+      const t = findTouch(all, liftedId);
+      if (t) updateGroupMove(viewport.canvasToWorld(t.clientX, t.clientY));
+
     } else if (mode === 'lifted') {
       const t = findTouch(all, liftedId);
       if (t && liftedGroup) {
@@ -3135,6 +3351,14 @@ window.addEventListener('resize', () => {
 
     } else if (mode === 'pan') {
       if (all.length === 0) { panLastPx = null; mode = 'idle'; }
+
+    } else if (mode === 'sel-press') {
+      if (selPressGroup) toggleSelect(selPressGroup.imgIdx); // tap (no drag) toggles
+      selPressGroup = null;
+      mode = 'idle';
+
+    } else if (mode === 'sel-move') {
+      if (all.length === 0) { endGroupMove(); selPressGroup = null; mode = 'idle'; }
 
     } else if (mode === 'lifted') {
       if (all.length === 0) {
@@ -3179,6 +3403,21 @@ simCanvas.addEventListener('wheel', (e) => {
     viewport.panByCanvasPx(e.deltaX * cssToCanvas, e.deltaY * cssToCanvas);
   }
 }, { passive: false });
+
+// ── Keyboard: Ctrl/Cmd+A select-all, Esc clears (desktop) ─────────────────────
+window.addEventListener('keydown', (e) => {
+  if (simRafId === null) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+    e.preventDefault();
+    setSelection([...simGroups.values()]
+      .filter(g => g.inWorld && !imgById(g.imgIdx).simHidden)
+      .map(g => g.imgIdx));
+  } else if (e.key === 'Escape' && selectedIds.size) {
+    clearSelection();
+  }
+});
 
 // ── Touch drag-to-reorder filmstrip ───────────────────────────────────────────
 // Long-press (380ms without movement) lifts the card; dragging horizontally
@@ -3280,7 +3519,7 @@ btnExportSession.addEventListener('click', async () => {
         seed:         parseInt(cfgSeed.value) || 42,
         ditherExp:    parseInt(cfgDitherExp.value) || 4,
         slides:       slidesN(),
-        useScaleRange: cfgUseScaleRange.checked,
+        useYolo:      state.useYolo,
         simViewScale:  viewport.scale,
         simViewOffset: viewport.offset,
         simX1, simY1, simX2, simY2,
@@ -3380,9 +3619,12 @@ async function _applyImportReplace(session, imgs, encodings) {
   cfgBlendMode.dispatchEvent(new Event('change'));
   cfgSeed.value      = session.seed    || 42;
   cfgDitherExp.value = session.ditherExp || 4;
-  cfgUseScaleRange.checked = session.useScaleRange !== false;
-  state.minScale = session.minScale || 0.5; cfgMinScale.value = state.minScale; cfgMinScaleV.textContent = state.minScale + 'x';
-  state.maxScale = session.maxScale || 2.0; cfgMaxScale.value = state.maxScale; cfgMaxScaleV.textContent = state.maxScale + 'x';
+
+  // Restore the auto-segment preference; ensureYoloEncoding (below) acts on it.
+  state.useYolo = !!session.useYolo;
+  cfgUseYolo.checked = state.useYolo;
+  yoloControls.classList.toggle('im-hidden', !state.useYolo);
+  _syncYoloMobile();
 
   // Assign each imported image a stable id (use the stored one; generate for old sessions).
   const ids = (session.images || []).map(si => si.id || newImgId());
@@ -3424,10 +3666,7 @@ async function _applyImportReplace(session, imgs, encodings) {
   }
 
 
-  // Queue YOLO encoding for images without cached encodings
-  if (state.useYolo && yoloPool.workers.length > 0 && yoloPool.readyCount > 0) {
-    buildEncodeQueue();
-  }
+  ensureYoloEncoding(); // start the model if needed + queue un-encoded imported images
 }
 
 async function _applyImportAdd(session, imgs, encodings) {

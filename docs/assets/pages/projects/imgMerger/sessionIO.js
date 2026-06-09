@@ -114,7 +114,7 @@ function _base64ToMask(b64) {
 
 const SessionIO = {
 
-  // exportData: { state, simGroups, yoloPool, cfg: { blendMode, seed, ditherExp, slides, useScaleRange } }
+  // exportData: { state, simGroups, yoloPool, cfg: { blendMode, seed, ditherExp, slides, useYolo } }
   // onProgress: (pct, text) => void
   export(exportData, onProgress) {
     return this.exportBlob(exportData, onProgress).then(blob => {
@@ -141,9 +141,7 @@ const SessionIO = {
       outW: state.outW, outH: state.outH,
       fillColor: state.fillColor,
       blendMode: cfg.blendMode,
-      seed: cfg.seed, ditherExp: cfg.ditherExp, slides: cfg.slides,
-      useScaleRange: cfg.useScaleRange,
-      minScale: state.minScale, maxScale: state.maxScale,
+      seed: cfg.seed, ditherExp: cfg.ditherExp, slides: cfg.slides, useYolo: cfg.useYolo,
 
       rankOrder: state.rankOrder.slice(),
       paintIdx: state.paintIdx,
