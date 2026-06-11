@@ -370,6 +370,19 @@ function imageCountLabel(n) {
   return n + ' image' + (n === 1 ? '' : 's');
 }
 
+// Dragging files over the upload zone lights it green. The file input fills the
+// zone (inset:0), so it natively ingests the drop -- these listeners only drive
+// the highlight, and only for actual file drags (not text/element drags).
+const uploadZone = cfgImages.closest('.im-upload-zone');
+if (uploadZone) {
+  const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  const lit = (on) => uploadZone.classList.toggle('im-uz-drag', on);
+  uploadZone.addEventListener('dragenter', (e) => { if (hasFiles(e)) lit(true); });
+  uploadZone.addEventListener('dragover',  (e) => { if (hasFiles(e)) lit(true); });
+  uploadZone.addEventListener('dragleave', (e) => { if (!uploadZone.contains(e.relatedTarget)) lit(false); });
+  uploadZone.addEventListener('drop',      () => lit(false));
+}
+
 cfgImages.addEventListener('change', () => {
   const files = Array.from(cfgImages.files);
   if (!files.length) return;
@@ -1861,9 +1874,10 @@ function _updateSelectionUI() {
 }
 function setSelectMode(on) {
   selectMode = on;
+  // The cyan active state + count badge are the only signal -- no status text
+  // (the HUD pill is tight on narrow phones; a title tooltip never fires on touch).
   if (btnSimSelect) btnSimSelect.classList.toggle('is-active', on);
   if (!on) clearSelection();
-  updateSimStatus(on ? 'Tap masks to select, drag to move' : '');
 }
 
 function beginGroupMove(ids, origin, pointerId) {

@@ -307,11 +307,20 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
   align-items: center;
   gap: .35em;
   cursor: pointer;
-  transition: border-color .2s, background .2s;
+  transition: border-color .2s, background .2s, box-shadow .2s;
   background: rgba(255,255,255,.012);
 }
 
 .im-upload-zone:hover { border-color: rgba(0,255,127,.35); background: rgba(0,255,127,.03); }
+
+/* Dragging image files over the zone -> "drop here" green highlight. */
+.im-upload-zone.im-uz-drag {
+  border-color: springgreen;
+  background: rgba(0,255,127,.10);
+  box-shadow: inset 0 0 0 2px rgba(0,255,127,.25);
+}
+.im-upload-zone.im-uz-drag .im-uz-icon,
+.im-upload-zone.im-uz-drag .im-uz-label { color: springgreen; }
 
 .im-upload-zone input[type="file"] {
   position: absolute;
