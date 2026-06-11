@@ -24,21 +24,19 @@ function _sessionWorkerBody() {
     }
   };
 
-  async function doExport({ session, imageBitmaps, encodings }) {
+  async function doExport({ session, imageBufs, encodings }) {
     const zip = new JSZip();
 
-    // Encode all images to JPEG in parallel via OffscreenCanvas (ImageBitmap avoids GPU readback)
-    let done = 0;
-    const blobBufs = await Promise.all(imageBitmaps.map(async bm => {
+    // Decode + re-encode one image at a time so export never holds all decoded at once.
+    for (let i = 0; i < imageBufs.length; i++) {
+      const bm = await createImageBitmap(new Blob([imageBufs[i]]));
       const oc = new OffscreenCanvas(bm.width, bm.height);
       oc.getContext('2d').drawImage(bm, 0, 0);
       bm.close();
       const blob = await oc.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
-      const buf = await blob.arrayBuffer();
-      self.postMessage({ type: 'progress', pct: Math.round(++done / imageBitmaps.length * 65) });
-      return buf;
-    }));
-    for (let i = 0; i < blobBufs.length; i++) zip.file('images/' + i + '.jpg', blobBufs[i]);
+      zip.file('images/' + i + '.jpg', await blob.arrayBuffer());
+      self.postMessage({ type: 'progress', pct: Math.round((i + 1) / imageBufs.length * 65) });
+    }
 
     // Encode encodings
     for (let i = 0; i < encodings.length; i++) {
@@ -76,18 +74,20 @@ function _sessionWorkerBody() {
 
     for (let i = 0; i < n; i++) {
       const si = session.images[i] || {};
-      let bitmap = null, thumbBuf = null, encoding = null;
+      let jpegBuf = null, thumbBuf = null, encoding = null, w = si.w, h = si.h;
 
       const imgFile = zip.file('images/' + i + '.jpg');
       if (imgFile) {
-        const blob = new Blob([await imgFile.async('arraybuffer')], { type: 'image/jpeg' });
-        bitmap = await createImageBitmap(blob);
-        // Thumbnail here (OffscreenCanvas) so the main thread never JPEG-encodes.
-        const w  = si.w || bitmap.width, h = si.h || bitmap.height;
+        jpegBuf = await imgFile.async('arraybuffer'); // kept compressed; decoded on demand
+        const blob = new Blob([jpegBuf], { type: 'image/jpeg' });
+        if (!w || !h) { const full = await createImageBitmap(blob); w = full.width; h = full.height; full.close(); }
+        // Thumbnail decoded straight to target size off-thread (no full-res bitmap kept).
         const ts = Math.min(1, 256 / Math.max(w, h));
         const tW = Math.max(1, Math.round(w * ts)), tH = Math.max(1, Math.round(h * ts));
-        const oc = new OffscreenCanvas(tW, tH);
-        oc.getContext('2d').drawImage(bitmap, 0, 0, tW, tH);
+        const tbm = await createImageBitmap(blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: 'medium' });
+        const oc  = new OffscreenCanvas(tW, tH);
+        oc.getContext('2d').drawImage(tbm, 0, 0);
+        tbm.close();
         thumbBuf = await (await oc.convertToBlob({ type: 'image/jpeg', quality: 0.82 })).arrayBuffer();
       }
 
@@ -95,9 +95,9 @@ function _sessionWorkerBody() {
       if (encFile) encoding = JSON.parse(await encFile.async('string'));
 
       const transfer = [];
-      if (bitmap)   transfer.push(bitmap);
+      if (jpegBuf)  transfer.push(jpegBuf);
       if (thumbBuf) transfer.push(thumbBuf);
-      self.postMessage({ type: 'image', i, bitmap, thumbBuf, encoding }, transfer);
+      self.postMessage({ type: 'image', i, jpegBuf, thumbBuf, encoding, w, h }, transfer);
       self.postMessage({ type: 'progress', pct: Math.round((i + 1) / n * 100) });
     }
 
@@ -134,11 +134,9 @@ const SessionIO = {
   async exportBlob(exportData, onProgress) {
     const { state, simGroups, yoloPool, cfg } = exportData;
 
-    // createImageBitmap is fast (wraps the already-decoded GPU texture) and transferable,
-    // avoiding a synchronous GPU->CPU readback for each image on the main thread.
-    const imageBitmaps = await Promise.all(
-      state.images.map(entry => createImageBitmap(entry.img))
-    );
+    // Hand the worker the compressed bytes (transferred, zero-copy); it decodes +
+    // re-encodes them sequentially, so export never holds all images decoded at once.
+    const imageBufs = await Promise.all(state.images.map(e => e.blob.arrayBuffer()));
 
     const session = {
       version: 2,
@@ -191,7 +189,7 @@ const SessionIO = {
         if (msg.type === 'error') { worker.terminate(); reject(new Error(msg.message)); }
       };
       worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'Worker error')); };
-      worker.postMessage({ type: 'export', session, imageBitmaps, encodings }, imageBitmaps);
+      worker.postMessage({ type: 'export', session, imageBufs, encodings }, imageBufs);
     });
   },
 

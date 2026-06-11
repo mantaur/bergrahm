@@ -11,7 +11,8 @@ const state = {
   yoloDecodeSize:  512,
   yoloWorkerCount: 1, // single encoder -- fast enough, and keeps the UI simple
 
-  // images[i] = { id, file, name, img, thumbUrl, w, h, polygons, currentPoly }
+  // images[i] = { id, file, blob, name, thumbUrl, w, h, polygons, currentPoly }
+  //   blob = compressed bytes; the full bitmap is decoded on demand (decodeEntry).
   images: [],
 
   // rank order: array of image ids, position 0 = highest importance
@@ -356,6 +357,16 @@ function updateScalePreview(imgIdx) {
   ctx.strokeRect(1.5, 1.5, Math.round(imgW * fit), Math.round(imgH * fit));
 }
 
+// Decode-on-demand: images are kept only as compressed bytes (entry.blob); the
+// full-res bitmap is decoded transiently when needed (painter, merge, encode,
+// export) and released, so memory stays ~zip-sized even with 100+ large images.
+// opts can carry { resizeWidth, resizeHeight, resizeQuality } to decode straight
+// to a target size without ever materialising the full-res bitmap.
+function decodeEntry(entry, opts) {
+  if (!entry || !entry.blob) return Promise.resolve(null);
+  return createImageBitmap(entry.blob, opts || undefined);
+}
+
 function buildThumb(img, w, h) {
   const ts = Math.min(1, 256 / Math.max(w, h));
   const tW = Math.max(1, Math.round(w * ts));
@@ -405,7 +416,7 @@ cfgImages.addEventListener('change', () => {
 
       state.images[idx] = {
         id: newImgId(),
-        file, name: file.name, img, thumbUrl, w, h,
+        file, blob: file, name: file.name, thumbUrl, w, h,
         polygons:    [],
         currentPoly: [],
         scale:       null,
@@ -633,7 +644,7 @@ function loadPainterImage(rankIdx) {
   state.paintIdx = rankIdx;
   const imgIdx  = state.rankOrder[rankIdx];
   const entry   = imgById(imgIdx);
-  if (!entry || !entry.img) return; // image not yet received during streaming collab join
+  if (!entry || !entry.blob) return; // pixels not yet received (streaming import / collab join)
 
   paintName.textContent = entry.name;
   paintIndexLbl.textContent = (rankIdx + 1) + ' / ' + state.images.length;
@@ -657,7 +668,13 @@ function loadPainterImage(rankIdx) {
   maskCanvas.style.width   = dispW + 'px';
   maskCanvas.style.height  = dispH + 'px';
 
-  paintCtx.drawImage(entry.img, 0, 0);
+  // Decode on demand and draw; release immediately (the canvas keeps the pixels).
+  decodeEntry(entry).then(bm => {
+    if (!bm) return;
+    if (state.rankOrder[state.paintIdx] !== imgIdx) { bm.close(); return; } // navigated away
+    paintCtx.drawImage(bm, 0, 0);
+    bm.close();
+  }).catch(() => {});
   currentPoly  = entry.currentPoly; // point at this image's in-progress polygon
   rubberBandPt = null;
   redrawPolyOverlay(imgIdx);
@@ -1154,17 +1171,26 @@ function onEncodeError(wIdx, message) {
   drainEncodeQueue();
 }
 
-function sendEncode(wIdx, imgIdx) {
+async function sendEncode(wIdx, imgIdx) {
   yoloPool.busy[wIdx]     = true;
   yoloPool.encoding[wIdx] = imgIdx;
   const dot = yoloPool.dots.get(imgIdx);
   if (dot) { dot.classList.remove('im-yolo-pending'); dot.classList.add('im-yolo-encoding'); dot.title = 'Encoding...'; }
   const entry = imgById(imgIdx);
+  const bm = await decodeEntry(entry);
+  // Image may have been removed while decoding -> free the worker slot and re-drain.
+  if (!bm || !imgById(imgIdx)) {
+    if (bm) bm.close();
+    yoloPool.busy[wIdx] = false; yoloPool.encoding[wIdx] = null;
+    drainEncodeQueue();
+    return;
+  }
   const tmp   = document.createElement('canvas');
   tmp.width   = entry.w;
   tmp.height  = entry.h;
   const tmpCtx = tmp.getContext('2d');
-  tmpCtx.drawImage(entry.img, 0, 0);
+  tmpCtx.drawImage(bm, 0, 0);
+  bm.close();
   const id = tmpCtx.getImageData(0, 0, entry.w, entry.h);
   yoloPool.workers[wIdx].postMessage(
     { type: 'encode', imgIdx, pixels: id.data.buffer, width: entry.w, height: entry.h },
@@ -2569,7 +2595,9 @@ async function _renderPixels(placements, ownership, previewScale, returnBlob = f
     const entry = state.images[p.imgIdx]; // merge placements are positional
     const bw = Math.max(1, Math.round(entry.w * p.scale * ps));
     const bh = Math.max(1, Math.round(entry.h * p.scale * ps));
-    return createImageBitmap(entry.img, { resizeWidth: bw, resizeHeight: bh, resizeQuality: ps < 1 ? 'medium' : 'high' });
+    // Decode straight to the final pixel size from the compressed bytes -- the
+    // full-res bitmap is never materialised on the main thread.
+    return createImageBitmap(entry.blob, { resizeWidth: bw, resizeHeight: bh, resizeQuality: ps < 1 ? 'medium' : 'high' });
   }));
 
   // Scale all position coords into preview canvas space.
@@ -3749,10 +3777,10 @@ function _importImage(i, msg, ctx) {
   const entry = imgById(id);
   if (!entry) return;
 
-  if (msg.bitmap) {
-    entry.img = msg.bitmap;
-    if (!entry.w) entry.w = msg.bitmap.width;
-    if (!entry.h) entry.h = msg.bitmap.height;
+  if (msg.jpegBuf) {
+    entry.blob = new Blob([msg.jpegBuf], { type: 'image/jpeg' });
+    if (!entry.w && msg.w) entry.w = msg.w;
+    if (!entry.h && msg.h) entry.h = msg.h;
   }
   if (msg.thumbBuf) {
     entry.thumbUrl = URL.createObjectURL(new Blob([msg.thumbBuf], { type: 'image/jpeg' }));
@@ -3767,7 +3795,7 @@ function _importImage(i, msg, ctx) {
       dot.title = 'Encoded';
     }
   }
-  if (entry.img && state.rankOrder[state.paintIdx] === id) loadPainterImage(state.paintIdx);
+  if (entry.blob && state.rankOrder[state.paintIdx] === id) loadPainterImage(state.paintIdx);
 }
 
 // ── Collaboration remote-event handlers ───────────────────────────────────────
@@ -3782,16 +3810,14 @@ window.addEventListener('collab:remote-session', async (e) => {
 
 window.addEventListener('collab:remote-image', async (e) => {
   const { id, name, w, h, jpegBase64, encoding, polygons, simPos, simAngle } = e.detail;
-  const img = new Image();
-  await new Promise(res => {
-    img.onload = res;
-    img.src = jpegBase64;
-  });
-  const thumbUrl = buildThumb(img, w, h);
+  const blob = await (await fetch(jpegBase64)).blob();
+  const bm   = await createImageBitmap(blob);
+  const thumbUrl = buildThumb(bm, w, h);
+  bm.close();
 
   const newId = id || newImgId();
   if (imgById(newId)) return; // already have this image (duplicate / echo)
-  state.images.push({ id: newId, file: null, name, img, thumbUrl, w, h,
+  state.images.push({ id: newId, file: null, blob, name, thumbUrl, w, h,
     polygons: polygons || [], currentPoly: [], scale: null, simHidden: false });
   state.undoStack.set(newId, []);
   state.rankOrder.push(newId);
@@ -4022,26 +4048,25 @@ window.addEventListener('collab:remote-image-thumb', ({ detail: { imgIdx, thumb 
   _updateFilmstripThumb(imgIdx);
 });
 
-window.addEventListener('collab:remote-image-full', ({ detail }) => {
+window.addEventListener('collab:remote-image-full', async ({ detail }) => {
   const { imgIdx, name, w, h, jpegBase64, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
   const entry = imgById(imgIdx);
   if (!entry) return;
-  const img = new Image();
-  img.onload = () => {
-    if (jpegBase64.startsWith('blob:')) URL.revokeObjectURL(jpegBase64);
-    entry.img         = img;
-    entry.thumbUrl    = buildThumb(img, w, h);
-    if (polygons)    entry.polygons    = polygons;
-    if (currentPoly) entry.currentPoly = currentPoly;
-    if (scale     != null) entry.scale     = scale;
-    if (scaleFixed != null) entry.scaleFixed = scaleFixed;
-    if (simHidden  != null) entry.simHidden  = simHidden;
-    _updateFilmstripThumb(imgIdx);
-    simRefreshGroup(imgIdx);
-    _simViewDirty = true;
-    if (++_collabJoinFullsDone >= _collabJoinTotal) loadPainterImage(state.paintIdx);
-  };
-  img.src = jpegBase64;
+  const blob = await (await fetch(jpegBase64)).blob();
+  if (jpegBase64.startsWith('blob:')) URL.revokeObjectURL(jpegBase64);
+  const bm = await createImageBitmap(blob);
+  entry.blob        = blob;                  // kept compressed; decoded on demand
+  entry.thumbUrl    = buildThumb(bm, w, h);
+  bm.close();
+  if (polygons)    entry.polygons    = polygons;
+  if (currentPoly) entry.currentPoly = currentPoly;
+  if (scale     != null) entry.scale     = scale;
+  if (scaleFixed != null) entry.scaleFixed = scaleFixed;
+  if (simHidden  != null) entry.simHidden  = simHidden;
+  _updateFilmstripThumb(imgIdx);
+  simRefreshGroup(imgIdx);
+  _simViewDirty = true;
+  if (++_collabJoinFullsDone >= _collabJoinTotal) loadPainterImage(state.paintIdx);
 });
 
 initSim();
