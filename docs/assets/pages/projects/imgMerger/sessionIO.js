@@ -65,30 +65,43 @@ function _sessionWorkerBody() {
     self.postMessage({ type: 'done', buffer: buf }, [buf]);
   }
 
+  // Stream the session: emit `meta` (config + masks + positions) first so the app
+  // can render masks and the filmstrip immediately, then decode + thumbnail each
+  // image off the main thread and post them one at a time (`image`), then `done`.
   async function doImport({ buffer }) {
     const zip = await JSZip.loadAsync(buffer);
     const session = JSON.parse(await zip.file('session.json').async('string'));
     const n = session.images.length;
+    self.postMessage({ type: 'meta', session });
 
-    let done = 0;
-    const [imageBuffers, encodings] = await Promise.all([
-      Promise.all(Array.from({ length: n }, (_, i) => {
-        const f = zip.file('images/' + i + '.jpg');
-        if (!f) return Promise.resolve(null);
-        return f.async('arraybuffer').then(buf => {
-          self.postMessage({ type: 'progress', pct: Math.round(++done / n * 75) });
-          return buf;
-        });
-      })),
-      Promise.all(Array.from({ length: n }, (_, i) => {
-        const f = zip.file('encodings/' + i + '.json');
-        return f ? f.async('string').then(s => JSON.parse(s)) : Promise.resolve(null);
-      })),
-    ]);
-    self.postMessage({ type: 'progress', pct: 95 });
+    for (let i = 0; i < n; i++) {
+      const si = session.images[i] || {};
+      let bitmap = null, thumbBuf = null, encoding = null;
 
-    const transfers = imageBuffers.filter(Boolean);
-    self.postMessage({ type: 'done', session, imageBuffers, encodings }, transfers);
+      const imgFile = zip.file('images/' + i + '.jpg');
+      if (imgFile) {
+        const blob = new Blob([await imgFile.async('arraybuffer')], { type: 'image/jpeg' });
+        bitmap = await createImageBitmap(blob);
+        // Thumbnail here (OffscreenCanvas) so the main thread never JPEG-encodes.
+        const w  = si.w || bitmap.width, h = si.h || bitmap.height;
+        const ts = Math.min(1, 256 / Math.max(w, h));
+        const tW = Math.max(1, Math.round(w * ts)), tH = Math.max(1, Math.round(h * ts));
+        const oc = new OffscreenCanvas(tW, tH);
+        oc.getContext('2d').drawImage(bitmap, 0, 0, tW, tH);
+        thumbBuf = await (await oc.convertToBlob({ type: 'image/jpeg', quality: 0.82 })).arrayBuffer();
+      }
+
+      const encFile = zip.file('encodings/' + i + '.json');
+      if (encFile) encoding = JSON.parse(await encFile.async('string'));
+
+      const transfer = [];
+      if (bitmap)   transfer.push(bitmap);
+      if (thumbBuf) transfer.push(thumbBuf);
+      self.postMessage({ type: 'image', i, bitmap, thumbBuf, encoding }, transfer);
+      self.postMessage({ type: 'progress', pct: Math.round((i + 1) / n * 100) });
+    }
+
+    self.postMessage({ type: 'done' });
   }
 }
 
@@ -99,15 +112,6 @@ function _makeSessionWorker() {
     _workerBlobUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
   }
   return new Worker(_workerBlobUrl);
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function _base64ToMask(b64) {
-  const raw = atob(b64);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -191,31 +195,18 @@ const SessionIO = {
     });
   },
 
-  // Returns Promise<{ session, imgs: HTMLImageElement[], encodings: Array<Object|null> }>
-  import(file, onProgress) {
+  // Streaming import. Fires onMeta(session) once (config + masks + positions),
+  // then onImage(i, { bitmap, thumbBuf, encoding }) per image as each is decoded
+  // off-thread, then resolves on done. onProgress(pct) is the per-image count.
+  importStream(file, { onMeta, onImage, onProgress } = {}) {
     return file.arrayBuffer().then(buffer => new Promise((resolve, reject) => {
       const worker = _makeSessionWorker();
       worker.onmessage = ({ data: msg }) => {
-        if (msg.type === 'progress') onProgress(msg.pct, 'Importing... ' + msg.pct + '%');
-        if (msg.type === 'done') {
-          worker.terminate();
-          const { session, imageBuffers, encodings } = msg;
-          const imgPromises = imageBuffers.map(buf => {
-            if (!buf) return Promise.resolve(null);
-            return new Promise(res => {
-              const url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
-              const img = new Image();
-              img.onload = () => { URL.revokeObjectURL(url); res(img); };
-              img.onerror = () => { URL.revokeObjectURL(url); res(null); };
-              img.src = url;
-            });
-          });
-          Promise.all(imgPromises).then(imgs => {
-            onProgress(100, 'Done');
-            resolve({ session, imgs, encodings });
-          });
-        }
-        if (msg.type === 'error') { worker.terminate(); reject(new Error(msg.message)); }
+        if (msg.type === 'meta')     { if (onMeta) onMeta(msg.session); }
+        else if (msg.type === 'image')    { if (onImage) onImage(msg.i, msg); }
+        else if (msg.type === 'progress') { if (onProgress) onProgress(msg.pct); }
+        else if (msg.type === 'done')     { worker.terminate(); resolve(); }
+        else if (msg.type === 'error')    { worker.terminate(); reject(new Error(msg.message)); }
       };
       worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'Worker error')); };
       worker.postMessage({ type: 'import', buffer }, [buffer]);

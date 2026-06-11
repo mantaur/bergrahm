@@ -3582,31 +3582,40 @@ btnSessCancel.addEventListener('click', () => {
   _pendingImportFile = null;
 });
 
-async function _doImportReplace(file) {
-  _sessionStatus('Importing 0%');
+// Streaming import driver. makeMeta builds state from the session header (masks +
+// filmstrip render at once), then each decoded image streams in -- so the count is
+// truthful and "Imported" only shows after the last image lands.
+async function _runImport(file, makeMeta) {
+  _sessionStatus('Importing...');
   try {
-    const { session, imgs, encodings } = await SessionIO.import(file, (pct, text) => _sessionStatus(text));
-    await _applyImportReplace(session, imgs, encodings);
+    let ctx = null, total = 0, done = 0;
+    await SessionIO.importStream(file, {
+      onMeta: (session) => {
+        ctx = makeMeta(session);
+        total = ctx.ids.length;
+        _sessionStatus(total ? 'Loading 0/' + total : 'Imported');
+      },
+      onImage: (i, msg) => {
+        _importImage(i, msg, ctx);
+        _sessionStatus('Loading ' + (++done) + '/' + total);
+      },
+    });
+    if (ctx) { loadPainterImage(state.paintIdx); ensureYoloEncoding(); }
     window.dispatchEvent(new CustomEvent('collab:session-loaded'));
-    _sessionStatus('');
+    _sessionStatus(total ? 'Imported' : '');
+    if (total) setTimeout(() => _sessionStatus(''), 1500);
   } catch (e) {
     _sessionStatus('Import failed: ' + e.message);
   }
 }
 
-async function _doImportAdd(file) {
-  _sessionStatus('Importing 0%');
-  try {
-    const { session, imgs, encodings } = await SessionIO.import(file, (pct, text) => _sessionStatus(text));
-    await _applyImportAdd(session, imgs, encodings);
-    window.dispatchEvent(new CustomEvent('collab:session-loaded'));
-    _sessionStatus('');
-  } catch (e) {
-    _sessionStatus('Import failed: ' + e.message);
-  }
-}
+function _doImportReplace(file) { return _runImport(file, _importMetaReplace); }
+function _doImportAdd(file)     { return _runImport(file, _importMetaAdd); }
 
-async function _applyImportReplace(session, imgs, encodings) {
+// Build the whole app shell from the session header before any pixels arrive:
+// config, placeholder image entries (img null), filmstrip, and the sim groups +
+// positions -- so masks + the filmstrip render immediately. Returns { ids }.
+function _importMetaReplace(session) {
   teardownSim();
 
   // Wipe existing state
@@ -3634,18 +3643,28 @@ async function _applyImportReplace(session, imgs, encodings) {
   cfgSeed.value      = session.seed    || 42;
   cfgDitherExp.value = session.ditherExp || 4;
 
-  // Restore the auto-segment preference; ensureYoloEncoding (below) acts on it.
+  // Restore the auto-segment preference; ensureYoloEncoding (on done) acts on it.
   state.useYolo = !!session.useYolo;
   cfgUseYolo.checked = state.useYolo;
   yoloControls.classList.toggle('im-hidden', !state.useYolo);
   _syncYoloMobile();
 
-  // Assign each imported image a stable id (use the stored one; generate for old sessions).
-  const ids = (session.images || []).map(si => si.id || newImgId());
-
-  // Load images + encodings under those ids.
-  await _loadSessionImages(session.images, imgs, 0, null, ids);
-  _restoreEncodings(encodings, ids.map((id, i) => (imgs[i] ? id : null)));
+  // Stable id per image (stored, or generated for old sessions). Placeholder
+  // entries with img: null -- pixels stream in via _importImage.
+  const imgs = session.images || [];
+  const ids  = imgs.map(si => si.id || newImgId());
+  imgs.forEach((si, i) => {
+    state.images[i] = {
+      id: ids[i], file: null, name: si.name, img: null, thumbUrl: null,
+      w: si.w, h: si.h,
+      polygons:    si.polygons    || [],
+      currentPoly: si.currentPoly || [],
+      scale:       si.scale,
+      scaleFixed:  si.scaleFixed   || false,
+      simHidden:   si.simHidden    || false,
+    };
+    state.undoStack.set(ids[i], []);
+  });
 
   // rankOrder supports old (numeric index) and new (id) formats.
   const order = (session.rankOrder || ids.map((_, i) => i))
@@ -3655,14 +3674,13 @@ async function _applyImportReplace(session, imgs, encodings) {
 
   paintArea.classList.remove('im-hidden');
   buildRankList();
-  if (state.images.length > 0) loadPainterImage(state.paintIdx);
   unlockStep('step-paint');
   panelSetOpen(true);
   updateStepMeta('step-images', imageCountLabel(state.images.length), true);
 
-  // Build saved positions (keyed by id) and init sim.
+  // Saved positions (keyed by id) + init sim -> masks render now (no pixels needed).
   const savedPositions = {};
-  (session.images || []).forEach((si, i) => {
+  imgs.forEach((si, i) => {
     if (si.simPos) savedPositions[ids[i]] = { pos: si.simPos, angle: si.simAngle || 0 };
   });
   initSim(savedPositions);
@@ -3679,75 +3697,77 @@ async function _applyImportReplace(session, imgs, encodings) {
     simX2 = simX1 + state.outW; simY2 = simY1 + state.outH;
   }
 
-
-  ensureYoloEncoding(); // start the model if needed + queue un-encoded imported images
+  return { ids };
 }
 
-async function _applyImportAdd(session, imgs, encodings) {
-  const baseIdx = state.images.length;
-  let addCount  = 0;
+// Append a session's images (fresh ids) as placeholder entries + sim groups; pixels
+// stream in via _importImage. Returns { ids } aligned to session.images order.
+function _importMetaAdd(session) {
+  const imgs = session.images || [];
+  const ids  = imgs.map(() => newImgId()); // always fresh ids when appending
 
-  // Map imported position -> new array index (-1 if image failed to load).
-  const remapIdx = (session.images || []).map((_si, i) => imgs[i] ? baseIdx + addCount++ : -1);
-  // Always fresh ids for added images (avoid colliding with an existing session).
-  const ids = (session.images || []).map(() => newImgId());
-
-  await _loadSessionImages(session.images, imgs, baseIdx, remapIdx, ids);
-  _restoreEncodings(encodings, ids.map((id, i) => (remapIdx[i] >= 0 ? id : null)));
+  imgs.forEach((si, i) => {
+    state.images.push({
+      id: ids[i], file: null, name: si.name, img: null, thumbUrl: null,
+      w: si.w, h: si.h,
+      polygons:    si.polygons    || [],
+      currentPoly: si.currentPoly || [],
+      scale:       si.scale,
+      scaleFixed:  si.scaleFixed   || false,
+      simHidden:   si.simHidden    || false,
+    });
+    state.undoStack.set(ids[i], []);
+  });
 
   // Append to rankOrder in the imported session's order (old=index, new=id).
-  const orderPos = (session.rankOrder || (session.images || []).map((_, i) => i))
-    .map(r => (typeof r === 'number' ? r : (session.images || []).findIndex(si => si.id === r)))
+  const orderPos = (session.rankOrder || imgs.map((_, i) => i))
+    .map(r => (typeof r === 'number' ? r : imgs.findIndex(si => si.id === r)))
     .filter(i => i >= 0);
-  for (const i of orderPos) {
-    if (remapIdx[i] >= 0) state.rankOrder.push(ids[i]);
-  }
+  for (const i of orderPos) state.rankOrder.push(ids[i]);
 
   buildRankList();
   updateStepMeta('step-images', imageCountLabel(state.images.length), true);
 
-  // Add groups to the running sim at their saved positions.
-  for (let i = 0; i < (session.images || []).length; i++) {
-    if (remapIdx[i] < 0) continue;
-    const si = session.images[i];
-    if (simRafId !== null) {
+  // Add the new groups to the running sim at their saved positions (masks now).
+  if (simRafId !== null) {
+    imgs.forEach((si, i) => {
       simRefreshGroup(ids[i]);
       const g = simGroups.get(ids[i]);
       if (si.simPos && g) placeGroup(g, si.simPos.x, si.simPos.y, si.simAngle || 0);
-    }
+    });
   }
 
-  if (state.useYolo && yoloPool.workers.length > 0 && yoloPool.readyCount > 0) {
-    buildEncodeQueue();
-  }
+  return { ids };
 }
 
-async function _loadSessionImages(sessionImages, imgs, baseIdx, remapIdx, ids) {
-  const list = sessionImages || [];
-  for (let i = 0; i < list.length; i++) {
-    const si = list[i];
-    const img = imgs[i];
-    const newIdx = remapIdx ? remapIdx[i] : baseIdx + i;
-    if (!img || newIdx < 0) continue;
+// One streamed image: attach its decoded bitmap + worker-built thumbnail + (if any)
+// SAM encoding to the placeholder entry the meta pass created. The sim group already
+// exists (built from polygons), so the mask is already on screen -- this just fills
+// pixels, patches the filmstrip thumb, and loads the painter if it's the open image.
+function _importImage(i, msg, ctx) {
+  const id = ctx.ids[i];
+  const entry = imgById(id);
+  if (!entry) return;
 
-    const w = si.w || img.naturalWidth;
-    const h = si.h || img.naturalHeight;
-    const thumbUrl = buildThumb(img, w, h);
-    const id = ids[i];
-
-    state.images[newIdx] = {
-      id,
-      file: null, name: si.name, img, thumbUrl, w, h,
-      polygons:    si.polygons   || [],
-      currentPoly: si.currentPoly || [],
-      scale:       si.scale,
-      scaleFixed:  si.scaleFixed  || false,
-      simHidden:   si.simHidden   || false,
-    };
-    state.undoStack.set(id, []);
-
-    if ((i + 1) % 20 === 0) await new Promise(r => setTimeout(r, 0));
+  if (msg.bitmap) {
+    entry.img = msg.bitmap;
+    if (!entry.w) entry.w = msg.bitmap.width;
+    if (!entry.h) entry.h = msg.bitmap.height;
   }
+  if (msg.thumbBuf) {
+    entry.thumbUrl = URL.createObjectURL(new Blob([msg.thumbBuf], { type: 'image/jpeg' }));
+    _updateFilmstripThumb(id);
+  }
+  if (msg.encoding) {
+    _restoreEncodings([msg.encoding], [id]);
+    const dot = yoloPool.dots.get(id);
+    if (dot) {
+      dot.classList.remove('im-yolo-encoding', 'im-yolo-pending');
+      dot.classList.add('im-yolo-encoded');
+      dot.title = 'Encoded';
+    }
+  }
+  if (entry.img && state.rankOrder[state.paintIdx] === id) loadPainterImage(state.paintIdx);
 }
 
 // ── Collaboration remote-event handlers ───────────────────────────────────────
