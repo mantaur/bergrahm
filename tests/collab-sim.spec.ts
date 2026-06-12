@@ -40,6 +40,28 @@ test('guest: a pushed session-meta populates the skeleton', async ({ page }) => 
   expect(await polyCount(page, 0)).toBe(1);
 });
 
+test('guest: merging before pixels arrive waits instead of crashing', async ({ page }) => {
+  // Masks/groups exist from the pushed meta, but no image bytes have streamed in.
+  await emitRemote(page, 'collab:remote-session-meta', {
+    imageCount: 1,
+    outW: 400, outH: 400, fillColor: '#181a1b',
+    rankOrder: ['ra'], paintIdx: 0,
+    images: [
+      { id: 'ra', name: 'a.png', w: 400, h: 400,
+        polygons: [[{ x: 40, y: 40 }, { x: 360, y: 40 }, { x: 200, y: 360 }]],
+        scale: null, simPos: { x: 200, y: 200 }, simAngle: 0 },
+    ],
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  await expect(page.locator('#btn-merge')).toBeVisible();
+
+  await page.locator('#btn-merge').click();
+  // Graceful wait, not a "Render error" crash; the merge button stays reachable.
+  await expect(page.locator('#sim-status')).toHaveText(/Waiting for images/);
+  await expect(page.locator('#sim-status')).not.toHaveText(/error/i);
+  await expect(page.locator('#btn-merge')).toBeVisible();
+});
+
 // ── Adding an image over collab ──────────────────────────────────────────────────
 
 test('remote: an incoming image is appended', async ({ page }) => {

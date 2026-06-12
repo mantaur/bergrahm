@@ -857,17 +857,14 @@ window.addEventListener('collab:body-dragging', ({ detail }) => {
   broadcast({ type: 'drag', imgIdx: detail.imgIdx, x: detail.x, y: detail.y, angle: detail.angle, scale: detail.scale });
 });
 
-// Group move (multi-select): live + final positions go via the {id:pos} message
-// that peers already apply (collab:remote-positions).
-window.addEventListener('collab:bodies-dragging', ({ detail }) => {
-  if (!localPeerId) return;
-  broadcast({ type: 'positions', positions: detail.positions });
-});
-
-window.addEventListener('collab:bodies-moved', ({ detail }) => {
-  if (!localPeerId) return;
-  broadcast({ type: 'positions', positions: detail.positions });
-});
+// Group move (multi-select): live + final positions both go via the {id:pos}
+// message that peers already apply (collab:remote-positions).
+for (const ev of ['collab:bodies-dragging', 'collab:bodies-moved']) {
+  window.addEventListener(ev, ({ detail }) => {
+    if (!localPeerId) return;
+    broadcast({ type: 'positions', positions: detail.positions });
+  });
+}
 
 window.addEventListener('collab:body-grabbing', ({ detail: { imgIdx } }) => {
   if (!localPeerId) return;

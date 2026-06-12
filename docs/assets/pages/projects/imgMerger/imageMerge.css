@@ -846,6 +846,12 @@ body.im-panel-open #btn-panel-toggle svg { transform: rotate(180deg); }
 .im-sim-status {
   font-size: .76em;
   color: #888;
+  /* Truncate a long status (e.g. an error) instead of pushing the buttons off
+     the viewport-capped HUD -- the buttons must always stay reachable. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .im-sim-btns {

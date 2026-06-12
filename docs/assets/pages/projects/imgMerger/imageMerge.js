@@ -319,16 +319,29 @@ function updateScalePreview(imgIdx) {
   const entry = imgById(imgIdx);
   const outW  = state.outW;
   const outH  = state.outH;
-  const ctx   = scalePreviewCanvas.getContext('2d');
-  const CW    = scalePreviewCanvas.width;
-  const CH    = scalePreviewCanvas.height;
 
   const resolvedScale = entry.scale === null ? computeAutoScales()[imgIdx].scale : entry.scale;
   const imgW = entry.w * resolvedScale;
   const imgH = entry.h * resolvedScale;
 
-  // Fit whichever is larger (output or image) into the canvas with a 1px margin.
-  const fit = Math.min((CW - 2) / Math.max(outW, imgW), (CH - 2) / Math.max(outH, imgH));
+  // Size the canvas to the union bounding box of output + scaled image, so the
+  // larger geometry in each axis fills it -- no cramming into a corner when the
+  // image and output aspect ratios differ wildly. Longest side capped at 80px.
+  // (Done here, not in loadPainterImage, because the box depends on the scale,
+  // which changes live without a painter reload.)
+  const PREVIEW_MAX = 80;
+  const boundW = Math.max(outW, imgW);
+  const boundH = Math.max(outH, imgH);
+  const bAr    = boundW / boundH;
+  const CW = bAr >= 1 ? PREVIEW_MAX : Math.max(1, Math.round(PREVIEW_MAX * bAr));
+  const CH = bAr >= 1 ? Math.max(1, Math.round(PREVIEW_MAX / bAr)) : PREVIEW_MAX;
+  scalePreviewCanvas.width  = CW;
+  scalePreviewCanvas.height = CH;
+  const ctx = scalePreviewCanvas.getContext('2d');
+
+  // Fit the union box into the canvas with a 1px margin (both shapes share the
+  // top-left origin; the larger one touches the far edges).
+  const fit = Math.min((CW - 2) / boundW, (CH - 2) / boundH);
   const dispOutW = Math.round(outW * fit);
   const dispOutH = Math.round(outH * fit);
 
@@ -365,6 +378,15 @@ function updateScalePreview(imgIdx) {
 function decodeEntry(entry, opts) {
   if (!entry || !entry.blob) return Promise.resolve(null);
   return createImageBitmap(entry.blob, opts || undefined);
+}
+
+// Base64 data URL from raw bytes -- portable across peers (a blob: URL is only
+// valid in the document that created it, so it can't be streamed to a guest).
+function _bufToDataUrl(buf, type) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return 'data:' + (type || 'image/jpeg') + ';base64,' + btoa(bin);
 }
 
 function buildThumb(img, w, h) {
@@ -551,12 +573,8 @@ function createRankItem(imgIdx, rank) {
     hideBtn.title = entry.simHidden ? 'Show in sim' : 'Hide in sim';
     const g = simGroups.get(imgIdx);
     if (!g || simRafId === null) return;
-    if (entry.simHidden) {
-      g.inWorld = false;
-    } else if (!g.inWorld) {
-      g.inWorld = true;
-      _simViewDirty = true;
-    }
+    g.inWorld = !entry.simHidden;
+    _simViewDirty = true; // repaint either way (hide previously skipped this)
   });
 
   const removeBtn = document.createElement('button');
@@ -686,12 +704,7 @@ function loadPainterImage(rankIdx) {
   painterScaleInp.disabled = isAuto;
   painterScaleInp.value    = resolvedScale.toFixed(2);
 
-  // Size the preview canvas to match the output aspect ratio (max 80px per side).
-  const PREVIEW_MAX = 80;
-  const ar = state.outW / state.outH;
-  scalePreviewCanvas.width  = ar >= 1 ? PREVIEW_MAX : Math.round(PREVIEW_MAX * ar);
-  scalePreviewCanvas.height = ar >= 1 ? Math.round(PREVIEW_MAX / ar) : PREVIEW_MAX;
-
+  // (scale-preview canvas is sized inside updateScalePreview -> updatePainterZoom)
   updatePainterZoom(imgIdx);
 
   // Update active-paint on rank list items
@@ -1081,8 +1094,7 @@ function onEncoded(wIdx, { imgIdx, segments, origW, origH }) {
   yoloPool.embeddingCache.set(imgIdx, { segments, origW, origH });
   window.dispatchEvent(new CustomEvent('collab:encoding-ready', { detail: { imgIdx } }));
 
-  const dot = yoloPool.dots.get(imgIdx);
-  if (dot) { dot.classList.remove('im-yolo-encoding', 'im-yolo-pending'); dot.classList.add('im-yolo-encoded'); dot.title = 'Encoded'; }
+  markDotEncoded(imgIdx);
 
   if (imgIdx === state.rankOrder[state.paintIdx]) {
     updateYoloStatus(yoloPool.yoloMode ? 'Click a subject to segment' : 'YOLO ready');
@@ -1169,6 +1181,15 @@ function onEncodeError(wIdx, message) {
   }
 
   drainEncodeQueue();
+}
+
+// Flip an image's filmstrip SAM dot to the "encoded" state (no-op if not shown).
+function markDotEncoded(id) {
+  const dot = yoloPool.dots.get(id);
+  if (!dot) return;
+  dot.classList.remove('im-yolo-encoding', 'im-yolo-pending');
+  dot.classList.add('im-yolo-encoded');
+  dot.title = 'Encoded';
 }
 
 async function sendEncode(wIdx, imgIdx) {
@@ -1433,12 +1454,20 @@ btnCancel.addEventListener('click', cancelMerge);
 btnMerge.addEventListener('click', startMerge);
 
 function startMerge() {
+  const placements = extractPlacements();
+  // On a collab guest the masks arrive before the pixels; merging an image whose
+  // bytes haven't streamed in yet would decode to null and crash the pixel worker.
+  // Wait and let the user retry rather than dead-ending.
+  if (placements.some(p => !state.images[p.imgIdx] || !state.images[p.imgIdx].blob)) {
+    updateSimStatus('Waiting for images to finish loading...');
+    return;
+  }
+
   updateSimStatus('Merging\u2026');
   btnMerge.classList.add('im-hidden');
   btnCancel.classList.remove('im-hidden');
   btnDownload.classList.add('im-hidden');
 
-  const placements   = extractPlacements();
   const workerImages = state.images.map(entry => ({
     w:        entry.w,
     h:        entry.h,
@@ -1873,7 +1902,6 @@ const SEL_COLOR = '#38bdf8';
 let selectedIds      = new Set();
 let selectMode       = false;   // mobile: tap-to-toggle selection
 let _groupMove       = null;    // { ids, snap, start:Map(id->{x,y}), origin:{x,y}, pointerId }
-let _activeGroupDrag = null;    // ids whose positions broadcast live during a group drag
 let _marquee         = null;    // desktop drag-select rect, world coords
 
 function setSelection(ids) {
@@ -1906,13 +1934,21 @@ function setSelectMode(on) {
   if (!on) clearSelection();
 }
 
+function groupPositions(ids) {
+  const positions = {};
+  for (const id of ids) {
+    const g = simGroups.get(id);
+    if (g) positions[id] = { x: g.x, y: g.y, angle: g.angle };
+  }
+  return positions;
+}
+
 function beginGroupMove(ids, origin, pointerId) {
   const arr = ids.filter(id => simGroups.has(id) && !_remoteGrabs.has(id));
   if (arr.length === 0) return false;
   const start = new Map();
   for (const id of arr) { const g = simGroups.get(id); start.set(id, { x: g.x, y: g.y }); }
   _groupMove = { ids: arr, snap: captureSimSnapshot(arr, false), start, origin, pointerId };
-  _activeGroupDrag = arr;
   simBodyDragging  = true;
   _clearMergedImage();
   for (const id of arr) window.dispatchEvent(new CustomEvent('collab:body-grabbing', { detail: { imgIdx: id } }));
@@ -1932,15 +1968,12 @@ function updateGroupMove(phys) {
 function endGroupMove() {
   if (!_groupMove) return;
   recordSimUndo(_groupMove.snap);
-  const positions = {};
+  const positions = groupPositions(_groupMove.ids);
   for (const id of _groupMove.ids) {
-    const g = simGroups.get(id);
-    if (g) positions[id] = { x: g.x, y: g.y, angle: g.angle };
     window.dispatchEvent(new CustomEvent('collab:body-releasing', { detail: { imgIdx: id } }));
   }
   window.dispatchEvent(new CustomEvent('collab:bodies-moved', { detail: { positions } }));
   _groupMove = null;
-  _activeGroupDrag = null;
   simBodyDragging  = false;
 }
 
@@ -1991,15 +2024,10 @@ function simTick(ts) {
     }
   }
 
-  if (_activeGroupDrag) {
+  if (_groupMove) {
     const now = performance.now();
     if (now - _lastDragBroadcast > 33) {
-      const positions = {};
-      for (const id of _activeGroupDrag) {
-        const g = simGroups.get(id);
-        if (g) positions[id] = { x: g.x, y: g.y, angle: g.angle };
-      }
-      window.dispatchEvent(new CustomEvent('collab:bodies-dragging', { detail: { positions } }));
+      window.dispatchEvent(new CustomEvent('collab:bodies-dragging', { detail: { positions: groupPositions(_groupMove.ids) } }));
       _lastDragBroadcast = now;
     }
   }
@@ -2597,7 +2625,7 @@ async function _renderPixels(placements, ownership, previewScale, returnBlob = f
     const bh = Math.max(1, Math.round(entry.h * p.scale * ps));
     // Decode straight to the final pixel size from the compressed bytes -- the
     // full-res bitmap is never materialised on the main thread.
-    return createImageBitmap(entry.blob, { resizeWidth: bw, resizeHeight: bh, resizeQuality: ps < 1 ? 'medium' : 'high' });
+    return decodeEntry(entry, { resizeWidth: bw, resizeHeight: bh, resizeQuality: ps < 1 ? 'medium' : 'high' });
   }));
 
   // Scale all position coords into preview canvas space.
@@ -2631,7 +2659,7 @@ async function _renderPixels(placements, ownership, previewScale, returnBlob = f
     worker.postMessage(
       { imageBitmaps, placements: scaledPlacements, ownership,
         W: state.outW, H: state.outH, PW, PH, fillColor: state.fillColor, returnBlob },
-      imageBitmaps
+      imageBitmaps.filter(Boolean) // never transfer a null (missing-blob safety)
     );
   });
 }
@@ -3002,7 +3030,15 @@ window.addEventListener('resize', () => {
       const picked = [...simGroups.values()]
         .filter(g => g.inWorld && g.x >= minX && g.x <= maxX && g.y >= minY && g.y <= maxY)
         .map(g => g.imgIdx);
-      setSelection(_marquee.add ? [...selectedIds, ...picked] : picked);
+      if (_marquee.add) {
+        // Shift held: toggle each enclosed mask (like shift-clicking each one),
+        // leaving masks outside the box untouched.
+        const next = new Set(selectedIds);
+        for (const id of picked) next.has(id) ? next.delete(id) : next.add(id);
+        setSelection([...next]);
+      } else {
+        setSelection(picked); // plain marquee replaces the selection
+      }
     } else if (!_marquee.add) {
       clearSelection(); // click on empty space clears
     }
@@ -3628,7 +3664,7 @@ async function _runImport(file, makeMeta) {
         _sessionStatus('Loading ' + (++done) + '/' + total);
       },
     });
-    if (ctx) { loadPainterImage(state.paintIdx); ensureYoloEncoding(); }
+    if (ctx) { if (!ctx.painted) loadPainterImage(state.paintIdx); ensureYoloEncoding(); }
     window.dispatchEvent(new CustomEvent('collab:session-loaded'));
     _sessionStatus(total ? 'Imported' : '');
     if (total) setTimeout(() => _sessionStatus(''), 1500);
@@ -3639,6 +3675,20 @@ async function _runImport(file, makeMeta) {
 
 function _doImportReplace(file) { return _runImport(file, _importMetaReplace); }
 function _doImportAdd(file)     { return _runImport(file, _importMetaAdd); }
+
+// Placeholder image entry from a session/meta record `si`. The thumbnail and
+// pixels (entry.blob) stream in later; the bitmap is decoded on demand.
+function _sessionEntry(si, id) {
+  return {
+    id, file: null, blob: null, name: si.name, thumbUrl: null,
+    w: si.w, h: si.h,
+    polygons:    si.polygons    || [],
+    currentPoly: si.currentPoly || [],
+    scale:       si.scale,
+    scaleFixed:  si.scaleFixed   || false,
+    simHidden:   si.simHidden    || false,
+  };
+}
 
 // Build the whole app shell from the session header before any pixels arrive:
 // config, placeholder image entries (img null), filmstrip, and the sim groups +
@@ -3678,19 +3728,11 @@ function _importMetaReplace(session) {
   _syncYoloMobile();
 
   // Stable id per image (stored, or generated for old sessions). Placeholder
-  // entries with img: null -- pixels stream in via _importImage.
+  // entries (no pixels yet) -- the blob + thumbnail stream in via _importImage.
   const imgs = session.images || [];
   const ids  = imgs.map(si => si.id || newImgId());
   imgs.forEach((si, i) => {
-    state.images[i] = {
-      id: ids[i], file: null, name: si.name, img: null, thumbUrl: null,
-      w: si.w, h: si.h,
-      polygons:    si.polygons    || [],
-      currentPoly: si.currentPoly || [],
-      scale:       si.scale,
-      scaleFixed:  si.scaleFixed   || false,
-      simHidden:   si.simHidden    || false,
-    };
+    state.images[i] = _sessionEntry(si, ids[i]);
     state.undoStack.set(ids[i], []);
   });
 
@@ -3735,15 +3777,7 @@ function _importMetaAdd(session) {
   const ids  = imgs.map(() => newImgId()); // always fresh ids when appending
 
   imgs.forEach((si, i) => {
-    state.images.push({
-      id: ids[i], file: null, name: si.name, img: null, thumbUrl: null,
-      w: si.w, h: si.h,
-      polygons:    si.polygons    || [],
-      currentPoly: si.currentPoly || [],
-      scale:       si.scale,
-      scaleFixed:  si.scaleFixed   || false,
-      simHidden:   si.simHidden    || false,
-    });
+    state.images.push(_sessionEntry(si, ids[i]));
     state.undoStack.set(ids[i], []);
   });
 
@@ -3783,19 +3817,15 @@ function _importImage(i, msg, ctx) {
     if (!entry.h && msg.h) entry.h = msg.h;
   }
   if (msg.thumbBuf) {
-    entry.thumbUrl = URL.createObjectURL(new Blob([msg.thumbBuf], { type: 'image/jpeg' }));
+    // Data URL (not a blob: URL) so it stays valid when streamed to a collab guest.
+    entry.thumbUrl = _bufToDataUrl(msg.thumbBuf, 'image/jpeg');
     _updateFilmstripThumb(id);
   }
   if (msg.encoding) {
     _restoreEncodings([msg.encoding], [id]);
-    const dot = yoloPool.dots.get(id);
-    if (dot) {
-      dot.classList.remove('im-yolo-encoding', 'im-yolo-pending');
-      dot.classList.add('im-yolo-encoded');
-      dot.title = 'Encoded';
-    }
+    markDotEncoded(id);
   }
-  if (entry.blob && state.rankOrder[state.paintIdx] === id) loadPainterImage(state.paintIdx);
+  if (entry.blob && state.rankOrder[state.paintIdx] === id) { loadPainterImage(state.paintIdx); ctx.painted = true; }
 }
 
 // ── Collaboration remote-event handlers ───────────────────────────────────────
@@ -3971,12 +4001,7 @@ window.addEventListener('collab:remote-encoding', (e) => {
   const entry = state.images.find(im => im.name === imgName);
   if (!entry || yoloPool.embeddingCache.has(entry.id)) return;
   _restoreEncodings([encoding], [entry.id]);
-  const dot = yoloPool.dots.get(entry.id);
-  if (dot) {
-    dot.classList.remove('im-yolo-encoding', 'im-yolo-pending');
-    dot.classList.add('im-yolo-encoded');
-    dot.title = 'Encoded';
-  }
+  markDotEncoded(entry.id);
 });
 
 // ── Streaming collab join handlers ────────────────────────────────────────────
@@ -3996,16 +4021,7 @@ function _updateFilmstripThumb(imgIdx) {
 window.addEventListener('collab:remote-session-meta', ({ detail: meta }) => {
   const n = meta.imageCount;
 
-  state.images = meta.images.map(si => ({
-    id: si.id || newImgId(),
-    file: null, name: si.name, img: null, thumbUrl: null,
-    w: si.w, h: si.h,
-    polygons:    si.polygons    || [],
-    currentPoly: si.currentPoly || [],
-    scale:      si.scale,
-    scaleFixed:  si.scaleFixed  || false,
-    simHidden:   si.simHidden   || false,
-  }));
+  state.images = meta.images.map(si => _sessionEntry(si, si.id || newImgId()));
   state.undoStack = new Map(state.images.map(e => [e.id, []]));
   state.rankOrder = (meta.rankOrder && meta.rankOrder.length)
     ? meta.rankOrder.slice()

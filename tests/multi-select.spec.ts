@@ -58,6 +58,29 @@ test('marquee drag over empty space selects enclosed masks', async ({ page }) =>
   expect((await selectedIds(page)).length).toBe(2);
 });
 
+test('shift+marquee toggles enclosed masks (like shift-click)', async ({ page }) => {
+  await setupTwo(page);
+  // Pre-select mask 0 only.
+  await page.keyboard.down('Shift');
+  const c0 = await groupClientPos(page, 0);
+  await page.mouse.click(c0.x, c0.y);
+  await page.keyboard.up('Shift');
+  expect((await selectedIds(page)).length).toBe(1);
+
+  // Shift+marquee over BOTH masks: mask 0 toggles off, mask 1 toggles on -> {mask 1}.
+  const box = await page.locator('#sim-canvas').boundingBox();
+  await page.keyboard.down('Shift');
+  await page.mouse.move(box!.x + 4, box!.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width - 4, box!.y + box!.height - 4, { steps: 12 });
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+
+  const sel = await selectedIds(page);
+  const id1 = await page.evaluate(() => (window as any).getSessionMeta().images[1].id);
+  expect(sel).toEqual([id1]);
+});
+
 test('dragging a selected mask moves the whole set as one undo entry', async ({ page }) => {
   await setupTwo(page);
   await page.keyboard.press('Control+a');
