@@ -1518,10 +1518,9 @@ btnMerge.addEventListener("click", startMerge);
 
 function startMerge() {
   const placements = extractPlacements();
-  // On a collab guest the masks arrive before the pixels; merging an image whose
-  // bytes haven't streamed in yet would decode to null and crash the pixel worker.
-  // Wait and let the user retry rather than dead-ending.
-  if (placements.some((p) => !state.images[p.imgIdx] || !state.images[p.imgIdx].blob)) {
+  // On a collab guest the masks arrive before the pixels; don't merge until every
+  // placed image has its bytes (mergeReady is the same gate the merge button uses).
+  if (!mergeReady()) {
     updateSimStatus("Still importing");
     return;
   }
@@ -2542,10 +2541,8 @@ btnScaleAll.addEventListener("click", () => {
   if (simRafId !== null) {
     // Re-scale each mask in place. Do NOT initSim here: it resets the output rect
     // to the origin and re-fits the viewport, which teleports the masks out of an
-    // imported (off-origin) output shape. simRefreshGroup rebuilds at the new scale
-    // while preserving each group's position.
-    for (const id of [...simGroups.keys()]) simRefreshGroup(id);
-    _simViewDirty = true;
+    // imported (off-origin) output shape.
+    refreshAllSimGroups();
   }
 });
 
@@ -2586,6 +2583,12 @@ function resizeSim() {
   _simOutExplicit = false;
   // Output dimensions changed — auto-scale may differ, so imgCentroidSim is stale.
   // Rebuild all existing groups preserving their current positions.
+  refreshAllSimGroups();
+}
+
+// Rebuild every group in place (new scale, same position) and repaint. Used after a
+// global rescale / output resize where the rect must NOT move (unlike initSim).
+function refreshAllSimGroups() {
   for (const id of [...simGroups.keys()]) simRefreshGroup(id);
   _simViewDirty = true;
 }
@@ -3365,13 +3368,16 @@ window.addEventListener("resize", () => {
     _ctrlDrag = null;
   }
 
+  function _endPan(e) {
+    if (!_pan || e.pointerId !== _pan.pointerId) return false;
+    _pan = null;
+    simCanvas.style.cursor = _spaceDown ? "grab" : "";
+    return true;
+  }
+
   simCanvas.addEventListener("pointerup", (e) => {
     if (e.pointerType !== "mouse") return;
-    if (_pan && e.pointerId === _pan.pointerId) {
-      _pan = null;
-      simCanvas.style.cursor = _spaceDown ? "grab" : "";
-      return;
-    }
+    if (_endPan(e)) return;
     if (_groupMove && e.pointerId === _groupMove.pointerId) {
       endGroupMove();
       return;
@@ -3391,11 +3397,7 @@ window.addEventListener("resize", () => {
 
   simCanvas.addEventListener("pointercancel", (e) => {
     if (e.pointerType !== "mouse") return;
-    if (_pan && e.pointerId === _pan.pointerId) {
-      _pan = null;
-      simCanvas.style.cursor = _spaceDown ? "grab" : "";
-      return;
-    }
+    if (_endPan(e)) return;
     if (_groupMove && e.pointerId === _groupMove.pointerId) {
       endGroupMove();
       return;
@@ -3847,18 +3849,17 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// Release Space -> leave pan mode (reset the cursor unless a pan drag is mid-flight).
-window.addEventListener("keyup", (e) => {
-  if (e.code === "Space" && _spaceDown) {
-    _spaceDown = false;
-    if (!_pan && simRafId !== null) simCanvas.style.cursor = "";
-  }
-});
-window.addEventListener("blur", () => {
+// Leave pan mode (reset the cursor unless a pan drag is mid-flight) on Space-up or
+// window blur (so a missed keyup can't leave the cursor stuck).
+function _exitSpacePan() {
   if (!_spaceDown) return;
   _spaceDown = false;
   if (!_pan && simRafId !== null) simCanvas.style.cursor = "";
+}
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space") _exitSpacePan();
 });
+window.addEventListener("blur", _exitSpacePan);
 
 // ── Touch drag-to-reorder filmstrip ───────────────────────────────────────────
 // Long-press (380ms without movement) lifts the card; dragging horizontally
@@ -4508,7 +4509,7 @@ window.addEventListener("collab:remote-image-full", async ({ detail }) => {
   // Status sequence on the guest: Waiting... -> Importing k/N -> the imported count.
   if (++_collabJoinFullsDone >= _collabJoinTotal) {
     loadPainterImage(state.paintIdx);
-    const msg = _collabJoinTotal + " images";
+    const msg = imageCountLabel(_collabJoinTotal);
     updateSimStatus(msg);
     setTimeout(() => {
       if (simStatusEl.textContent === msg) updateSimStatus("");
