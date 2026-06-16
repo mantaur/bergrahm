@@ -38,76 +38,73 @@
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PING_INTERVAL = 3000;   // ms between host pings to each guest
-const PING_TIMEOUT  = 10000;  // ms without a pong before host drops the guest
+const PING_INTERVAL = 3000; // ms between host pings to each guest
+const PING_TIMEOUT = 10000; // ms without a pong before host drops the guest
 
-const COLORS = [
-  '#e05252', '#4a9eed', '#52c97a', '#e0a033',
-  '#9b6be0', '#30b5be', '#e0709a', '#8fbe4a',
-];
-const STORAGE_NAME_KEY = 'collab-name';
-const CHUNK_SIZE        = 64 * 1024;
-const SIM_UNDO_MAX      = 50;
-const HOST_PREFIX       = 'im-mrg-'; // prefix for deterministic host peer IDs
+const COLORS = ["#e05252", "#4a9eed", "#52c97a", "#e0a033", "#9b6be0", "#30b5be", "#e0709a", "#8fbe4a"];
+const STORAGE_NAME_KEY = "collab-name";
+const CHUNK_SIZE = 64 * 1024;
+const SIM_UNDO_MAX = 50;
+const HOST_PREFIX = "im-mrg-"; // prefix for deterministic host peer IDs
 
 // ── DOM ───────────────────────────────────────────────────────────────────────
 
-const modal          = document.getElementById('collab-modal');
-const qrContainer    = document.getElementById('collab-qr');
-const btnCollab      = document.getElementById('btn-collab');
-const btnClose       = document.getElementById('btn-collab-close');
-const btnJoin        = document.getElementById('btn-collab-join');
-const btnLeave       = document.getElementById('btn-collab-leave');
-const btnPresent     = document.getElementById('btn-collab-present');
-const btnCopy        = document.getElementById('btn-collab-copy');
-const btnUndo        = document.getElementById('btn-sim-undo');
-const btnRedo        = document.getElementById('btn-sim-redo');
-const simUndoBadge   = document.getElementById('sim-undo-badge');
-const simRedoBadge   = document.getElementById('sim-redo-badge');
-const nameInp        = document.getElementById('collab-name-inp');
-const roomInp        = document.getElementById('collab-room-inp');
-const passInp        = document.getElementById('collab-pass-inp');
-const roleEl         = document.getElementById('collab-role');
-const statusEl       = document.getElementById('collab-status');
-const cursorLayer    = document.getElementById('collab-cursor-layer');
-const guestPrompt    = document.getElementById('collab-guest-prompt');
-const guestMsg       = document.getElementById('collab-guest-msg');
-const progressBar    = document.getElementById('collab-progress-bar');
-const simCanvasEl    = document.getElementById('sim-canvas');
-const sendProgressEl = document.getElementById('collab-send-progress');
-const sendMsgEl      = document.getElementById('collab-send-msg');
-const sendBarEl      = document.getElementById('collab-send-bar');
-const recvProgressEl = document.getElementById('collab-recv-progress');
-const recvMsgEl      = document.getElementById('collab-recv-msg');
-const recvBarEl      = document.getElementById('collab-recv-bar');
+const modal = document.getElementById("collab-modal");
+const qrContainer = document.getElementById("collab-qr");
+const btnCollab = document.getElementById("btn-collab");
+const btnClose = document.getElementById("btn-collab-close");
+const btnJoin = document.getElementById("btn-collab-join");
+const btnLeave = document.getElementById("btn-collab-leave");
+const btnPresent = document.getElementById("btn-collab-present");
+const btnCopy = document.getElementById("btn-collab-copy");
+const btnUndo = document.getElementById("btn-sim-undo");
+const btnRedo = document.getElementById("btn-sim-redo");
+const simUndoBadge = document.getElementById("sim-undo-badge");
+const simRedoBadge = document.getElementById("sim-redo-badge");
+const nameInp = document.getElementById("collab-name-inp");
+const roomInp = document.getElementById("collab-room-inp");
+const passInp = document.getElementById("collab-pass-inp");
+const roleEl = document.getElementById("collab-role");
+const statusEl = document.getElementById("collab-status");
+const cursorLayer = document.getElementById("collab-cursor-layer");
+const guestPrompt = document.getElementById("collab-guest-prompt");
+const guestMsg = document.getElementById("collab-guest-msg");
+const progressBar = document.getElementById("collab-progress-bar");
+const simCanvasEl = document.getElementById("sim-canvas");
+const sendProgressEl = document.getElementById("collab-send-progress");
+const sendMsgEl = document.getElementById("collab-send-msg");
+const sendBarEl = document.getElementById("collab-send-bar");
+const recvProgressEl = document.getElementById("collab-recv-progress");
+const recvMsgEl = document.getElementById("collab-recv-msg");
+const recvBarEl = document.getElementById("collab-recv-bar");
 
 // ── Runtime state ─────────────────────────────────────────────────────────────
 
-let peer           = null;
-let localPeerId    = null;
-let isHost         = false;
-let currentRoom    = null;
-let hostConn       = null;              // guest's single connection to host
-let remotePeerCount = 0;               // count broadcast by host; used on guest side
-const guestConns = new Map();           // host's connections: peerId -> conn
+let peer = null;
+let localPeerId = null;
+let isHost = false;
+let currentRoom = null;
+let hostConn = null; // guest's single connection to host
+let remotePeerCount = 0; // count broadcast by host; used on guest side
+const guestConns = new Map(); // host's connections: peerId -> conn
 
 // ── Cursor state ──────────────────────────────────────────────────────────────
 
 let rafId = null;
-const peerEls       = new Map(); // peerId -> { el, label }
+const peerEls = new Map(); // peerId -> { el, label }
 const remoteCursors = new Map(); // peerId -> { x, y, name, color }
 
 // ── Sim undo + grab tracking ──────────────────────────────────────────────────
 
-const simUndoStack  = [];
-const simRedoStack  = [];
-const grabbedByPeer  = new Map(); // imgIdx -> peerId (for cleanup on disconnect)
+const simUndoStack = [];
+const simRedoStack = [];
+const grabbedByPeer = new Map(); // imgIdx -> peerId (for cleanup on disconnect)
 
 // ── Heartbeat state ───────────────────────────────────────────────────────────
 
 const _guestLastPong = new Map(); // host: peerId -> timestamp of last pong received
-let _hostPingTimer   = null;
-let _reconnectTimer  = null;
+let _hostPingTimer = null;
+let _reconnectTimer = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -116,113 +113,125 @@ function getLocalColor() {
   return getLocalColor._c;
 }
 
-function randomRoomCode() { return Math.random().toString(36).slice(2, 9); }
+function randomRoomCode() {
+  return Math.random().toString(36).slice(2, 9);
+}
 
-function getRoomParam() { return new URLSearchParams(window.location.search).get('room'); }
+function getRoomParam() {
+  return new URLSearchParams(window.location.search).get("room");
+}
 
 function setRoomParam(code) {
   const u = new URL(window.location.href);
-  u.searchParams.set('room', code);
-  window.history.replaceState(null, '', u.toString());
+  u.searchParams.set("room", code);
+  window.history.replaceState(null, "", u.toString());
 }
 
-function hostIdFor(roomCode) { return HOST_PREFIX + roomCode; }
+function hostIdFor(roomCode) {
+  return HOST_PREFIX + roomCode;
+}
 
 function worldToClient(physX, physY) {
   return window.imViewport.worldToClient(physX, physY);
 }
 
 function _updateQR() {
-  if (typeof QRCode === 'undefined') return;
+  if (typeof QRCode === "undefined") return;
   const code = roomInp.value.trim();
-  qrContainer.innerHTML = '';
+  qrContainer.innerHTML = "";
   if (!code) return;
   const u = new URL(window.location.href);
-  u.searchParams.set('room', code);
+  u.searchParams.set("room", code);
   new QRCode(qrContainer, {
-    text: u.toString(), width: 160, height: 160,
-    colorDark: '#1a1b1c', colorLight: '#f0f0f0',
+    text: u.toString(),
+    width: 160,
+    height: 160,
+    colorDark: "#1a1b1c",
+    colorLight: "#f0f0f0",
     correctLevel: QRCode.CorrectLevel.M,
   });
 }
 
 function setStatus(text, connected) {
   statusEl.textContent = text;
-  statusEl.classList.toggle('im-collab-connected', !!connected);
+  statusEl.classList.toggle("im-collab-connected", !!connected);
 }
 
 // Show the local user's role (Host / Guest) clearly in the modal header.
 function _setRole() {
   if (!roleEl) return;
-  if (!localPeerId) { roleEl.classList.add('im-hidden'); return; }
-  roleEl.textContent = isHost ? 'Host' : 'Guest';
-  roleEl.classList.toggle('im-collab-role-host', isHost);
-  roleEl.classList.toggle('im-collab-role-guest', !isHost);
-  roleEl.classList.remove('im-hidden');
+  if (!localPeerId) {
+    roleEl.classList.add("im-hidden");
+    return;
+  }
+  roleEl.textContent = isHost ? "Host" : "Guest";
+  roleEl.classList.toggle("im-collab-role-host", isHost);
+  roleEl.classList.toggle("im-collab-role-guest", !isHost);
+  roleEl.classList.remove("im-hidden");
 }
 
-const collabPeerBadge = document.getElementById('collab-peer-badge');
+const collabPeerBadge = document.getElementById("collab-peer-badge");
 
 function _broadcastPeerCount() {
   if (!isHost) return;
-  const msg = JSON.stringify({ type: 'peer-count', count: guestConns.size });
+  const msg = JSON.stringify({ type: "peer-count", count: guestConns.size });
   for (const conn of guestConns.values()) {
     if (conn.open) conn.send(msg);
   }
 }
 
 function updatePeerCount() {
-  const count = isHost ? guestConns.size : (hostConn ? remotePeerCount : 0);
+  const count = isHost ? guestConns.size : hostConn ? remotePeerCount : 0;
   let text;
   if (isHost) {
-    text = count === 0 ? 'Hosting - waiting for guests'
-                       : `Hosting - ${count} guest${count > 1 ? 's' : ''} connected`;
+    text = count === 0 ? "Hosting - waiting for guests" : `Hosting - ${count} guest${count > 1 ? "s" : ""} connected`;
   } else {
-    text = count === 0 ? 'Connected as guest'
-                       : `Connected as guest - ${count} other${count > 1 ? 's' : ''}`;
+    text = count === 0 ? "Connected as guest" : `Connected as guest - ${count} other${count > 1 ? "s" : ""}`;
   }
   setStatus(text, true);
   if (count > 0) {
-    collabPeerBadge.textContent = count > 9 ? '9+' : count;
-    collabPeerBadge.classList.remove('im-hidden');
+    collabPeerBadge.textContent = count > 9 ? "9+" : count;
+    collabPeerBadge.classList.remove("im-hidden");
   } else {
-    collabPeerBadge.classList.add('im-hidden');
+    collabPeerBadge.classList.add("im-hidden");
   }
-  window.dispatchEvent(new CustomEvent('collab:peer-count', { detail: { count } }));
+  window.dispatchEvent(new CustomEvent("collab:peer-count", { detail: { count } }));
 }
 
 // ── Guest prompt ──────────────────────────────────────────────────────────────
 
 function showGuestPrompt(msg) {
-  guestPrompt.classList.remove('im-hidden');
+  guestPrompt.classList.remove("im-hidden");
   guestMsg.textContent = msg;
 }
 
 function hideGuestPrompt() {
-  guestPrompt.classList.add('im-hidden');
-  progressBar.style.width = '0%';
+  guestPrompt.classList.add("im-hidden");
+  progressBar.style.width = "0%";
 }
 
-function updateProgress(pct) { progressBar.style.width = Math.round(pct) + '%'; }
+function updateProgress(pct) {
+  progressBar.style.width = Math.round(pct) + "%";
+}
 
 function showSendProgress(msg, pct) {
-  sendProgressEl.classList.remove('im-hidden');
+  sendProgressEl.classList.remove("im-hidden");
   sendMsgEl.textContent = msg;
-  sendBarEl.style.width = Math.round(pct) + '%';
+  sendBarEl.style.width = Math.round(pct) + "%";
 }
 function hideSendProgress() {
-  sendProgressEl.classList.add('im-hidden');
-  sendBarEl.style.width = '0%';
+  sendProgressEl.classList.add("im-hidden");
+  sendBarEl.style.width = "0%";
 }
 
 function showRecvProgress(msg, pct) {
-  recvProgressEl.classList.remove('im-hidden');
+  recvProgressEl.classList.remove("im-hidden");
   recvMsgEl.textContent = msg;
-  recvBarEl.style.width = Math.round(pct) + '%';
+  recvBarEl.style.width = Math.round(pct) + "%";
 }
 function hideRecvProgress() {
-  recvProgressEl.classList.add('im-hidden');
-  recvBarEl.style.width = '0%';
+  recvProgressEl.classList.add("im-hidden");
+  recvBarEl.style.width = "0%";
 }
 
 // ── Cursor DOM ────────────────────────────────────────────────────────────────
@@ -236,35 +245,41 @@ function makeCursorSVG(color) {
 function upsertCursorEl(peerId, cursorState) {
   let entry = peerEls.get(peerId);
   if (!entry) {
-    const el    = document.createElement('div');
-    el.className = 'collab-cursor';
+    const el = document.createElement("div");
+    el.className = "collab-cursor";
     el.innerHTML = makeCursorSVG(cursorState.color);
-    const label = document.createElement('div');
-    label.className = 'collab-cursor-label';
+    const label = document.createElement("div");
+    label.className = "collab-cursor-label";
     el.appendChild(label);
     cursorLayer.appendChild(el);
-    entry = { el, label, path: el.querySelector('svg path') };
+    entry = { el, label, path: el.querySelector("svg path") };
     peerEls.set(peerId, entry);
   }
-  const name = cursorState.name || 'Anonymous';
-  if (entry.label.textContent !== name)  entry.label.textContent      = name;
+  const name = cursorState.name || "Anonymous";
+  if (entry.label.textContent !== name) entry.label.textContent = name;
   if (entry.label.style.background !== cursorState.color) entry.label.style.background = cursorState.color;
-  if (entry.path.getAttribute('fill')  !== cursorState.color) entry.path.setAttribute('fill', cursorState.color);
+  if (entry.path.getAttribute("fill") !== cursorState.color) entry.path.setAttribute("fill", cursorState.color);
   return entry.el;
 }
 
 function removeCursorEl(peerId) {
   const entry = peerEls.get(peerId);
-  if (entry) { entry.el.remove(); peerEls.delete(peerId); }
+  if (entry) {
+    entry.el.remove();
+    peerEls.delete(peerId);
+  }
   remoteCursors.delete(peerId);
 }
 
 // ── RAF loop ──────────────────────────────────────────────────────────────────
 
 function rafLoop() {
-  if (remoteCursors.size === 0) { rafId = null; return; }
+  if (remoteCursors.size === 0) {
+    rafId = null;
+    return;
+  }
   for (const [peerId, cursor] of remoteCursors) {
-    const el  = upsertCursorEl(peerId, cursor);
+    const el = upsertCursorEl(peerId, cursor);
     const pos = worldToClient(cursor.x, cursor.y);
     el.style.transform = `translate(${pos.x}px,${pos.y}px)`;
   }
@@ -277,9 +292,11 @@ function onMouseMove(e) {
   if (!localPeerId || !window.imViewport) return;
   const phys = window.imViewport.canvasToWorld(e.clientX, e.clientY);
   broadcast({
-    type: 'cursor', id: localPeerId,
-    x: phys.x, y: phys.y,
-    name:  nameInp.value.trim() || 'Anonymous',
+    type: "cursor",
+    id: localPeerId,
+    x: phys.x,
+    y: phys.y,
+    name: nameInp.value.trim() || "Anonymous",
     color: getLocalColor(),
   });
 }
@@ -304,140 +321,157 @@ function broadcast(msg, excludePeerId) {
 
 function handleMsg(msg, fromPeerId) {
   switch (msg.type) {
-    case 'cursor':
+    case "cursor":
       remoteCursors.set(msg.id, { x: msg.x, y: msg.y, name: msg.name, color: msg.color });
       if (!rafId) rafId = requestAnimationFrame(rafLoop);
       if (isHost) broadcast(msg, fromPeerId); // rebroadcast
       break;
 
-    case 'cursor-leave':
+    case "cursor-leave":
       removeCursorEl(msg.id);
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'settings':
+    case "settings":
       if (window.applyRemoteSettings) window.applyRemoteSettings(msg.settings);
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'rank-order':
+    case "rank-order":
       if (window.applyRemoteRankOrder) window.applyRemoteRankOrder(msg.order);
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'positions':
-      window.dispatchEvent(new CustomEvent('collab:remote-positions', {
-        detail: { positions: msg.positions, simX1: msg.simX1, simY1: msg.simY1, simX2: msg.simX2, simY2: msg.simY2 },
-      }));
+    case "positions":
+      window.dispatchEvent(
+        new CustomEvent("collab:remote-positions", {
+          detail: { positions: msg.positions, simX1: msg.simX1, simY1: msg.simY1, simX2: msg.simX2, simY2: msg.simY2 },
+        }),
+      );
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'drag':
-      window.dispatchEvent(new CustomEvent('collab:remote-drag', {
-        detail: { imgIdx: msg.imgIdx, x: msg.x, y: msg.y, angle: msg.angle, scale: msg.scale },
-      }));
+    case "drag":
+      window.dispatchEvent(
+        new CustomEvent("collab:remote-drag", {
+          detail: { imgIdx: msg.imgIdx, x: msg.x, y: msg.y, angle: msg.angle, scale: msg.scale },
+        }),
+      );
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'grab':
+    case "grab":
       grabbedByPeer.set(msg.imgIdx, fromPeerId);
-      window.dispatchEvent(new CustomEvent('collab:remote-grab', {
-        detail: { imgIdx: msg.imgIdx, color: msg.color },
-      }));
+      window.dispatchEvent(
+        new CustomEvent("collab:remote-grab", {
+          detail: { imgIdx: msg.imgIdx, color: msg.color },
+        }),
+      );
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'release':
+    case "release":
       grabbedByPeer.delete(msg.imgIdx);
-      window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx: msg.imgIdx } }));
+      window.dispatchEvent(new CustomEvent("collab:remote-release", { detail: { imgIdx: msg.imgIdx } }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'image':
-      window.dispatchEvent(new CustomEvent('collab:remote-image', { detail: msg }));
+    case "image":
+      window.dispatchEvent(new CustomEvent("collab:remote-image", { detail: msg }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'image-removed':
-      window.dispatchEvent(new CustomEvent('collab:remote-image-removed', { detail: { imgIdx: msg.imgIdx } }));
+    case "image-removed":
+      window.dispatchEvent(new CustomEvent("collab:remote-image-removed", { detail: { imgIdx: msg.imgIdx } }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'encoding':
-      window.dispatchEvent(new CustomEvent('collab:remote-encoding', { detail: msg }));
+    case "encoding":
+      window.dispatchEvent(new CustomEvent("collab:remote-encoding", { detail: msg }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'polygon':
-      window.dispatchEvent(new CustomEvent('collab:remote-polygon', {
-        detail: { imgIdx: msg.imgIdx, polygons: msg.polygons },
-      }));
+    case "polygon":
+      window.dispatchEvent(
+        new CustomEvent("collab:remote-polygon", {
+          detail: { imgIdx: msg.imgIdx, polygons: msg.polygons },
+        }),
+      );
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'viewport':
-      window.dispatchEvent(new CustomEvent('collab:remote-viewport', {
-        detail: { scale: msg.scale, centerX: msg.centerX, centerY: msg.centerY },
-      }));
+    case "viewport":
+      window.dispatchEvent(
+        new CustomEvent("collab:remote-viewport", {
+          detail: { scale: msg.scale, centerX: msg.centerX, centerY: msg.centerY },
+        }),
+      );
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'scales':
-      window.dispatchEvent(new CustomEvent('collab:remote-scales', { detail: { scales: msg.scales } }));
+    case "scales":
+      window.dispatchEvent(new CustomEvent("collab:remote-scales", { detail: { scales: msg.scales } }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'session-meta':
-      window.dispatchEvent(new CustomEvent('collab:remote-session-meta', { detail: msg }));
+    case "session-meta":
+      window.dispatchEvent(new CustomEvent("collab:remote-session-meta", { detail: msg }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'image-thumb':
-      window.dispatchEvent(new CustomEvent('collab:remote-image-thumb', {
-        detail: { imgIdx: msg.imgIdx, thumb: msg.thumb },
-      }));
+    case "image-thumb":
+      window.dispatchEvent(
+        new CustomEvent("collab:remote-image-thumb", {
+          detail: { imgIdx: msg.imgIdx, thumb: msg.thumb },
+        }),
+      );
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'image-full':
-      window.dispatchEvent(new CustomEvent('collab:remote-image-full', { detail: msg }));
+    case "image-full":
+      window.dispatchEvent(new CustomEvent("collab:remote-image-full", { detail: msg }));
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'session-thumbs-done':
-      if (!isHost) { hideGuestPrompt(); showRecvProgress('Receiving images... 0/' + msg.total, 0); }
+    case "session-thumbs-done":
+      if (!isHost) {
+        hideGuestPrompt();
+        showRecvProgress("Receiving images... 0/" + msg.total, 0);
+      }
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case 'session-host-progress':
-      if (!isHost) showRecvProgress('Receiving images... ' + msg.sent + '/' + msg.total, msg.sent / msg.total * 100);
+    case "session-host-progress":
+      if (!isHost) showRecvProgress("Receiving images... " + msg.sent + "/" + msg.total, (msg.sent / msg.total) * 100);
       break;
 
-    case 'session-done':
+    case "session-done":
       if (!isHost) hideRecvProgress();
       break;
 
-    case 'peer-count':
-      if (!isHost) { remotePeerCount = msg.count; updatePeerCount(); }
+    case "peer-count":
+      if (!isHost) {
+        remotePeerCount = msg.count;
+        updatePeerCount();
+      }
       break;
 
-    case 'ping':
-      if (!isHost && hostConn && hostConn.open)
-        hostConn.send(JSON.stringify({ type: 'pong' }));
+    case "ping":
+      if (!isHost && hostConn && hostConn.open) hostConn.send(JSON.stringify({ type: "pong" }));
       break;
 
-    case 'pong':
+    case "pong":
       if (isHost) _guestLastPong.set(fromPeerId, Date.now());
       break;
 
-    case 'join':
+    case "join":
       // Guest -> host handshake. Validate against the room password, read live so
       // the host can set or change it any time; a wrong-password guest is dropped.
       if (isHost) {
         const conn = guestConns.get(fromPeerId);
-        const pw = passInp ? passInp.value.trim() : '';
+        const pw = passInp ? passInp.value.trim() : "";
         if (pw && msg.password !== pw) {
-          if (conn && conn.open) conn.send(JSON.stringify({ type: 'auth-failed' }));
+          if (conn && conn.open) conn.send(JSON.stringify({ type: "auth-failed" }));
           _dropGuest(fromPeerId);
         } else if (conn) {
           const cs = window.getCollabState ? window.getCollabState() : null;
@@ -446,10 +480,10 @@ function handleMsg(msg, fromPeerId) {
       }
       break;
 
-    case 'auth-failed':
+    case "auth-failed":
       if (!isHost) {
         leaveRoom();
-        setStatus('Wrong room password - try again');
+        setStatus("Wrong room password - try again");
       }
       break;
   }
@@ -458,79 +492,88 @@ function handleMsg(msg, fromPeerId) {
 // ── Data connection setup ─────────────────────────────────────────────────────
 
 function setupConn(conn, isGuestSide) {
-  let receiving        = null; // legacy ZIP receive state
+  let receiving = null; // legacy ZIP receive state
   let pendingImageMeta = null; // set by image-full-binary header; cleared when binary arrives
 
-  conn.on('data', data => {
+  conn.on("data", (data) => {
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-      const buf = ArrayBuffer.isView(data)
-        ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-        : data;
+      const buf = ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
       if (pendingImageMeta !== null) {
         // Full-res image binary sent by host; reassembled by PeerJS chunking
         const { imgIdx, ...imgMeta } = pendingImageMeta;
         pendingImageMeta = null;
-        const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
-        handleMsg({ type: 'image-full', imgIdx, jpegBase64: blobUrl, ...imgMeta }, conn.peer);
+        const blobUrl = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+        handleMsg({ type: "image-full", imgIdx, jpegBase64: blobUrl, ...imgMeta }, conn.peer);
       } else if (receiving) {
         receiving.chunks.push(buf);
         const got = receiving.chunks.reduce((s, c) => s + c.byteLength, 0);
-        updateProgress(Math.round(got / receiving.totalBytes * 100));
+        updateProgress(Math.round((got / receiving.totalBytes) * 100));
       }
       return;
     }
-    if (typeof data !== 'string') return;
+    if (typeof data !== "string") return;
     const msg = JSON.parse(data);
 
-    if (msg.type === 'image-full-binary') {
+    if (msg.type === "image-full-binary") {
       // Metadata header for the binary image that follows
       pendingImageMeta = {
-        imgIdx: msg.imgIdx, name: msg.name, w: msg.w, h: msg.h,
-        polygons: msg.polygons, currentPoly: msg.currentPoly,
-        scale: msg.scale, scaleFixed: msg.scaleFixed, simHidden: msg.simHidden,
-        simPos: msg.simPos, simAngle: msg.simAngle,
+        imgIdx: msg.imgIdx,
+        name: msg.name,
+        w: msg.w,
+        h: msg.h,
+        polygons: msg.polygons,
+        currentPoly: msg.currentPoly,
+        scale: msg.scale,
+        scaleFixed: msg.scaleFixed,
+        simHidden: msg.simHidden,
+        simPos: msg.simPos,
+        simAngle: msg.simAngle,
       };
-    } else if (msg.type === 'session-start') {
+    } else if (msg.type === "session-start") {
       receiving = { chunks: [], totalBytes: msg.totalBytes };
-      showGuestPrompt('Receiving session...');
-    } else if (msg.type === 'session-end') {
+      showGuestPrompt("Receiving session...");
+    } else if (msg.type === "session-end") {
       if (receiving) {
-        const blob = new Blob(receiving.chunks, { type: 'application/zip' });
+        const blob = new Blob(receiving.chunks, { type: "application/zip" });
         receiving = null;
         hideGuestPrompt();
-        window.dispatchEvent(new CustomEvent('collab:remote-session', { detail: { blob } }));
+        window.dispatchEvent(new CustomEvent("collab:remote-session", { detail: { blob } }));
       }
     } else {
       handleMsg(msg, conn.peer);
     }
   });
 
-  conn.on('close', () => {
+  conn.on("close", () => {
     if (isGuestSide) {
       _dropGuest(conn.peer);
     } else {
-      hostConn        = null;
+      hostConn = null;
       remotePeerCount = 0;
-      setStatus('Disconnected from host');
+      setStatus("Disconnected from host");
       _scheduleReconnect();
     }
   });
 
-  conn.on('error', err => console.warn('[collab] conn error:', err));
+  conn.on("error", (err) => console.warn("[collab] conn error:", err));
 }
 
 // ── Heartbeat helpers ─────────────────────────────────────────────────────────
 
 function _dropGuest(peerId) {
   const conn = guestConns.get(peerId);
-  if (conn) { try { conn.close(); } catch (_) {} }
+  if (conn) {
+    try {
+      conn.close();
+    } catch (_) {}
+  }
   guestConns.delete(peerId);
   _guestLastPong.delete(peerId);
   removeCursorEl(peerId);
   for (const [imgIdx, pid] of grabbedByPeer) {
     if (pid === peerId) {
       grabbedByPeer.delete(imgIdx);
-      window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx } }));
+      window.dispatchEvent(new CustomEvent("collab:remote-release", { detail: { imgIdx } }));
     }
   }
   updatePeerCount();
@@ -541,12 +584,15 @@ function _startHostPing() {
   clearInterval(_hostPingTimer);
   _hostPingTimer = setInterval(() => {
     if (!isHost) return;
-    const now  = Date.now();
-    const ping = JSON.stringify({ type: 'ping' });
+    const now = Date.now();
+    const ping = JSON.stringify({ type: "ping" });
     const toDrop = [];
     for (const [peerId, conn] of guestConns) {
       const last = _guestLastPong.get(peerId) || 0;
-      if (now - last > PING_TIMEOUT) { toDrop.push(peerId); continue; }
+      if (now - last > PING_TIMEOUT) {
+        toDrop.push(peerId);
+        continue;
+      }
       if (conn.open) conn.send(ping);
     }
     for (const peerId of toDrop) _dropGuest(peerId);
@@ -557,10 +603,14 @@ function _scheduleReconnect() {
   clearTimeout(_reconnectTimer);
   _reconnectTimer = setTimeout(() => {
     if (!currentRoom || isHost) return;
-    if (peer && !peer.destroyed) { try { peer.destroy(); } catch (_) {} }
-    peer            = null;
-    localPeerId     = null;
-    hostConn        = null;
+    if (peer && !peer.destroyed) {
+      try {
+        peer.destroy();
+      } catch (_) {}
+    }
+    peer = null;
+    localPeerId = null;
+    hostConn = null;
     remotePeerCount = 0;
     joinAsGuest(currentRoom);
   }, 2000);
@@ -572,14 +622,14 @@ async function _waitDrain(conn) {
   const dc = conn.dataChannel;
   if (!dc) return;
   while (dc.bufferedAmount > 512 * 1024) {
-    await new Promise(r => setTimeout(r, 30));
+    await new Promise((r) => setTimeout(r, 30));
   }
 }
 
 function _dataUrlToBuffer(dataUrl) {
-  const b64    = dataUrl.split(',')[1];
+  const b64 = dataUrl.split(",")[1];
   const binary = atob(b64);
-  const buf    = new Uint8Array(binary.length);
+  const buf = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
   return buf.buffer;
 }
@@ -590,43 +640,46 @@ async function sendSessionTo(conn) {
     if (!meta || meta.imageCount === 0) return;
 
     // Phase 1: instant skeleton — synchronous, no pixel reads
-    conn.send(JSON.stringify({ type: 'session-meta', ...meta }));
+    conn.send(JSON.stringify({ type: "session-meta", ...meta }));
 
     // Phase 2: thumbnails — precomputed small JPEGs, sent synchronously (keyed by id)
     for (let i = 0; i < meta.imageCount; i++) {
       const id = meta.images[i].id;
       const thumb = window.getImageThumb?.(id);
-      if (thumb) conn.send(JSON.stringify({ type: 'image-thumb', imgIdx: id, thumb }));
+      if (thumb) conn.send(JSON.stringify({ type: "image-thumb", imgIdx: id, thumb }));
     }
-    conn.send(JSON.stringify({ type: 'session-thumbs-done', total: meta.imageCount }));
+    conn.send(JSON.stringify({ type: "session-thumbs-done", total: meta.imageCount }));
 
     // Phase 3: full-res images as binary.
     // PeerJS chunks ArrayBuffers automatically (never chunks JSON strings), so large images
     // that would overflow the WebRTC send buffer are safely fragmented.
-    showSendProgress('Sending 1/' + meta.imageCount + '...', 0);
+    showSendProgress("Sending 1/" + meta.imageCount + "...", 0);
     for (let i = 0; i < meta.imageCount; i++) {
-      showSendProgress('Sending ' + (i + 1) + '/' + meta.imageCount + '...', i / meta.imageCount * 100);
+      showSendProgress("Sending " + (i + 1) + "/" + meta.imageCount + "...", (i / meta.imageCount) * 100);
       const id = meta.images[i].id;
       const packet = await window.getImageBuffer?.(id); // async JPEG encode, non-blocking
       await _waitDrain(conn);
       if (packet) {
         const { buffer, ...imgMeta } = packet;
         try {
-          conn.send(JSON.stringify({ type: 'image-full-binary', imgIdx: id, ...imgMeta }));
-          await new Promise(r => setTimeout(r, 0)); // yield before blocking chunk loop
+          conn.send(JSON.stringify({ type: "image-full-binary", imgIdx: id, ...imgMeta }));
+          await new Promise((r) => setTimeout(r, 0)); // yield before blocking chunk loop
           conn.send(buffer);
-        } catch (e) { console.warn('[collab] image-full send failed for index', i, e); }
+        } catch (e) {
+          console.warn("[collab] image-full send failed for index", i, e);
+        }
       }
-      showSendProgress('Sending ' + (i + 1) + '/' + meta.imageCount + '...', (i + 1) / meta.imageCount * 100);
-      try { conn.send(JSON.stringify({ type: 'session-host-progress', sent: i + 1, total: meta.imageCount })); }
-      catch (_) {}
+      showSendProgress("Sending " + (i + 1) + "/" + meta.imageCount + "...", ((i + 1) / meta.imageCount) * 100);
+      try {
+        conn.send(JSON.stringify({ type: "session-host-progress", sent: i + 1, total: meta.imageCount }));
+      } catch (_) {}
     }
 
-    conn.send(JSON.stringify({ type: 'session-done' }));
+    conn.send(JSON.stringify({ type: "session-done" }));
     hideSendProgress();
   } catch (err) {
     hideSendProgress();
-    console.warn('[collab] session send failed:', err);
+    console.warn("[collab] session send failed:", err);
   }
 }
 
@@ -636,42 +689,42 @@ function joinAsHost(roomCode) {
   const hid = hostIdFor(roomCode);
   peer = new Peer(hid, { debug: 0 });
 
-  peer.on('open', id => {
+  peer.on("open", (id) => {
     if (isHost) return; // signaling reconnect — data channels intact, skip reinit
     localPeerId = id;
-    isHost      = true;
+    isHost = true;
     _setRole();
-    setStatus('Hosting - waiting for guests', true);
+    setStatus("Hosting - waiting for guests", true);
     rafId = requestAnimationFrame(rafLoop);
-    simCanvasEl.addEventListener('mousemove', onMouseMove);
+    simCanvasEl.addEventListener("mousemove", onMouseMove);
     _startHostPing();
   });
 
-  peer.on('connection', conn => {
+  peer.on("connection", (conn) => {
     _guestLastPong.set(conn.peer, Date.now());
     guestConns.set(conn.peer, conn);
     setupConn(conn, true);
     updatePeerCount();
     _broadcastPeerCount();
-    conn.on('open', () => {
+    conn.on("open", () => {
       _broadcastPeerCount();
       // Session is sent only after the guest's 'join' handshake is validated
       // (see handleMsg 'join'), so a wrong-password guest never receives it.
     });
   });
 
-  peer.on('disconnected', () => {
+  peer.on("disconnected", () => {
     if (peer && !peer.destroyed) peer.reconnect();
   });
 
-  peer.on('error', err => {
-    if (err.type === 'unavailable-id') {
+  peer.on("error", (err) => {
+    if (err.type === "unavailable-id") {
       peer.destroy();
       peer = null;
       joinAsGuest(roomCode);
     } else {
-      setStatus('Connection error: ' + err.type);
-      console.warn('[collab] host peer error:', err);
+      setStatus("Connection error: " + err.type);
+      console.warn("[collab] host peer error:", err);
     }
   });
 }
@@ -681,44 +734,49 @@ function joinAsHost(roomCode) {
 function joinAsGuest(roomCode, retries = 0) {
   peer = new Peer({ debug: 0 });
 
-  peer.on('open', id => {
+  peer.on("open", (id) => {
     localPeerId = id;
-    isHost      = false;
-    rafId       = requestAnimationFrame(rafLoop);
-    simCanvasEl.addEventListener('mousemove', onMouseMove);
+    isHost = false;
+    rafId = requestAnimationFrame(rafLoop);
+    simCanvasEl.addEventListener("mousemove", onMouseMove);
 
     const hid = hostIdFor(roomCode);
-    hostConn  = peer.connect(hid, { reliable: true });
+    hostConn = peer.connect(hid, { reliable: true });
 
-    hostConn.on('open', () => {
+    hostConn.on("open", () => {
       _setRole();
-      setStatus('Connected as guest', true);
+      setStatus("Connected as guest", true);
       updatePeerCount();
       // Authenticate: send our name + password attempt. The host replies with the
       // session if it matches, or 'auth-failed' if not.
-      hostConn.send(JSON.stringify({
-        type: 'join',
-        name: nameInp.value.trim() || 'Anonymous',
-        password: passInp ? passInp.value.trim() : '',
-      }));
+      hostConn.send(
+        JSON.stringify({
+          type: "join",
+          name: nameInp.value.trim() || "Anonymous",
+          password: passInp ? passInp.value.trim() : "",
+        }),
+      );
       // No blocking overlay: the host pushes its session automatically, and the
       // guest can always import a session file manually from the normal UI.
     });
 
     setupConn(hostConn, false);
 
-    peer.on('error', err => {
-      if (err.type === 'peer-unavailable' && retries < 4) {
+    peer.on("error", (err) => {
+      if (err.type === "peer-unavailable" && retries < 4) {
         peer.destroy();
-        peer        = null;
+        peer = null;
         localPeerId = null;
-        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-        simCanvasEl.removeEventListener('mousemove', onMouseMove);
-        setStatus('Waiting for host...');
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        simCanvasEl.removeEventListener("mousemove", onMouseMove);
+        setStatus("Waiting for host...");
         setTimeout(() => joinAsGuest(roomCode, retries + 1), 1500);
       } else {
-        setStatus('Could not reach host');
-        console.warn('[collab] guest peer error:', err);
+        setStatus("Could not reach host");
+        console.warn("[collab] guest peer error:", err);
       }
     });
   });
@@ -731,23 +789,23 @@ function joinRoom(code) {
   currentRoom = code.trim();
   if (!currentRoom) return;
 
-  setStatus('Connecting...');
+  setStatus("Connecting...");
   setRoomParam(currentRoom);
 
   joinAsHost(currentRoom);
 
-  btnJoin.classList.add('im-hidden');
-  btnLeave.classList.remove('im-hidden');
-  btnPresent.classList.remove('im-hidden');
-  btnCollab.classList.add('im-collab-live');
+  btnJoin.classList.add("im-hidden");
+  btnLeave.classList.remove("im-hidden");
+  btnPresent.classList.remove("im-hidden");
+  btnCollab.classList.add("im-collab-live");
 }
 
 function _setPresentBtn(on) {
-  btnPresent.textContent = on ? 'Stop presenting' : 'Present';
-  btnPresent.classList.toggle('im-collab-live', on);
+  btnPresent.textContent = on ? "Stop presenting" : "Present";
+  btnPresent.classList.toggle("im-collab-live", on);
 }
 
-btnPresent.addEventListener('click', () => {
+btnPresent.addEventListener("click", () => {
   if (!localPeerId || !window.imViewport) return;
   const on = !window.imViewport.presenting;
   window.imViewport.setPresenting(on);
@@ -757,148 +815,172 @@ btnPresent.addEventListener('click', () => {
 function leaveRoom() {
   if (!peer) return;
 
-  broadcast({ type: 'cursor-leave', id: localPeerId });
+  broadcast({ type: "cursor-leave", id: localPeerId });
 
-  clearInterval(_hostPingTimer); _hostPingTimer = null;
-  clearTimeout(_reconnectTimer); _reconnectTimer = null;
+  clearInterval(_hostPingTimer);
+  _hostPingTimer = null;
+  clearTimeout(_reconnectTimer);
+  _reconnectTimer = null;
   _guestLastPong.clear();
 
-  guestConns.forEach(conn => { try { conn.close(); } catch (_) {} });
+  guestConns.forEach((conn) => {
+    try {
+      conn.close();
+    } catch (_) {}
+  });
   guestConns.clear();
-  if (hostConn) { try { hostConn.close(); } catch (_) {} hostConn = null; }
+  if (hostConn) {
+    try {
+      hostConn.close();
+    } catch (_) {}
+    hostConn = null;
+  }
 
   peer.destroy();
-  peer        = null;
+  peer = null;
   localPeerId = null;
-  isHost          = false;
+  isHost = false;
   remotePeerCount = 0;
-  currentRoom     = null;
+  currentRoom = null;
 
-  simCanvasEl.removeEventListener('mousemove', onMouseMove);
-  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  simCanvasEl.removeEventListener("mousemove", onMouseMove);
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
   peerEls.forEach((_, id) => removeCursorEl(id));
   peerEls.clear();
   remoteCursors.clear();
   for (const imgIdx of grabbedByPeer.keys()) {
-    window.dispatchEvent(new CustomEvent('collab:remote-release', { detail: { imgIdx } }));
+    window.dispatchEvent(new CustomEvent("collab:remote-release", { detail: { imgIdx } }));
   }
   grabbedByPeer.clear();
   hideGuestPrompt();
 
   if (window.imViewport) window.imViewport.setPresenting(false);
   _setPresentBtn(false);
-  btnPresent.classList.add('im-hidden');
-  btnJoin.classList.remove('im-hidden');
-  btnLeave.classList.add('im-hidden');
-  btnCollab.classList.remove('im-collab-live');
-  collabPeerBadge.classList.add('im-hidden');
+  btnPresent.classList.add("im-hidden");
+  btnJoin.classList.remove("im-hidden");
+  btnLeave.classList.add("im-hidden");
+  btnCollab.classList.remove("im-collab-live");
+  collabPeerBadge.classList.add("im-hidden");
   _setRole();
-  setStatus('Not connected');
+  setStatus("Not connected");
 
   const u = new URL(window.location.href);
-  u.searchParams.delete('room');
-  window.history.replaceState(null, '', u.toString());
+  u.searchParams.delete("room");
+  window.history.replaceState(null, "", u.toString());
 }
 
 // ── App event hooks ───────────────────────────────────────────────────────────
 
-
-window.addEventListener('collab:settings-changed', ({ detail }) => {
+window.addEventListener("collab:settings-changed", ({ detail }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'settings', settings: detail });
+  broadcast({ type: "settings", settings: detail });
 });
 
-window.addEventListener('collab:rank-order-changed', ({ detail: { order } }) => {
+window.addEventListener("collab:rank-order-changed", ({ detail: { order } }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'rank-order', order });
+  broadcast({ type: "rank-order", order });
 });
 
-window.addEventListener('collab:images-added', async ({ detail: { ids } }) => {
+window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
   if (!localPeerId) return;
-  const packets = await Promise.all(ids.map(id => window.getImagePacket(id)));
+  const packets = await Promise.all(ids.map((id) => window.getImagePacket(id)));
   for (const packet of packets) {
-    if (packet) broadcast({ type: 'image', ...packet });
+    if (packet) broadcast({ type: "image", ...packet });
   }
 });
 
 // A local session import: the host re-streams the whole session to every guest
 // (so they refresh as if newly joined); on a guest it just dismisses any prompt.
-window.addEventListener('collab:session-loaded', () => {
+window.addEventListener("collab:session-loaded", () => {
   hideGuestPrompt();
-  if (isHost) for (const conn of guestConns.values()) { if (conn.open) sendSessionTo(conn); }
+  if (isHost)
+    for (const conn of guestConns.values()) {
+      if (conn.open) sendSessionTo(conn);
+    }
 });
 
-window.addEventListener('collab:image-removed', ({ detail: { imgIdx } }) => {
+window.addEventListener("collab:image-removed", ({ detail: { imgIdx } }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'image-removed', imgIdx });
+  broadcast({ type: "image-removed", imgIdx });
 });
 
-window.addEventListener('collab:canvas-resized', () => {
+window.addEventListener("collab:canvas-resized", () => {
   if (!localPeerId) return;
   const positions = window.getSimPositions ? window.getSimPositions() : {};
-  const bounds    = window.getSimBounds    ? window.getSimBounds()    : {};
-  broadcast({ type: 'positions', positions, ...bounds });
+  const bounds = window.getSimBounds ? window.getSimBounds() : {};
+  broadcast({ type: "positions", positions, ...bounds });
 });
 
-window.addEventListener('collab:scales-changed', ({ detail: { scales } }) => {
+window.addEventListener("collab:scales-changed", ({ detail: { scales } }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'scales', scales });
+  broadcast({ type: "scales", scales });
 });
 
-window.addEventListener('collab:encoding-ready', ({ detail: { imgIdx } }) => {
+window.addEventListener("collab:encoding-ready", ({ detail: { imgIdx } }) => {
   if (!localPeerId) return;
   const packet = window.getEncodingPacket ? window.getEncodingPacket(imgIdx) : null;
   if (!packet) return;
-  broadcast({ type: 'encoding', ...packet });
+  broadcast({ type: "encoding", ...packet });
 });
 
-window.addEventListener('collab:body-dragging', ({ detail }) => {
+window.addEventListener("collab:body-dragging", ({ detail }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'drag', imgIdx: detail.imgIdx, x: detail.x, y: detail.y, angle: detail.angle, scale: detail.scale });
+  broadcast({ type: "drag", imgIdx: detail.imgIdx, x: detail.x, y: detail.y, angle: detail.angle, scale: detail.scale });
 });
 
 // Group move (multi-select): live + final positions both go via the {id:pos}
 // message that peers already apply (collab:remote-positions).
-for (const ev of ['collab:bodies-dragging', 'collab:bodies-moved']) {
+for (const ev of ["collab:bodies-dragging", "collab:bodies-moved"]) {
   window.addEventListener(ev, ({ detail }) => {
     if (!localPeerId) return;
-    broadcast({ type: 'positions', positions: detail.positions });
+    broadcast({ type: "positions", positions: detail.positions });
   });
 }
 
-window.addEventListener('collab:body-grabbing', ({ detail: { imgIdx } }) => {
+window.addEventListener("collab:body-grabbing", ({ detail: { imgIdx } }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'grab', imgIdx, color: getLocalColor() });
+  broadcast({ type: "grab", imgIdx, color: getLocalColor() });
 });
 
-window.addEventListener('collab:body-releasing', ({ detail: { imgIdx } }) => {
+window.addEventListener("collab:body-releasing", ({ detail: { imgIdx } }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'release', imgIdx });
+  broadcast({ type: "release", imgIdx });
 });
 
-window.addEventListener('collab:polygon-changed', ({ detail: { imgIdx, polygons } }) => {
+window.addEventListener("collab:polygon-changed", ({ detail: { imgIdx, polygons } }) => {
   if (!localPeerId) return;
-  broadcast({ type: 'polygon', imgIdx, polygons });
+  broadcast({ type: "polygon", imgIdx, polygons });
 });
 
 // Presenter mode: stream the local viewport to followers, throttled (leading + trailing).
 const VP_THROTTLE_MS = 50;
-let _vpLastSent = 0, _vpTrailing = null, _vpTimer = null;
+let _vpLastSent = 0,
+  _vpTrailing = null,
+  _vpTimer = null;
 function _sendViewport(d) {
-  broadcast({ type: 'viewport', scale: d.scale, centerX: d.centerX, centerY: d.centerY });
+  broadcast({ type: "viewport", scale: d.scale, centerX: d.centerX, centerY: d.centerY });
 }
-window.addEventListener('collab:viewport-changed', ({ detail }) => {
+window.addEventListener("collab:viewport-changed", ({ detail }) => {
   if (!localPeerId) return;
   const now = Date.now();
   const since = now - _vpLastSent;
   if (since >= VP_THROTTLE_MS) {
-    _vpLastSent = now; _vpTrailing = null; _sendViewport(detail);
+    _vpLastSent = now;
+    _vpTrailing = null;
+    _sendViewport(detail);
   } else {
     _vpTrailing = detail;
     if (!_vpTimer) {
       _vpTimer = setTimeout(() => {
         _vpTimer = null;
-        if (_vpTrailing) { _vpLastSent = Date.now(); _sendViewport(_vpTrailing); _vpTrailing = null; }
+        if (_vpTrailing) {
+          _vpLastSent = Date.now();
+          _sendViewport(_vpTrailing);
+          _vpTrailing = null;
+        }
       }, VP_THROTTLE_MS - since);
     }
   }
@@ -908,7 +990,7 @@ window.addEventListener('collab:viewport-changed', ({ detail }) => {
 // imageMerge.js fires collab:undo-record with a scoped snapshot on commit and
 // exposes capture/applySimSnapshot(); the undo/redo stacks live here.
 
-const _fmtCount = (n) => (n > 999 ? '999+' : String(n));
+const _fmtCount = (n) => (n > 999 ? "999+" : String(n));
 function updateUndoBtn() {
   btnUndo.disabled = simUndoStack.length === 0;
   simUndoBadge.textContent = _fmtCount(simUndoStack.length);
@@ -924,14 +1006,14 @@ updateRedoBtn();
 window.getUndoState = () => ({ undo: simUndoStack.length, redo: simRedoStack.length });
 
 // Final drag position -> peers (live sync). Undo recording is separate (below).
-window.addEventListener('collab:body-moved', ({ detail }) => {
+window.addEventListener("collab:body-moved", ({ detail }) => {
   if (localPeerId) {
-    broadcast({ type: 'positions', positions: { [detail.imgIdx]: { x: detail.x, y: detail.y, angle: detail.angle } } });
+    broadcast({ type: "positions", positions: { [detail.imgIdx]: { x: detail.x, y: detail.y, angle: detail.angle } } });
   }
 });
 
 // Record a committed action's pre-state.
-window.addEventListener('collab:undo-record', ({ detail }) => {
+window.addEventListener("collab:undo-record", ({ detail }) => {
   simUndoStack.push(detail);
   if (simUndoStack.length > SIM_UNDO_MAX) simUndoStack.shift();
   simRedoStack.length = 0;
@@ -946,25 +1028,28 @@ function _applySimSnapshot(entry) {
   if (!localPeerId) return;
   if (entry.bounds) {
     // Bounds go via settings so peers re-derive auto-scale (applyRemoteSettings).
-    const b  = window.getSimBounds   ? window.getSimBounds()   : {};
+    const b = window.getSimBounds ? window.getSimBounds() : {};
     const cs = window.getCollabState ? window.getCollabState() : {};
-    broadcast({ type: 'settings', settings: { outW: cs.outW, outH: cs.outH, simX1: b.simX1, simY1: b.simY1, simX2: b.simX2, simY2: b.simY2 } });
+    broadcast({ type: "settings", settings: { outW: cs.outW, outH: cs.outH, simX1: b.simX1, simY1: b.simY1, simX2: b.simX2, simY2: b.simY2 } });
   }
   if (entry.groups && entry.groups.length) {
     const all = window.getSimPositions ? window.getSimPositions() : {};
     const positions = {};
     for (const g of entry.groups) if (all[g.imgIdx]) positions[g.imgIdx] = all[g.imgIdx];
-    broadcast({ type: 'positions', positions });
-    if (window.getScales) broadcast({ type: 'scales', scales: window.getScales() });
+    broadcast({ type: "positions", positions });
+    if (window.getScales) broadcast({ type: "scales", scales: window.getScales() });
   }
 }
 
 // Current state, scoped exactly like a given entry (the inverse for the other stack).
 function _captureLike(entry) {
-  return window.captureSimSnapshot(entry.groups.map(g => g.imgIdx), !!entry.bounds);
+  return window.captureSimSnapshot(
+    entry.groups.map((g) => g.imgIdx),
+    !!entry.bounds,
+  );
 }
 
-btnUndo.addEventListener('click', () => {
+btnUndo.addEventListener("click", () => {
   const entry = simUndoStack.pop();
   if (!entry) return;
   simRedoStack.push(_captureLike(entry));
@@ -974,7 +1059,7 @@ btnUndo.addEventListener('click', () => {
   updateRedoBtn();
 });
 
-btnRedo.addEventListener('click', () => {
+btnRedo.addEventListener("click", () => {
   const entry = simRedoStack.pop();
   if (!entry) return;
   simUndoStack.push(_captureLike(entry));
@@ -984,25 +1069,31 @@ btnRedo.addEventListener('click', () => {
   updateRedoBtn();
 });
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    if (!modal.classList.contains('im-hidden')) modal.classList.add('im-hidden');
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if (!modal.classList.contains("im-hidden")) modal.classList.add("im-hidden");
     return;
   }
-  if (!e.ctrlKey || e.key.toLowerCase() !== 'z') return;
+  if (!e.ctrlKey || e.key.toLowerCase() !== "z") return;
   e.preventDefault();
-  if (e.shiftKey) btnRedo.click(); else btnUndo.click();
+  if (e.shiftKey) btnRedo.click();
+  else btnUndo.click();
 });
 
 // ── UI wiring ─────────────────────────────────────────────────────────────────
 
-btnCollab.addEventListener('click', () => { modal.classList.remove('im-hidden'); _updateQR(); });
-btnClose.addEventListener('click',  () => modal.classList.add('im-hidden'));
-modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('im-hidden'); });
+btnCollab.addEventListener("click", () => {
+  modal.classList.remove("im-hidden");
+  _updateQR();
+});
+btnClose.addEventListener("click", () => modal.classList.add("im-hidden"));
+modal.addEventListener("click", (e) => {
+  if (e.target === modal) modal.classList.add("im-hidden");
+});
 
-roomInp.addEventListener('input', _updateQR);
+roomInp.addEventListener("input", _updateQR);
 
-btnJoin.addEventListener('click', () => {
+btnJoin.addEventListener("click", () => {
   const code = roomInp.value.trim() || randomRoomCode();
   roomInp.value = code;
   localStorage.setItem(STORAGE_NAME_KEY, nameInp.value.trim());
@@ -1010,18 +1101,21 @@ btnJoin.addEventListener('click', () => {
   _updateQR();
 });
 
-btnLeave.addEventListener('click', leaveRoom);
+btnLeave.addEventListener("click", leaveRoom);
 
-const _copyIconHtml  = btnCopy.innerHTML;
+const _copyIconHtml = btnCopy.innerHTML;
 const _checkIconHtml = '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-btnCopy.addEventListener('click', () => {
+btnCopy.addEventListener("click", () => {
   const code = roomInp.value.trim() || randomRoomCode();
   setRoomParam(code);
   const u = new URL(window.location.href);
   navigator.clipboard.writeText(u.toString()).then(() => {
     btnCopy.innerHTML = _checkIconHtml;
-    btnCopy.title = 'Copied!';
-    setTimeout(() => { btnCopy.innerHTML = _copyIconHtml; btnCopy.title = 'Copy link'; }, 1800);
+    btnCopy.title = "Copied!";
+    setTimeout(() => {
+      btnCopy.innerHTML = _copyIconHtml;
+      btnCopy.title = "Copy link";
+    }, 1800);
   });
 });
 
@@ -1035,7 +1129,7 @@ if (urlRoom) {
   roomInp.value = urlRoom;
   // Arriving via a shared link / QR scan: surface the session modal so the room
   // is visible and a password can be supplied if the join is rejected.
-  modal.classList.remove('im-hidden');
+  modal.classList.remove("im-hidden");
   _updateQR();
   setTimeout(() => joinRoom(urlRoom), 600);
 } else {
@@ -1043,8 +1137,8 @@ if (urlRoom) {
 }
 
 // Reconnect guest when returning from background (mobile browsers suspend WebRTC)
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
   if (isHost || !currentRoom) return;
   if (!hostConn || !hostConn.open) _scheduleReconnect();
 });

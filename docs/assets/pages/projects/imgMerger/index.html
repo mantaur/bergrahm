@@ -1,1162 +1,638 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <!-- Google tag (gtag.js) -->
-        <script
-            async
-            src="https://www.googletagmanager.com/gtag/js?id=G-0FMB6WDGXG"
-        ></script>
-        <script>
-            window.dataLayer = window.dataLayer || [];
-            function gtag() {
-                dataLayer.push(arguments);
-            }
-            gtag("js", new Date());
-            gtag("config", "G-0FMB6WDGXG");
-        </script>
+  <head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-0FMB6WDGXG"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-0FMB6WDGXG");
+    </script>
 
-        <meta charset="UTF-8" />
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0, viewport-fit=cover"
-        />
-        <meta http-equiv="X-UA-Compatible" content="ie=edge" />
-        <meta
-            name="Description"
-            content="Image merger tool — merge images while preserving essential regions"
-        />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <meta name="Description" content="Image merger tool — merge images while preserving essential regions" />
 
-        <link rel="stylesheet" href="../../../main.css" />
-        <link rel="stylesheet" href="imageMerge.css?v=28" />
-        <link
-            rel="shortcut icon"
-            type="image/png"
-            href="../../../images/favicon2.png"
-        />
-        <title>Image Merger</title>
-        <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    </head>
+    <link rel="stylesheet" href="../../../main.css" />
+    <link rel="stylesheet" href="imageMerge.css?v=28" />
+    <link rel="shortcut icon" type="image/png" href="../../../images/favicon2.png" />
+    <title>Image Merger</title>
+    <script src="https://unpkg.com/peerjs@1/dist/peerjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  </head>
 
-    <body>
-        <div class="im-app">
-            <!-- Panel toggle FAB -->
-            <button id="btn-panel-toggle" aria-label="Toggle settings">
-                <svg
-                    width="22"
-                    height="22"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                >
-                    <polyline points="15 18 9 12 15 6" />
-                </svg>
+  <body>
+    <div class="im-app">
+      <!-- Panel toggle FAB -->
+      <button id="btn-panel-toggle" aria-label="Toggle settings">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+
+      <!-- Settings panel -->
+      <div id="panel-wrap">
+        <!-- ── Workflow accordion ── -->
+        <div class="im-workflow">
+          <!-- ── 01 Images ── -->
+          <section class="im-step im-step-open" id="step-images">
+            <button class="im-step-hd" type="button" data-num="01">
+              <span class="im-snum">01</span>
+              <div class="im-step-titles">
+                <span class="im-slbl">Images</span>
+                <span class="im-smeta" id="smeta-images">Upload to start</span>
+              </div>
+              <span class="im-sicon">▾</span>
             </button>
-
-            <!-- Settings panel -->
-            <div id="panel-wrap">
-                <!-- ── Workflow accordion ── -->
-                <div class="im-workflow">
-                    <!-- ── 01 Images ── -->
-                    <section class="im-step im-step-open" id="step-images">
-                        <button class="im-step-hd" type="button" data-num="01">
-                            <span class="im-snum">01</span>
-                            <div class="im-step-titles">
-                                <span class="im-slbl">Images</span>
-                                <span class="im-smeta" id="smeta-images"
-                                    >Upload to start</span
-                                >
-                            </div>
-                            <span class="im-sicon">▾</span>
-                        </button>
-                        <div class="im-step-bd">
-                            <div class="im-step-inner" id="section-paint">
-                                <!-- Upload zone -->
-                                <div class="im-upload-zone">
-                                    <span class="im-uz-icon">⊕</span>
-                                    <span class="im-uz-label"
-                                        >Tap to add images</span
-                                    >
-                                    <span class="im-uz-hint"
-                                        >JPG · PNG · WebP · multiple OK</span
-                                    >
-                                    <input
-                                        type="file"
-                                        id="cfg-images"
-                                        accept="image/*"
-                                        multiple
-                                    />
-                                </div>
-
-                                <!-- Session export / import -->
-                                <div class="im-session-row">
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-export-session"
-                                        disabled
-                                    >
-                                        Export session
-                                    </button>
-                                    <label
-                                        class="im-btn im-btn-sm"
-                                        for="inp-import-session"
-                                        >Import session</label
-                                    >
-                                    <input
-                                        type="file"
-                                        id="inp-import-session"
-                                        accept=".zip"
-                                        style="display: none"
-                                    />
-                                </div>
-                                <div
-                                    id="session-status"
-                                    class="im-session-status im-hidden"
-                                ></div>
-                                <div
-                                    id="session-confirm"
-                                    class="im-session-confirm im-hidden"
-                                >
-                                    <span>Session active.</span>
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-sess-replace"
-                                    >
-                                        Replace
-                                    </button>
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-sess-add"
-                                    >
-                                        Add images
-                                    </button>
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-sess-cancel"
-                                    >
-                                        Cancel
-                                    </button>
-                                </div>
-
-                                <!-- Filmstrip + config — hidden until images loaded -->
-                                <div id="paint-area" class="im-hidden">
-                                    <div class="im-film-wrap">
-                                        <ul
-                                            id="rank-list"
-                                            class="im-rank-list"
-                                        ></ul>
-                                        <p class="im-film-hint">
-                                            Drag to reorder · tap to edit mask
-                                        </p>
-                                    </div>
-
-                                    <!-- Mobile-only auto-segment control; desktop uses the advanced checkbox. -->
-                                    <div class="im-yolo-mobile">
-                                        <button
-                                            class="im-btn im-btn-sm"
-                                            id="btn-yolo-mobile"
-                                            type="button"
-                                        >
-                                            Auto-detect subjects
-                                        </button>
-                                        <span
-                                            class="im-hint-small"
-                                            id="yolo-mobile-status"
-                                        ></span>
-                                    </div>
-
-                                    <!-- Output size + presets + advanced toggle -->
-                                    <div class="im-cfg-row">
-                                        <span class="im-cfg-lbl">Output</span>
-                                        <select
-                                            id="cfg-size-preset"
-                                            class="im-select im-preset-select"
-                                        >
-                                            <option value="custom">
-                                                Custom
-                                            </option>
-                                            <option value="1080x1080">
-                                                1:1 Square (IG/FB)
-                                            </option>
-                                            <option value="1080x1350">
-                                                4:5 Portrait (IG)
-                                            </option>
-                                            <option value="1080x1920">
-                                                9:16 Story/Reel
-                                                (IG/TikTok/Shorts)
-                                            </option>
-                                            <option value="1920x1080">
-                                                16:9 Landscape (YouTube/X)
-                                            </option>
-                                            <option value="1280x720">
-                                                16:9 Thumbnail (YouTube)
-                                            </option>
-                                            <option value="1200x630">
-                                                1.91:1 Link (FB/LinkedIn)
-                                            </option>
-                                            <option value="1000x1500">
-                                                2:3 Pin (Pinterest)
-                                            </option>
-                                            <option value="1500x500">
-                                                3:1 Header (X)
-                                            </option>
-                                        </select>
-                                        <button
-                                            class="im-btn im-btn-sm im-adv-toggle"
-                                            id="btn-adv-toggle"
-                                            type="button"
-                                            aria-expanded="false"
-                                        >
-                                            Show more
-                                        </button>
-                                    </div>
-                                    <div class="im-cfg-row">
-                                        <input
-                                            type="number"
-                                            id="cfg-width"
-                                            class="im-cfg-num"
-                                            value="1080"
-                                            min="1"
-                                            inputmode="numeric"
-                                        />
-                                        <span class="im-cfg-x">×</span>
-                                        <input
-                                            type="number"
-                                            id="cfg-height"
-                                            class="im-cfg-num"
-                                            value="1920"
-                                            min="1"
-                                            inputmode="numeric"
-                                        />
-                                        <span class="im-cfg-px">px</span>
-                                        <span class="im-cfg-lbl im-slides-lbl"
-                                            >Slides</span
-                                        >
-                                        <input
-                                            type="number"
-                                            id="cfg-slides"
-                                            class="im-cfg-num im-slides-num"
-                                            value="1"
-                                            min="1"
-                                            inputmode="numeric"
-                                        />
-                                        <span
-                                            class="im-hint-small"
-                                            id="cfg-full-size"
-                                        ></span>
-                                    </div>
-
-                                    <!-- Advanced panel -->
-                                    <div
-                                        class="im-adv-panel im-hidden"
-                                        id="adv-panel"
-                                    >
-                                        <div class="im-config-grid">
-                                            <div class="im-field">
-                                                <label>Fill color</label>
-                                                <div class="im-fill-row">
-                                                    <button
-                                                        id="cfg-fill-transparent"
-                                                        class="im-fill-checker"
-                                                        title="Transparent"
-                                                    ></button>
-                                                    <input
-                                                        type="color"
-                                                        id="cfg-fill"
-                                                        value="#ff69b4"
-                                                    />
-                                                </div>
-                                            </div>
-                                            <div class="im-field">
-                                                <label for="cfg-blend-mode"
-                                                    >Blend mode</label
-                                                >
-                                                <select
-                                                    id="cfg-blend-mode"
-                                                    class="im-select"
-                                                >
-                                                    <option value="voronoi">
-                                                        Voronoi
-                                                    </option>
-                                                    <option value="dither">
-                                                        Dither
-                                                    </option>
-                                                    <option
-                                                        value="gradient"
-                                                        selected
-                                                    >
-                                                        Gradient
-                                                    </option>
-                                                </select>
-                                            </div>
-                                            <div
-                                                class="im-field im-hidden"
-                                                id="cfg-dither-fields"
-                                            >
-                                                <label for="cfg-seed"
-                                                    >Random seed</label
-                                                >
-                                                <input
-                                                    type="number"
-                                                    id="cfg-seed"
-                                                    value="42"
-                                                    min="0"
-                                                    step="1"
-                                                    inputmode="numeric"
-                                                />
-                                            </div>
-                                            <div
-                                                class="im-field"
-                                                id="cfg-dither-exp-field"
-                                            >
-                                                <label for="cfg-dither-exp"
-                                                    >Transition sharpness
-                                                    <span class="im-hint-small"
-                                                        >· higher =
-                                                        narrower</span
-                                                    ></label
-                                                >
-                                                <input
-                                                    type="number"
-                                                    id="cfg-dither-exp"
-                                                    value="4"
-                                                    min="1"
-                                                    max="32"
-                                                    step="1"
-                                                    inputmode="numeric"
-                                                />
-                                            </div>
-                                            <div
-                                                class="im-field im-yolo-toggle-row"
-                                            >
-                                                <label
-                                                    ><input
-                                                        type="checkbox"
-                                                        id="cfg-use-yolo"
-                                                    />
-                                                    Enable auto-segmentation
-                                                    <span class="im-hint-small"
-                                                        >(~11 MB, faster on
-                                                        phone)</span
-                                                    ></label
-                                                >
-                                            </div>
-
-                                            <div class="im-field">
-                                                <label for="cfg-scale-all"
-                                                    >Scale all visible</label
-                                                >
-                                                <div class="im-slider-row">
-                                                    <input
-                                                        type="range"
-                                                        id="cfg-scale-all"
-                                                        min="0.5"
-                                                        max="2"
-                                                        step="0.05"
-                                                        value="1"
-                                                    />
-                                                    <span
-                                                        id="cfg-scale-all-val"
-                                                        class="im-rng-val"
-                                                        >1.00x</span
-                                                    >
-                                                    <button
-                                                        class="im-btn im-btn-sm"
-                                                        id="btn-scale-all"
-                                                    >
-                                                        Apply
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <!-- /#paint-area -->
-                            </div>
-                            <!-- /.im-step-inner -->
-                        </div>
-                        <!-- /.im-step-bd -->
-                    </section>
-
-                    <!-- ── 02 Paint Masks ── -->
-                    <section class="im-step im-step-locked" id="step-paint">
-                        <button class="im-step-hd" type="button" data-num="02">
-                            <span class="im-snum">02</span>
-                            <div class="im-step-titles">
-                                <span class="im-slbl">Paint Masks</span>
-                                <span class="im-smeta" id="smeta-paint"
-                                    >Upload images first</span
-                                >
-                            </div>
-                            <span class="im-sicon">▾</span>
-                        </button>
-                        <div class="im-step-bd">
-                            <div class="im-step-inner im-painter-inner">
-                                <!-- Seg bar -->
-                                <div
-                                    id="yolo-controls"
-                                    class="im-hidden im-yolo-bar"
-                                >
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-yolo-toggle"
-                                        disabled
-                                    >
-                                        Seg: Off
-                                    </button>
-                                    <span
-                                        id="yolo-worker-count"
-                                        class="im-yolo-worker-count"
-                                    ></span>
-                                    <span
-                                        id="yolo-status"
-                                        class="im-yolo-status"
-                                    ></span>
-                                </div>
-
-                                <!-- Image navigator -->
-                                <div class="im-paint-nav">
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-prev-img"
-                                    >
-                                        &lt; Prev
-                                    </button>
-                                    <div class="im-paint-nav-c">
-                                        <span
-                                            id="paint-image-name"
-                                            class="im-paint-name"
-                                            >-</span
-                                        >
-                                        <span
-                                            id="paint-index-label"
-                                            class="im-paint-idx"
-                                            >1 / 1</span
-                                        >
-                                    </div>
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-next-img"
-                                    >
-                                        Next &gt;
-                                    </button>
-                                </div>
-
-                                <!-- Scale bar -->
-                                <div class="im-scalebar">
-                                    <input
-                                        type="checkbox"
-                                        id="painter-scale-auto"
-                                        checked
-                                    />
-                                    <label
-                                        for="painter-scale-auto"
-                                        class="im-scale-auto-lbl"
-                                        >Auto scale</label
-                                    >
-                                    <input
-                                        type="number"
-                                        id="painter-scale-inp"
-                                        class="im-scale-input"
-                                        min="0.05"
-                                        max="20"
-                                        step="0.05"
-                                        value="1.00"
-                                        disabled
-                                    />
-                                    <span class="im-zoom-lbl"
-                                        >Zoom:
-                                        <strong id="painter-zoom-val"
-                                            >-</strong
-                                        ></span
-                                    >
-                                    <canvas
-                                        id="painter-scale-preview"
-                                        class="im-scale-preview"
-                                        title="Gray=output · Green=image at scale"
-                                    ></canvas>
-                                </div>
-
-                                <!-- Canvas -->
-                                <div class="im-canvas-wrap" id="canvas-wrap">
-                                    <canvas id="paint-canvas"></canvas>
-                                    <canvas id="mask-canvas"></canvas>
-                                </div>
-
-                                <!-- Tools -->
-                                <div class="im-paint-tools">
-                                    <button
-                                        class="im-btn im-btn-sm"
-                                        id="btn-undo"
-                                    >
-                                        ↩ Undo
-                                    </button>
-                                    <button
-                                        class="im-btn im-btn-sm im-btn-danger"
-                                        id="btn-clear-mask"
-                                    >
-                                        Clear mask
-                                    </button>
-                                    <span class="im-paint-hint"
-                                        >Click to place vertices · click start
-                                        to close</span
-                                    >
-                                </div>
-                            </div>
-                            <!-- /.im-step-inner -->
-                        </div>
-                        <!-- /.im-step-bd -->
-                    </section>
+            <div class="im-step-bd">
+              <div class="im-step-inner" id="section-paint">
+                <!-- Upload zone -->
+                <div class="im-upload-zone">
+                  <span class="im-uz-icon">⊕</span>
+                  <span class="im-uz-label">Tap to add images</span>
+                  <span class="im-uz-hint">JPG · PNG · WebP · multiple OK</span>
+                  <input type="file" id="cfg-images" accept="image/*" multiple />
                 </div>
-                <!-- /.im-workflow -->
-                <div class="im-made-by">
-                    Made with
-                    <svg
-                        class="im-heart"
-                        width="13"
-                        height="13"
-                        viewBox="0 0 13.066 13.066"
-                        fill="#ff4d6d"
-                        aria-hidden="true"
-                    >
-                        <path
-                            d="M6.555,12.558c-0.098,0-0.195-0.034-0.273-0.103c-0.233-0.2-5.718-4.954-6.199-7.885C-0.133,3.243,0.071,2.201,0.69,1.474C1.22,0.85,2.034,0.507,2.982,0.507c0.082,0,0.165,0.002,0.247,0.008c0.058-0.003,0.115-0.004,0.172-0.004c1.048,0,2.343,0.461,3.109,2.421c0.43-1.196,1.311-2.417,3.328-2.417c1.135,0,2.023,0.342,2.571,0.987c0.597,0.701,0.787,1.733,0.569,3.068c-0.479,2.929-5.918,7.684-6.149,7.884C6.751,12.524,6.653,12.558,6.555,12.558z"
-                        />
-                    </svg>
-                    by <a href="../../../../index.html">Bergrahm</a>
+
+                <!-- Session export / import -->
+                <div class="im-session-row">
+                  <button class="im-btn im-btn-sm" id="btn-export-session" disabled>Export session</button>
+                  <label class="im-btn im-btn-sm" for="inp-import-session">Import session</label>
+                  <input type="file" id="inp-import-session" accept=".zip" style="display: none" />
                 </div>
+                <div id="session-status" class="im-session-status im-hidden"></div>
+                <div id="session-confirm" class="im-session-confirm im-hidden">
+                  <span>Session active.</span>
+                  <button class="im-btn im-btn-sm" id="btn-sess-replace">Replace</button>
+                  <button class="im-btn im-btn-sm" id="btn-sess-add">Add images</button>
+                  <button class="im-btn im-btn-sm" id="btn-sess-cancel">Cancel</button>
+                </div>
+
+                <!-- Filmstrip + config — hidden until images loaded -->
+                <div id="paint-area" class="im-hidden">
+                  <div class="im-film-wrap">
+                    <ul id="rank-list" class="im-rank-list"></ul>
+                    <p class="im-film-hint">Drag to reorder · tap to edit mask</p>
+                  </div>
+
+                  <!-- Mobile-only auto-segment control; desktop uses the advanced checkbox. -->
+                  <div class="im-yolo-mobile">
+                    <button class="im-btn im-btn-sm" id="btn-yolo-mobile" type="button">Auto-detect subjects</button>
+                    <span class="im-hint-small" id="yolo-mobile-status"></span>
+                  </div>
+
+                  <!-- Output size + presets + advanced toggle -->
+                  <div class="im-cfg-row">
+                    <span class="im-cfg-lbl">Output</span>
+                    <select id="cfg-size-preset" class="im-select im-preset-select">
+                      <option value="custom">Custom</option>
+                      <option value="1080x1080">1:1 Square (IG/FB)</option>
+                      <option value="1080x1350">4:5 Portrait (IG)</option>
+                      <option value="1080x1920">9:16 Story/Reel (IG/TikTok/Shorts)</option>
+                      <option value="1920x1080">16:9 Landscape (YouTube/X)</option>
+                      <option value="1280x720">16:9 Thumbnail (YouTube)</option>
+                      <option value="1200x630">1.91:1 Link (FB/LinkedIn)</option>
+                      <option value="1000x1500">2:3 Pin (Pinterest)</option>
+                      <option value="1500x500">3:1 Header (X)</option>
+                    </select>
+                    <button class="im-btn im-btn-sm im-adv-toggle" id="btn-adv-toggle" type="button" aria-expanded="false">Show more</button>
+                  </div>
+                  <div class="im-cfg-row">
+                    <input type="number" id="cfg-width" class="im-cfg-num" value="1080" min="1" inputmode="numeric" />
+                    <span class="im-cfg-x">×</span>
+                    <input type="number" id="cfg-height" class="im-cfg-num" value="1920" min="1" inputmode="numeric" />
+                    <span class="im-cfg-px">px</span>
+                    <span class="im-cfg-lbl im-slides-lbl">Slides</span>
+                    <input type="number" id="cfg-slides" class="im-cfg-num im-slides-num" value="1" min="1" inputmode="numeric" />
+                    <span class="im-hint-small" id="cfg-full-size"></span>
+                  </div>
+
+                  <!-- Advanced panel -->
+                  <div class="im-adv-panel im-hidden" id="adv-panel">
+                    <div class="im-config-grid">
+                      <div class="im-field">
+                        <label>Fill color</label>
+                        <div class="im-fill-row">
+                          <button id="cfg-fill-transparent" class="im-fill-checker" title="Transparent"></button>
+                          <input type="color" id="cfg-fill" value="#ff69b4" />
+                        </div>
+                      </div>
+                      <div class="im-field">
+                        <label for="cfg-blend-mode">Blend mode</label>
+                        <select id="cfg-blend-mode" class="im-select">
+                          <option value="voronoi">Voronoi</option>
+                          <option value="dither">Dither</option>
+                          <option value="gradient" selected>Gradient</option>
+                        </select>
+                      </div>
+                      <div class="im-field im-hidden" id="cfg-dither-fields">
+                        <label for="cfg-seed">Random seed</label>
+                        <input type="number" id="cfg-seed" value="42" min="0" step="1" inputmode="numeric" />
+                      </div>
+                      <div class="im-field" id="cfg-dither-exp-field">
+                        <label for="cfg-dither-exp">Transition sharpness <span class="im-hint-small">· higher = narrower</span></label>
+                        <input type="number" id="cfg-dither-exp" value="4" min="1" max="32" step="1" inputmode="numeric" />
+                      </div>
+                      <div class="im-field im-yolo-toggle-row">
+                        <label
+                          ><input type="checkbox" id="cfg-use-yolo" />
+                          Enable auto-segmentation
+                          <span class="im-hint-small">(~11 MB, faster on phone)</span></label
+                        >
+                      </div>
+
+                      <div class="im-field">
+                        <label for="cfg-scale-all">Scale all visible</label>
+                        <div class="im-slider-row">
+                          <input type="range" id="cfg-scale-all" min="0.5" max="2" step="0.05" value="1" />
+                          <span id="cfg-scale-all-val" class="im-rng-val">1.00x</span>
+                          <button class="im-btn im-btn-sm" id="btn-scale-all">Apply</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <!-- /#paint-area -->
+              </div>
+              <!-- /.im-step-inner -->
             </div>
-            <!-- /#panel-wrap -->
+            <!-- /.im-step-bd -->
+          </section>
 
-            <!-- Sim canvas — always-visible background -->
-            <div id="sim-wrap">
-                <div id="sim-canvas-outer">
-                    <canvas id="sim-canvas"></canvas>
+          <!-- ── 02 Paint Masks ── -->
+          <section class="im-step im-step-locked" id="step-paint">
+            <button class="im-step-hd" type="button" data-num="02">
+              <span class="im-snum">02</span>
+              <div class="im-step-titles">
+                <span class="im-slbl">Paint Masks</span>
+                <span class="im-smeta" id="smeta-paint">Upload images first</span>
+              </div>
+              <span class="im-sicon">▾</span>
+            </button>
+            <div class="im-step-bd">
+              <div class="im-step-inner im-painter-inner">
+                <!-- Seg bar -->
+                <div id="yolo-controls" class="im-hidden im-yolo-bar">
+                  <button class="im-btn im-btn-sm" id="btn-yolo-toggle" disabled>Seg: Off</button>
+                  <span id="yolo-worker-count" class="im-yolo-worker-count"></span>
+                  <span id="yolo-status" class="im-yolo-status"></span>
                 </div>
-                <div id="collab-cursor-layer"></div>
-                <div id="sim-hud">
-                    <span id="sim-status" class="im-sim-status"></span>
-                    <div class="im-sim-btns">
-                        <button
-                            class="im-btn im-btn-sm im-btn-icon"
-                            id="btn-collab"
-                            title="Live session"
-                            aria-label="Live session"
-                        >
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="17"
-                                height="17"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
-                                <circle cx="9" cy="7" r="3" />
-                                <path
-                                    d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"
-                                />
-                                <circle cx="18" cy="8" r="2.5" />
-                                <path
-                                    d="M21 21v-1.5a3.5 3.5 0 0 0-2.5-3.35"
-                                /></svg
-                            ><span
-                                id="collab-peer-badge"
-                                class="im-collab-badge im-hidden"
-                            ></span>
-                        </button>
-                        <button
-                            class="im-btn im-btn-sm im-btn-icon"
-                            id="btn-sim-undo"
-                            disabled
-                            title="Undo"
-                        >
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2.5"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
-                                <path d="M21 12a9 9 0 0 0-18 0" />
-                                <polyline points="3 7 3 12 8 12" /></svg
-                            ><span id="sim-undo-badge" class="im-count-badge"
-                                >0</span
-                            >
-                        </button>
-                        <button
-                            class="im-btn im-btn-sm im-btn-icon"
-                            id="btn-sim-redo"
-                            disabled
-                            title="Redo"
-                        >
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2.5"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
-                                <path d="M3 12a9 9 0 0 1 18 0" />
-                                <polyline points="21 7 21 12 16 12" /></svg
-                            ><span id="sim-redo-badge" class="im-count-badge"
-                                >0</span
-                            >
-                        </button>
-                        <button
-                            class="im-btn im-btn-sm im-btn-icon"
-                            id="btn-sim-reset"
-                            title="Reset positions"
-                        >
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2.5"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
-                                <polyline points="23 4 23 10 17 10" />
-                                <path d="M20.49 15a9 9 0 1 1-.49-4.75" />
-                            </svg>
-                        </button>
-                        <button
-                            class="im-btn im-btn-sm im-btn-icon im-sel-mobile"
-                            id="btn-sim-select"
-                            title="Select masks"
-                            aria-label="Select masks"
-                        >
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2.5"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-dasharray="4 3"
-                            >
-                                <rect
-                                    x="3"
-                                    y="3"
-                                    width="18"
-                                    height="18"
-                                    rx="2"
-                                /></svg
-                            ><span
-                                id="sim-select-badge"
-                                class="im-count-badge im-hidden"
-                                >0</span
-                            >
-                        </button>
-                        <button
-                            class="im-btn im-btn-sm im-hidden"
-                            id="btn-merge"
-                        >
-                            Merge
-                        </button>
-                        <button
-                            class="im-btn im-btn-sm im-btn-danger im-hidden"
-                            id="btn-cancel"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            class="im-btn im-btn-sm im-btn-icon im-hidden"
-                            id="btn-download"
-                            title="Download PNG"
-                        >
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2.5"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
-                                <path
-                                    d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
-                                />
-                                <polyline points="7 10 12 15 17 10" />
-                                <line x1="12" y1="15" x2="12" y2="3" />
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-                <!-- Points from the viewport rim toward the off-screen output (FPV-style). -->
-                <button
-                    id="sim-recenter-rim"
-                    class="im-recenter-rim"
-                    title="Re-center on output"
-                    aria-label="Re-center on output"
-                >
-                    <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        width="20"
-                        height="20"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                    >
-                        <line x1="3" y1="12" x2="21" y2="12" />
-                        <polyline points="14 5 21 12 14 19" />
-                    </svg>
-                </button>
-            </div>
 
-            <!-- Guest prompt (shown when joining a room with no local images) -->
-            <div id="collab-guest-prompt" class="im-hidden">
-                <div id="collab-guest-box">
-                    <p id="collab-guest-msg">
-                        Waiting for session from host...
-                    </p>
-                    <div class="im-collab-progress-wrap">
-                        <div id="collab-progress-bar"></div>
-                    </div>
-                    <p class="im-collab-guest-hint">
-                        Or import a session file manually:
-                    </p>
-                    <label class="im-btn im-btn-sm" for="inp-import-session"
-                        >Import session</label
-                    >
+                <!-- Image navigator -->
+                <div class="im-paint-nav">
+                  <button class="im-btn im-btn-sm" id="btn-prev-img">&lt; Prev</button>
+                  <div class="im-paint-nav-c">
+                    <span id="paint-image-name" class="im-paint-name">-</span>
+                    <span id="paint-index-label" class="im-paint-idx">1 / 1</span>
+                  </div>
+                  <button class="im-btn im-btn-sm" id="btn-next-img">Next &gt;</button>
                 </div>
-            </div>
 
-            <!-- Collaborate modal -->
-            <div id="collab-modal" class="im-hidden">
-                <div id="collab-modal-box">
-                    <div class="im-collab-header">
-                        <span>Live session</span>
-                        <span
-                            id="collab-role"
-                            class="im-collab-role im-hidden"
-                        ></span>
-                        <button id="btn-collab-close">x</button>
-                    </div>
-                    <div class="im-collab-field">
-                        <label for="collab-name-inp">Your name</label>
-                        <input
-                            id="collab-name-inp"
-                            type="text"
-                            maxlength="20"
-                            placeholder="Anonymous"
-                            autocomplete="off"
-                        />
-                    </div>
-                    <div class="im-collab-field">
-                        <label for="collab-room-inp">Room code</label>
-                        <div class="im-collab-room-row">
-                            <input
-                                id="collab-room-inp"
-                                type="text"
-                                maxlength="40"
-                                placeholder="my-room-123"
-                                autocomplete="off"
-                            />
-                            <button
-                                id="btn-collab-copy"
-                                class="im-btn-icon"
-                                title="Copy link"
-                                aria-label="Copy link"
-                            >
-                                <svg
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    width="15"
-                                    height="15"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-width="2"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                >
-                                    <rect
-                                        x="9"
-                                        y="9"
-                                        width="13"
-                                        height="13"
-                                        rx="2"
-                                        ry="2"
-                                    />
-                                    <path
-                                        d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-                                    />
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="im-collab-field">
-                        <label for="collab-pass-inp"
-                            >Room password
-                            <span class="im-collab-opt">(optional)</span></label
-                        >
-                        <input
-                            id="collab-pass-inp"
-                            type="text"
-                            maxlength="40"
-                            placeholder="blank = open room"
-                            autocomplete="off"
-                        />
-                    </div>
-                    <div id="collab-qr"></div>
-                    <div class="im-collab-status" id="collab-status">
-                        Not connected
-                    </div>
-                    <div id="collab-send-progress" class="im-hidden">
-                        <p
-                            id="collab-send-msg"
-                            class="im-collab-send-label"
-                        ></p>
-                        <div class="im-collab-progress-wrap">
-                            <div id="collab-send-bar"></div>
-                        </div>
-                    </div>
-                    <div id="collab-recv-progress" class="im-hidden">
-                        <p
-                            id="collab-recv-msg"
-                            class="im-collab-send-label"
-                        ></p>
-                        <div class="im-collab-progress-wrap">
-                            <div id="collab-recv-bar"></div>
-                        </div>
-                    </div>
-                    <div class="im-collab-actions">
-                        <button class="im-btn" id="btn-collab-join">
-                            Join
-                        </button>
-                        <button
-                            class="im-btn im-hidden"
-                            id="btn-collab-present"
-                            title="Drive everyone's view to match yours"
-                        >
-                            Present
-                        </button>
-                        <button class="im-btn im-hidden" id="btn-collab-leave">
-                            Leave
-                        </button>
-                    </div>
+                <!-- Scale bar -->
+                <div class="im-scalebar">
+                  <input type="checkbox" id="painter-scale-auto" checked />
+                  <label for="painter-scale-auto" class="im-scale-auto-lbl">Auto scale</label>
+                  <input type="number" id="painter-scale-inp" class="im-scale-input" min="0.05" max="20" step="0.05" value="1.00" disabled />
+                  <span class="im-zoom-lbl">Zoom: <strong id="painter-zoom-val">-</strong></span>
+                  <canvas id="painter-scale-preview" class="im-scale-preview" title="Gray=output · Green=image at scale"></canvas>
                 </div>
+
+                <!-- Canvas -->
+                <div class="im-canvas-wrap" id="canvas-wrap">
+                  <canvas id="paint-canvas"></canvas>
+                  <canvas id="mask-canvas"></canvas>
+                </div>
+
+                <!-- Tools -->
+                <div class="im-paint-tools">
+                  <button class="im-btn im-btn-sm" id="btn-undo">↩ Undo</button>
+                  <button class="im-btn im-btn-sm im-btn-danger" id="btn-clear-mask">Clear mask</button>
+                  <span class="im-paint-hint">Click to place vertices · click start to close</span>
+                </div>
+              </div>
+              <!-- /.im-step-inner -->
             </div>
+            <!-- /.im-step-bd -->
+          </section>
         </div>
-        <!-- /.im-app -->
+        <!-- /.im-workflow -->
+        <div class="im-made-by">
+          Made with
+          <svg class="im-heart" width="13" height="13" viewBox="0 0 13.066 13.066" fill="#ff4d6d" aria-hidden="true">
+            <path d="M6.555,12.558c-0.098,0-0.195-0.034-0.273-0.103c-0.233-0.2-5.718-4.954-6.199-7.885C-0.133,3.243,0.071,2.201,0.69,1.474C1.22,0.85,2.034,0.507,2.982,0.507c0.082,0,0.165,0.002,0.247,0.008c0.058-0.003,0.115-0.004,0.172-0.004c1.048,0,2.343,0.461,3.109,2.421c0.43-1.196,1.311-2.417,3.328-2.417c1.135,0,2.023,0.342,2.571,0.987c0.597,0.701,0.787,1.733,0.569,3.068c-0.479,2.929-5.918,7.684-6.149,7.884C6.751,12.524,6.653,12.558,6.555,12.558z" />
+          </svg>
+          by <a href="../../../../index.html">Bergrahm</a>
+        </div>
+      </div>
+      <!-- /#panel-wrap -->
 
-        <script src="gpuCheck.js?v=1"></script>
-        <script src="sessionIO.js?v=9"></script>
-        <script src="viewport.js?v=4"></script>
-        <script src="imageMerge.js?v=58"></script>
-        <script>
-            // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
+      <!-- Sim canvas — always-visible background -->
+      <div id="sim-wrap">
+        <div id="sim-canvas-outer">
+          <canvas id="sim-canvas"></canvas>
+        </div>
+        <div id="collab-cursor-layer"></div>
+        <div id="sim-hud">
+          <span id="sim-status" class="im-sim-status"></span>
+          <div class="im-sim-btns">
+            <button class="im-btn im-btn-sm im-btn-icon" id="btn-collab" title="Live session" aria-label="Live session">
+              <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="9" cy="7" r="3" />
+                <path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" />
+                <circle cx="18" cy="8" r="2.5" />
+                <path d="M21 21v-1.5a3.5 3.5 0 0 0-2.5-3.35" /></svg
+              ><span id="collab-peer-badge" class="im-collab-badge im-hidden"></span>
+            </button>
+            <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-undo" disabled title="Undo">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12a9 9 0 0 0-18 0" />
+                <polyline points="3 7 3 12 8 12" /></svg
+              ><span id="sim-undo-badge" class="im-count-badge">0</span>
+            </button>
+            <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-redo" disabled title="Redo">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12a9 9 0 0 1 18 0" />
+                <polyline points="21 7 21 12 16 12" /></svg
+              ><span id="sim-redo-badge" class="im-count-badge">0</span>
+            </button>
+            <button class="im-btn im-btn-sm im-btn-icon" id="btn-sim-reset" title="Reset positions">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10" />
+                <path d="M20.49 15a9 9 0 1 1-.49-4.75" />
+              </svg>
+            </button>
+            <button class="im-btn im-btn-sm im-btn-icon im-sel-mobile" id="btn-sim-select" title="Select masks" aria-label="Select masks">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 3">
+                <rect x="3" y="3" width="18" height="18" rx="2" /></svg
+              ><span id="sim-select-badge" class="im-count-badge im-hidden">0</span>
+            </button>
+            <button class="im-btn im-btn-sm im-hidden" id="btn-merge">Merge</button>
+            <button class="im-btn im-btn-sm im-btn-danger im-hidden" id="btn-cancel">Cancel</button>
+            <button class="im-btn im-btn-sm im-btn-icon im-hidden" id="btn-download" title="Download PNG">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <!-- Points from the viewport rim toward the off-screen output (FPV-style). -->
+        <button id="sim-recenter-rim" class="im-recenter-rim" title="Re-center on output" aria-label="Re-center on output">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <polyline points="14 5 21 12 14 19" />
+          </svg>
+        </button>
+      </div>
 
-            function _maskToBase64(mask) {
-                var str = "";
-                for (var i = 0; i < mask.length; i += 8192)
-                    str += String.fromCharCode.apply(
-                        null,
-                        mask.subarray(i, i + 8192),
-                    );
-                return btoa(str);
+      <!-- Guest prompt (shown when joining a room with no local images) -->
+      <div id="collab-guest-prompt" class="im-hidden">
+        <div id="collab-guest-box">
+          <p id="collab-guest-msg">Waiting for session from host...</p>
+          <div class="im-collab-progress-wrap">
+            <div id="collab-progress-bar"></div>
+          </div>
+          <p class="im-collab-guest-hint">Or import a session file manually:</p>
+          <label class="im-btn im-btn-sm" for="inp-import-session">Import session</label>
+        </div>
+      </div>
+
+      <!-- Collaborate modal -->
+      <div id="collab-modal" class="im-hidden">
+        <div id="collab-modal-box">
+          <div class="im-collab-header">
+            <span>Live session</span>
+            <span id="collab-role" class="im-collab-role im-hidden"></span>
+            <button id="btn-collab-close">x</button>
+          </div>
+          <div class="im-collab-field">
+            <label for="collab-name-inp">Your name</label>
+            <input id="collab-name-inp" type="text" maxlength="20" placeholder="Anonymous" autocomplete="off" />
+          </div>
+          <div class="im-collab-field">
+            <label for="collab-room-inp">Room code</label>
+            <div class="im-collab-room-row">
+              <input id="collab-room-inp" type="text" maxlength="40" placeholder="my-room-123" autocomplete="off" />
+              <button id="btn-collab-copy" class="im-btn-icon" title="Copy link" aria-label="Copy link">
+                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="im-collab-field">
+            <label for="collab-pass-inp">Room password <span class="im-collab-opt">(optional)</span></label>
+            <input id="collab-pass-inp" type="text" maxlength="40" placeholder="blank = open room" autocomplete="off" />
+          </div>
+          <div id="collab-qr"></div>
+          <div class="im-collab-status" id="collab-status">Not connected</div>
+          <div id="collab-send-progress" class="im-hidden">
+            <p id="collab-send-msg" class="im-collab-send-label"></p>
+            <div class="im-collab-progress-wrap">
+              <div id="collab-send-bar"></div>
+            </div>
+          </div>
+          <div id="collab-recv-progress" class="im-hidden">
+            <p id="collab-recv-msg" class="im-collab-send-label"></p>
+            <div class="im-collab-progress-wrap">
+              <div id="collab-recv-bar"></div>
+            </div>
+          </div>
+          <div class="im-collab-actions">
+            <button class="im-btn" id="btn-collab-join">Join</button>
+            <button class="im-btn im-hidden" id="btn-collab-present" title="Drive everyone's view to match yours">Present</button>
+            <button class="im-btn im-hidden" id="btn-collab-leave">Leave</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- /.im-app -->
+
+    <script src="gpuCheck.js?v=1"></script>
+    <script src="sessionIO.js?v=9"></script>
+    <script src="viewport.js?v=4"></script>
+    <script src="imageMerge.js?v=62"></script>
+    <script>
+      // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
+
+      function _maskToBase64(mask) {
+        var str = "";
+        for (var i = 0; i < mask.length; i += 8192) str += String.fromCharCode.apply(null, mask.subarray(i, i + 8192));
+        return btoa(str);
+      }
+
+      function _encodeSegments(segments) {
+        return segments.map(function (s) {
+          return {
+            classId: s.classId,
+            className: s.className,
+            score: s.score,
+            bbox: s.bbox,
+            maskW: s.maskW,
+            maskH: s.maskH,
+            mask: _maskToBase64(s.mask),
+          };
+        });
+      }
+
+      window.getSimState = function () {
+        return {
+          dispScale: viewport.dispScale,
+          viewScale: viewport.scale,
+          viewOffset: viewport.offset,
+        };
+      };
+
+      window.getSimBounds = function () {
+        return {
+          simX1: simX1,
+          simY1: simY1,
+          simX2: simX2,
+          simY2: simY2,
+        };
+      };
+
+      window.getSimPositions = function () {
+        var out = {};
+        if (!simGroups) return out;
+        simGroups.forEach(function (g, id) {
+          out[id] = { x: g.x, y: g.y, angle: g.angle };
+        });
+        return out;
+      };
+
+      window.getCollabState = function () {
+        return {
+          imageCount: state.images.length,
+          rankOrder: state.rankOrder.slice(),
+          outW: state.outW,
+          outH: state.outH,
+          fillColor: state.fillColor,
+        };
+      };
+
+      function _blobToDataURL(blob) {
+        return new Promise(function (res, rej) {
+          var r = new FileReader();
+          r.onload = function () {
+            res(r.result);
+          };
+          r.onerror = rej;
+          r.readAsDataURL(blob);
+        });
+      }
+
+      window.getImagePacket = async function (imgIdx) {
+        var entry = imgById(imgIdx);
+        if (!entry || !entry.blob) return null;
+        var jpegBase64 = await _blobToDataURL(entry.blob); // portable; decoded on demand elsewhere
+        var enc = yoloPool.embeddingCache.get(imgIdx);
+        var encoding = enc
+          ? {
+              origW: enc.origW,
+              origH: enc.origH,
+              segments: _encodeSegments(enc.segments),
             }
+          : null;
+        var g = simGroups.get(imgIdx);
+        return {
+          id: entry.id,
+          name: entry.name,
+          w: entry.w,
+          h: entry.h,
+          jpegBase64: jpegBase64,
+          encoding: encoding,
+          polygons: entry.polygons,
+          simPos: g ? { x: g.x, y: g.y } : null,
+          simAngle: g ? g.angle : 0,
+        };
+      };
 
-            function _encodeSegments(segments) {
-                return segments.map(function (s) {
-                    return {
-                        classId: s.classId,
-                        className: s.className,
-                        score: s.score,
-                        bbox: s.bbox,
-                        maskW: s.maskW,
-                        maskH: s.maskH,
-                        mask: _maskToBase64(s.mask),
-                    };
-                });
-            }
+      // Stream the stored compressed bytes straight to the guest -- no decode or
+      // re-encode (the bytes are already an encoded image; decode happens on demand).
+      window.getImageBuffer = async function (imgIdx) {
+        var entry = imgById(imgIdx);
+        if (!entry || !entry.blob) return null;
+        var buf = await entry.blob.arrayBuffer();
+        var g = simGroups.get(imgIdx);
+        return {
+          buffer: buf,
+          id: entry.id,
+          name: entry.name,
+          w: entry.w,
+          h: entry.h,
+          polygons: entry.polygons,
+          currentPoly: entry.currentPoly || [],
+          scale: entry.scale,
+          scaleFixed: entry.scaleFixed || false,
+          simHidden: entry.simHidden || false,
+          simPos: g ? { x: g.x, y: g.y } : null,
+          simAngle: g ? g.angle : 0,
+        };
+      };
 
-            window.getSimState = function () {
-                return {
-                    dispScale: viewport.dispScale,
-                    viewScale: viewport.scale,
-                    viewOffset: viewport.offset,
-                };
+      window.getEncodingPacket = function (imgIdx) {
+        var entry = imgById(imgIdx);
+        var enc = yoloPool.embeddingCache.get(imgIdx);
+        if (!entry || !enc) return null;
+        return {
+          imgName: entry.name,
+          encoding: {
+            origW: enc.origW,
+            origH: enc.origH,
+            segments: _encodeSegments(enc.segments),
+          },
+        };
+      };
+
+      window.getSessionMeta = function () {
+        var positions = window.getSimPositions();
+        return {
+          imageCount: state.images.length,
+          outW: state.outW,
+          outH: state.outH,
+          slides: slidesN(),
+          fillColor: state.fillColor,
+          blendMode: cfgBlendMode.value,
+          seed: parseInt(cfgSeed.value) || 42,
+          ditherExp: parseInt(cfgDitherExp.value) || 4,
+          rankOrder: state.rankOrder.slice(),
+          paintIdx: state.paintIdx,
+          simViewScale: viewport.scale,
+          simViewOffset: viewport.offset,
+          simX1: simX1,
+          simY1: simY1,
+          simX2: simX2,
+          simY2: simY2,
+          images: state.images.map(function (entry, i) {
+            var pos = positions[entry.id];
+            return {
+              id: entry.id,
+              name: entry.name,
+              w: entry.w,
+              h: entry.h,
+              polygons: entry.polygons || [],
+              currentPoly: entry.currentPoly || [],
+              scale: entry.scale,
+              scaleFixed: entry.scaleFixed || false,
+              simHidden: entry.simHidden || false,
+              simPos: pos ? { x: pos.x, y: pos.y } : null,
+              simAngle: pos ? pos.angle : 0,
+              hasEncoding: yoloPool.embeddingCache.has(entry.id),
             };
+          }),
+        };
+      };
 
-            window.getSimBounds = function () {
-                return {
-                    simX1: simX1,
-                    simY1: simY1,
-                    simX2: simX2,
-                    simY2: simY2,
-                };
-            };
+      window.getImageThumb = function (imgIdx) {
+        var entry = imgById(imgIdx);
+        return entry && entry.thumbUrl ? entry.thumbUrl : null;
+      };
 
-            window.getSimPositions = function () {
-                var out = {};
-                if (!simGroups) return out;
-                simGroups.forEach(function (g, id) {
-                    out[id] = { x: g.x, y: g.y, angle: g.angle };
-                });
-                return out;
-            };
+      window.buildSessionBlob = function (onProgress) {
+        return SessionIO.exportBlob(
+          {
+            state: state,
+            simGroups: simGroups,
+            yoloPool: yoloPool,
+            cfg: {
+              blendMode: cfgBlendMode.value,
+              seed: parseInt(cfgSeed.value) || 42,
+              ditherExp: parseInt(cfgDitherExp.value) || 4,
+              simViewScale: viewport.scale,
+              simViewOffset: viewport.offset,
+              simX1: simX1,
+              simY1: simY1,
+              simX2: simX2,
+              simY2: simY2,
+            },
+          },
+          onProgress || function () {},
+        );
+      };
 
-            window.getCollabState = function () {
-                return {
-                    imageCount: state.images.length,
-                    rankOrder: state.rankOrder.slice(),
-                    outW: state.outW,
-                    outH: state.outH,
-                    fillColor: state.fillColor,
-                };
-            };
+      window.applyRemoteSettings = function (s) {
+        // Apply directly (no synthetic input events): faking keystrokes re-entered the
+        // width/height/blend handlers, which armed a debounced resize that pushed a
+        // phantom undo entry and re-broadcast the settings -> a peer-to-peer echo loop.
+        window._collabApplyingRemote = true;
 
-            function _blobToDataURL(blob) {
-                return new Promise(function (res, rej) {
-                    var r = new FileReader();
-                    r.onload = function () {
-                        res(r.result);
-                    };
-                    r.onerror = rej;
-                    r.readAsDataURL(blob);
-                });
-            }
+        var prevW = state.outW,
+          prevH = state.outH;
+        var prevX1 = simX1,
+          prevY1 = simY1,
+          prevX2 = simX2,
+          prevY2 = simY2;
 
-            window.getImagePacket = async function (imgIdx) {
-                var entry = imgById(imgIdx);
-                if (!entry || !entry.blob) return null;
-                var jpegBase64 = await _blobToDataURL(entry.blob); // portable; decoded on demand elsewhere
-                var enc = yoloPool.embeddingCache.get(imgIdx);
-                var encoding = enc
-                    ? {
-                          origW: enc.origW,
-                          origH: enc.origH,
-                          segments: _encodeSegments(enc.segments),
-                      }
-                    : null;
-                var g = simGroups.get(imgIdx);
-                return {
-                    id: entry.id,
-                    name: entry.name,
-                    w: entry.w,
-                    h: entry.h,
-                    jpegBase64: jpegBase64,
-                    encoding: encoding,
-                    polygons: entry.polygons,
-                    simPos: g ? { x: g.x, y: g.y } : null,
-                    simAngle: g ? g.angle : 0,
-                };
-            };
+        if (s.outW != null) {
+          state.outW = +s.outW;
+          cfgWidth.value = state.outW;
+        }
+        if (s.outH != null) {
+          state.outH = +s.outH;
+          cfgHeight.value = state.outH;
+        }
+        if (s.slides != null) cfgSlides.value = s.slides;
+        if (window.syncCarouselUI) window.syncCarouselUI();
 
-            // Stream the stored compressed bytes straight to the guest -- no decode or
-            // re-encode (the bytes are already an encoded image; decode happens on demand).
-            window.getImageBuffer = async function (imgIdx) {
-                var entry = imgById(imgIdx);
-                if (!entry || !entry.blob) return null;
-                var buf = await entry.blob.arrayBuffer();
-                var g = simGroups.get(imgIdx);
-                return {
-                    buffer: buf,
-                    id: entry.id,
-                    name: entry.name,
-                    w: entry.w,
-                    h: entry.h,
-                    polygons: entry.polygons,
-                    currentPoly: entry.currentPoly || [],
-                    scale: entry.scale,
-                    scaleFixed: entry.scaleFixed || false,
-                    simHidden: entry.simHidden || false,
-                    simPos: g ? { x: g.x, y: g.y } : null,
-                    simAngle: g ? g.angle : 0,
-                };
-            };
+        if (s.fillColor !== undefined) {
+          state.fillColor = s.fillColor;
+          if (s.fillColor !== null) {
+            cfgFill.value = s.fillColor;
+            cfgFillTransparent.classList.remove("im-active");
+          } else {
+            cfgFillTransparent.classList.add("im-active");
+          }
+          if (state.images.length > 0) updateScalePreview(state.rankOrder[state.paintIdx]);
+        }
 
-            window.getEncodingPacket = function (imgIdx) {
-                var entry = imgById(imgIdx);
-                var enc = yoloPool.embeddingCache.get(imgIdx);
-                if (!entry || !enc) return null;
-                return {
-                    imgName: entry.name,
-                    encoding: {
-                        origW: enc.origW,
-                        origH: enc.origH,
-                        segments: _encodeSegments(enc.segments),
-                    },
-                };
-            };
+        if (s.blendMode) {
+          cfgBlendMode.value = s.blendMode;
+          cfgDitherFields.classList.toggle("im-hidden", s.blendMode !== "dither");
+          cfgDitherExpField.classList.toggle("im-hidden", s.blendMode !== "dither" && s.blendMode !== "gradient");
+        }
 
-            window.getSessionMeta = function () {
-                var positions = window.getSimPositions();
-                return {
-                    imageCount: state.images.length,
-                    outW: state.outW,
-                    outH: state.outH,
-                    fillColor: state.fillColor,
-                    blendMode: cfgBlendMode.value,
-                    seed: parseInt(cfgSeed.value) || 42,
-                    ditherExp: parseInt(cfgDitherExp.value) || 4,
-                    rankOrder: state.rankOrder.slice(),
-                    paintIdx: state.paintIdx,
-                    simViewScale: viewport.scale,
-                    simViewOffset: viewport.offset,
-                    simX1: simX1,
-                    simY1: simY1,
-                    simX2: simX2,
-                    simY2: simY2,
-                    images: state.images.map(function (entry, i) {
-                        var pos = positions[entry.id];
-                        return {
-                            id: entry.id,
-                            name: entry.name,
-                            w: entry.w,
-                            h: entry.h,
-                            polygons: entry.polygons || [],
-                            currentPoly: entry.currentPoly || [],
-                            scale: entry.scale,
-                            scaleFixed: entry.scaleFixed || false,
-                            simHidden: entry.simHidden || false,
-                            simPos: pos ? { x: pos.x, y: pos.y } : null,
-                            simAngle: pos ? pos.angle : 0,
-                            hasEncoding: yoloPool.embeddingCache.has(entry.id),
-                        };
-                    }),
-                };
-            };
+        if (s.simX1 != null) {
+          simX1 = +s.simX1;
+          simY1 = +s.simY1;
+          simX2 = +s.simX2;
+          simY2 = +s.simY2;
+          _simOutExplicit = true;
+          _simViewDirty = true;
+        } else if (s.simOutX != null) {
+          simX1 = +s.simOutX;
+          simY1 = +s.simOutY;
+          simX2 = simX1 + state.outW;
+          simY2 = simY1 + state.outH;
+          _simOutExplicit = true;
+          _simViewDirty = true;
+        }
 
-            window.getImageThumb = function (imgIdx) {
-                var entry = imgById(imgIdx);
-                return entry && entry.thumbUrl ? entry.thumbUrl : null;
-            };
+        // Recompute only on a real change. resizeSim() refreshes the placed groups for
+        // the new size/bounds; it dispatches no undo or broadcast events.
+        var dimsChanged = state.outW !== prevW || state.outH !== prevH;
+        var boundsChanged = simX1 !== prevX1 || simY1 !== prevY1 || simX2 !== prevX2 || simY2 !== prevY2;
+        if (dimsChanged && state.images.length > 0) updatePainterZoom(state.rankOrder[state.paintIdx]);
+        if ((dimsChanged || boundsChanged) && simRafId !== null) resizeSim();
 
-            window.buildSessionBlob = function (onProgress) {
-                return SessionIO.exportBlob(
-                    {
-                        state: state,
-                        simGroups: simGroups,
-                        yoloPool: yoloPool,
-                        cfg: {
-                            blendMode: cfgBlendMode.value,
-                            seed: parseInt(cfgSeed.value) || 42,
-                            ditherExp: parseInt(cfgDitherExp.value) || 4,
-                            simViewScale: viewport.scale,
-                            simViewOffset: viewport.offset,
-                            simX1: simX1,
-                            simY1: simY1,
-                            simX2: simX2,
-                            simY2: simY2,
-                        },
-                    },
-                    onProgress || function () {},
-                );
-            };
+        window._collabApplyingRemote = false;
+      };
 
-            window.applyRemoteSettings = function (s) {
-                // Apply directly (no synthetic input events): faking keystrokes re-entered the
-                // width/height/blend handlers, which armed a debounced resize that pushed a
-                // phantom undo entry and re-broadcast the settings -> a peer-to-peer echo loop.
-                window._collabApplyingRemote = true;
-
-                var prevW = state.outW,
-                    prevH = state.outH;
-                var prevX1 = simX1,
-                    prevY1 = simY1,
-                    prevX2 = simX2,
-                    prevY2 = simY2;
-
-                if (s.outW != null) {
-                    state.outW = +s.outW;
-                    cfgWidth.value = state.outW;
-                }
-                if (s.outH != null) {
-                    state.outH = +s.outH;
-                    cfgHeight.value = state.outH;
-                }
-                if (s.slides != null) cfgSlides.value = s.slides;
-                if (window.syncCarouselUI) window.syncCarouselUI();
-
-                if (s.fillColor !== undefined) {
-                    state.fillColor = s.fillColor;
-                    if (s.fillColor !== null) {
-                        cfgFill.value = s.fillColor;
-                        cfgFillTransparent.classList.remove("im-active");
-                    } else {
-                        cfgFillTransparent.classList.add("im-active");
-                    }
-                    if (state.images.length > 0)
-                        updateScalePreview(state.rankOrder[state.paintIdx]);
-                }
-
-                if (s.blendMode) {
-                    cfgBlendMode.value = s.blendMode;
-                    cfgDitherFields.classList.toggle(
-                        "im-hidden",
-                        s.blendMode !== "dither",
-                    );
-                    cfgDitherExpField.classList.toggle(
-                        "im-hidden",
-                        s.blendMode !== "dither" && s.blendMode !== "gradient",
-                    );
-                }
-
-                if (s.simX1 != null) {
-                    simX1 = +s.simX1;
-                    simY1 = +s.simY1;
-                    simX2 = +s.simX2;
-                    simY2 = +s.simY2;
-                    _simOutExplicit = true;
-                    _simViewDirty = true;
-                } else if (s.simOutX != null) {
-                    simX1 = +s.simOutX;
-                    simY1 = +s.simOutY;
-                    simX2 = simX1 + state.outW;
-                    simY2 = simY1 + state.outH;
-                    _simOutExplicit = true;
-                    _simViewDirty = true;
-                }
-
-                // Recompute only on a real change. resizeSim() refreshes the placed groups for
-                // the new size/bounds; it dispatches no undo or broadcast events.
-                var dimsChanged = state.outW !== prevW || state.outH !== prevH;
-                var boundsChanged =
-                    simX1 !== prevX1 ||
-                    simY1 !== prevY1 ||
-                    simX2 !== prevX2 ||
-                    simY2 !== prevY2;
-                if (dimsChanged && state.images.length > 0)
-                    updatePainterZoom(state.rankOrder[state.paintIdx]);
-                if ((dimsChanged || boundsChanged) && simRafId !== null)
-                    resizeSim();
-
-                window._collabApplyingRemote = false;
-            };
-
-            window.applyRemoteRankOrder = function (order) {
-                var valid = order.filter(function (id) {
-                    return imgById(id);
-                });
-                if (valid.length !== state.images.length) return;
-                state.rankOrder = valid;
-                buildRankList();
-            };
-        </script>
-        <script type="module" src="collaborate.js?v=19"></script>
-    </body>
+      window.applyRemoteRankOrder = function (order) {
+        var valid = order.filter(function (id) {
+          return imgById(id);
+        });
+        if (valid.length !== state.images.length) return;
+        state.rankOrder = valid;
+        buildRankList();
+      };
+    </script>
+    <script type="module" src="collaborate.js?v=19"></script>
+  </body>
 </html>

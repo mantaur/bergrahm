@@ -109,3 +109,39 @@ test.describe('Presenter / follow', () => {
     expect(await page.evaluate(() => (window as any).imViewport.following)).toBe(false);
   });
 });
+
+test.describe('Canvas pan (desktop)', () => {
+  const offset = (page: any) =>
+    page.evaluate(() => {
+      const s = (window as any).getSimState();
+      return { x: s.viewOffset.x, y: s.viewOffset.y };
+    });
+
+  test('middle-mouse drag pans the viewport', async ({ page }) => {
+    const before = await offset(page);
+    const box = await page.locator('#sim-canvas').boundingBox();
+    const cx = box!.x + box!.width / 2,
+      cy = box!.y + box!.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down({ button: 'middle' });
+    await page.mouse.move(cx - 80, cy - 60, { steps: 8 });
+    await page.mouse.up({ button: 'middle' });
+    const after = await offset(page);
+    expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeGreaterThan(1);
+  });
+
+  test('Space + left drag pans the viewport', async ({ page }) => {
+    const before = await offset(page);
+    const box = await page.locator('#sim-canvas').boundingBox();
+    const cx = box!.x + box!.width / 2,
+      cy = box!.y + box!.height / 2;
+    await page.keyboard.down('Space');
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + 90, cy + 50, { steps: 8 });
+    await page.mouse.up();
+    await page.keyboard.up('Space');
+    const after = await offset(page);
+    expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeGreaterThan(1);
+  });
+});

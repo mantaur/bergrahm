@@ -18,47 +18,63 @@
 //   getArtboard()-> { x1, y1, x2, y2 }  the output rect, for centerOnArtboard()
 //   getGroup(i)  -> sim group | null    a placed image, for centerOnImage()
 const viewport = (function () {
-  const VIEW_MIN = 0.1, VIEW_MAX = 10;
-  const clamp = s => Math.max(VIEW_MIN, Math.min(VIEW_MAX, s));
+  const VIEW_MIN = 0.1,
+    VIEW_MAX = 10;
+  const clamp = (s) => Math.max(VIEW_MIN, Math.min(VIEW_MAX, s));
 
   // ── Owned state ──
-  let scale     = 1;               // zoom (1 = no zoom)
-  let offset    = { x: 0, y: 0 };  // world coords of the viewport's top-left
-  let dispScale = 1;               // display px per world unit (fixed; from canvas/world size)
+  let scale = 1; // zoom (1 = no zoom)
+  let offset = { x: 0, y: 0 }; // world coords of the viewport's top-left
+  let dispScale = 1; // display px per world unit (fixed; from canvas/world size)
 
   // ── Injected deps ──
-  let canvas      = null;
-  let markDirty   = () => {};
+  let canvas = null;
+  let markDirty = () => {};
   let getArtboard = () => ({ x1: 0, y1: 0, x2: 0, y2: 0 });
-  let getGroup    = () => null;
+  let getGroup = () => null;
 
   // ── Presenter / animation ──
-  let _present   = false; // true while this client drives followers' views
-  let _anim      = null;  // { mode:'tween', from, target, start, dur } | { mode:'follow', target }
+  let _present = false; // true while this client drives followers' views
+  let _anim = null; // { mode:'tween', from, target, start, dur } | { mode:'follow', target }
   let _following = false; // true while tracking a remote presenter
 
-  function getState() { return { scale, offsetX: offset.x, offsetY: offset.y }; }
+  function getState() {
+    return { scale, offsetX: offset.x, offsetY: offset.y };
+  }
 
   // Share the world point at the view's CENTRE (+ scale), not the top-left offset,
   // so followers with a different screen size pin the same focal point, not corner.
   function emit() {
     if (!_present) return;
     const ts = dispScale * scale;
-    window.dispatchEvent(new CustomEvent('collab:viewport-changed', {
-      detail: {
-        scale,
-        centerX: offset.x + canvas.width  / 2 / ts,
-        centerY: offset.y + canvas.height / 2 / ts,
-      },
-    }));
+    window.dispatchEvent(
+      new CustomEvent("collab:viewport-changed", {
+        detail: {
+          scale,
+          centerX: offset.x + canvas.width / 2 / ts,
+          centerY: offset.y + canvas.height / 2 / ts,
+        },
+      }),
+    );
   }
 
   // Low-level write: clamp + store + mark dirty. No emit/cancel.
-  function setView(s, ox, oy) { scale = clamp(s); offset = { x: ox, y: oy }; markDirty(); }
-  function cancelAnim() { _anim = null; _following = false; }
+  function setView(s, ox, oy) {
+    scale = clamp(s);
+    offset = { x: ox, y: oy };
+    markDirty();
+  }
+  function cancelAnim() {
+    _anim = null;
+    _following = false;
+  }
   // Authoritative change (manual gesture / non-animated API): cancels anim, then
   // emits to followers if presenting.
-  function apply(s, ox, oy) { cancelAnim(); setView(s, ox, oy); emit(); }
+  function apply(s, ox, oy) {
+    cancelAnim();
+    setView(s, ox, oy);
+    emit();
+  }
 
   // ── Transforms ──
   function worldFromCanvasPx(px, py) {
@@ -67,15 +83,13 @@ const viewport = (function () {
   }
   function canvasToWorld(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
-    return worldFromCanvasPx(
-      (clientX - rect.left) / rect.width  * canvas.width,
-      (clientY - rect.top)  / rect.height * canvas.height);
+    return worldFromCanvasPx(((clientX - rect.left) / rect.width) * canvas.width, ((clientY - rect.top) / rect.height) * canvas.height);
   }
   function clientToCanvasPx(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     return {
-      x: (clientX - rect.left) / rect.width  * canvas.width,
-      y: (clientY - rect.top)  / rect.height * canvas.height,
+      x: ((clientX - rect.left) / rect.width) * canvas.width,
+      y: ((clientY - rect.top) / rect.height) * canvas.height,
     };
   }
   function worldToClient(worldX, worldY) {
@@ -84,16 +98,16 @@ const viewport = (function () {
     const cx = (worldX - offset.x) * ts;
     const cy = (worldY - offset.y) * ts;
     return {
-      x: cx * rect.width  / canvas.width  + rect.left,
-      y: cy * rect.height / canvas.height + rect.top,
+      x: (cx * rect.width) / canvas.width + rect.left,
+      y: (cy * rect.height) / canvas.height + rect.top,
     };
   }
 
   // ── World-space API ──
   function centerOn(worldX, worldY, opts = {}) {
-    const s  = clamp(opts.scale != null ? opts.scale : scale);
+    const s = clamp(opts.scale != null ? opts.scale : scale);
     const ts = dispScale * s;
-    const ox = worldX - canvas.width  / 2 / ts;
+    const ox = worldX - canvas.width / 2 / ts;
     const oy = worldY - canvas.height / 2 / ts;
     if (opts.animate) animateTo(s, ox, oy, opts.durationMs);
     else apply(s, ox, oy);
@@ -101,11 +115,11 @@ const viewport = (function () {
 
   function fit(b, opts = {}) {
     const pad = opts.padding != null ? opts.padding : 0.12;
-    const bw  = Math.max(1, b.x2 - b.x1), bh = Math.max(1, b.y2 - b.y1);
-    const sx  = canvas.width  * (1 - pad) / (bw * dispScale);
-    const sy  = canvas.height * (1 - pad) / (bh * dispScale);
-    centerOn((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2,
-      { scale: Math.min(sx, sy), animate: opts.animate, durationMs: opts.durationMs });
+    const bw = Math.max(1, b.x2 - b.x1),
+      bh = Math.max(1, b.y2 - b.y1);
+    const sx = (canvas.width * (1 - pad)) / (bw * dispScale);
+    const sy = (canvas.height * (1 - pad)) / (bh * dispScale);
+    centerOn((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, { scale: Math.min(sx, sy), animate: opts.animate, durationMs: opts.durationMs });
   }
 
   function centerOnImage(imgIdx, opts = {}) {
@@ -113,7 +127,9 @@ const viewport = (function () {
     if (g) centerOn(g.x, g.y, opts);
   }
 
-  function centerOnArtboard(opts = {}) { fit(getArtboard(), opts); }
+  function centerOnArtboard(opts = {}) {
+    fit(getArtboard(), opts);
+  }
 
   function setZoom(s, opts = {}) {
     const rect = canvas.getBoundingClientRect();
@@ -132,17 +148,16 @@ const viewport = (function () {
     apply(scale, offset.x + dxPx / ts, offset.y + dyPx / ts);
   }
   function zoomAtCanvasPx(canvasPx, newScale) {
-    const s = clamp(newScale), old = dispScale * scale;
-    apply(s,
-      offset.x + canvasPx.x / old - canvasPx.x / (dispScale * s),
-      offset.y + canvasPx.y / old - canvasPx.y / (dispScale * s));
+    const s = clamp(newScale),
+      old = dispScale * scale;
+    apply(s, offset.x + canvasPx.x / old - canvasPx.x / (dispScale * s), offset.y + canvasPx.y / old - canvasPx.y / (dispScale * s));
   }
 
   // ── Animation / follow ──
   function animateTo(s, ox, oy, dur) {
     _following = false;
     _anim = {
-      mode: 'tween',
+      mode: "tween",
       from: { scale, ox: offset.x, oy: offset.y },
       target: { scale: clamp(s), ox, oy },
       start: performance.now(),
@@ -156,11 +171,11 @@ const viewport = (function () {
     const ts = dispScale * cs;
     const target = {
       scale: cs,
-      ox: centerX - canvas.width  / 2 / ts,
+      ox: centerX - canvas.width / 2 / ts,
       oy: centerY - canvas.height / 2 / ts,
     };
-    if (_anim && _anim.mode === 'follow') _anim.target = target;
-    else _anim = { mode: 'follow', target };
+    if (_anim && _anim.mode === "follow") _anim.target = target;
+    else _anim = { mode: "follow", target };
     _following = true;
   }
 
@@ -173,16 +188,14 @@ const viewport = (function () {
   function stepAnim(now) {
     const a = _anim;
     if (!a) return;
-    if (a.mode === 'tween') {
+    if (a.mode === "tween") {
       const t = Math.min(1, (now - a.start) / a.dur);
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; // easeInOutQuad
-      setView(
-        a.from.scale + (a.target.scale - a.from.scale) * e,
-        a.from.ox + (a.target.ox - a.from.ox) * e,
-        a.from.oy + (a.target.oy - a.from.oy) * e);
+      setView(a.from.scale + (a.target.scale - a.from.scale) * e, a.from.ox + (a.target.ox - a.from.ox) * e, a.from.oy + (a.target.oy - a.from.oy) * e);
       emit();
       if (t >= 1) _anim = null;
-    } else { // follow
+    } else {
+      // follow
       const ds = a.target.scale - scale;
       const dx = a.target.ox - offset.x;
       const dy = a.target.oy - offset.y;
@@ -193,39 +206,71 @@ const viewport = (function () {
 
   return {
     init(deps) {
-      canvas      = deps.canvas;
-      markDirty   = deps.markDirty   || markDirty;
+      canvas = deps.canvas;
+      markDirty = deps.markDirty || markDirty;
       getArtboard = deps.getArtboard || getArtboard;
-      getGroup    = deps.getGroup    || getGroup;
+      getGroup = deps.getGroup || getGroup;
     },
 
     // Accessors (read-only views of owned state)
-    get scale()      { return scale; },
-    get offset()     { return { x: offset.x, y: offset.y }; },
-    get offsetX()    { return offset.x; },
-    get offsetY()    { return offset.y; },
-    get dispScale()  { return dispScale; },
-    get totalScale() { return dispScale * scale; },
-    get presenting() { return _present; },
-    get following()  { return _following; },
+    get scale() {
+      return scale;
+    },
+    get offset() {
+      return { x: offset.x, y: offset.y };
+    },
+    get offsetX() {
+      return offset.x;
+    },
+    get offsetY() {
+      return offset.y;
+    },
+    get dispScale() {
+      return dispScale;
+    },
+    get totalScale() {
+      return dispScale * scale;
+    },
+    get presenting() {
+      return _present;
+    },
+    get following() {
+      return _following;
+    },
     getState,
 
     // Low-level setters (used by initSim / resize)
     setView,
-    setDispScale(d) { dispScale = d; },
+    setDispScale(d) {
+      dispScale = d;
+    },
 
     // Transforms
-    canvasToWorld, clientToCanvasPx, worldToClient, worldFromCanvasPx,
+    canvasToWorld,
+    clientToCanvasPx,
+    worldToClient,
+    worldFromCanvasPx,
 
     // Gesture funnels + internal funnel (used by imageMerge handlers)
-    panByCanvasPx, zoomAtCanvasPx,
-    _apply: apply, _set: setView, _cancelAnim: cancelAnim,
+    panByCanvasPx,
+    zoomAtCanvasPx,
+    _apply: apply,
+    _set: setView,
+    _cancelAnim: cancelAnim,
 
     // World-space API
-    centerOn, fit, centerOnImage, centerOnArtboard, setZoom, applyState,
+    centerOn,
+    fit,
+    centerOnImage,
+    centerOnArtboard,
+    setZoom,
+    applyState,
 
     // Animation / presenter
-    animateTo, follow, setPresenting, stepAnim,
+    animateTo,
+    follow,
+    setPresenting,
+    stepAnim,
   };
 })();
 

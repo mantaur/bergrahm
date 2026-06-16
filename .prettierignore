@@ -1,0 +1,12 @@
+# Format ONLY docs/assets/pages/projects/imgMerger/ -- ignore everything else.
+# (gitignore syntax: ignore all, then un-ignore the path down to imgMerger.)
+/*
+!/docs
+/docs/*
+!/docs/assets
+/docs/assets/*
+!/docs/assets/pages
+/docs/assets/pages/*
+!/docs/assets/pages/projects
+/docs/assets/pages/projects/*
+!/docs/assets/pages/projects/imgMerger

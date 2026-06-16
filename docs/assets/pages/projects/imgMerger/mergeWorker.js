@@ -2,7 +2,7 @@
 // Resolves per-pixel ownership for the chosen blend mode (functions in
 // blendModes.js, imported below). Chamfer distance transforms are delegated to
 // the main thread (requestChamfer) -- this worker doesn't nest workers.
-importScripts('blendModes.js?v=1');
+importScripts("blendModes.js?v=1");
 
 // Chamfer jobs run in a pool the main thread owns -- this worker can't nest
 // workers reliably on Firefox -- so we ship each job out and await it.
@@ -12,14 +12,17 @@ function requestChamfer(mask, W, H) {
   return new Promise((resolve) => {
     const id = ++_chamferSeq;
     _chamferPending.set(id, resolve);
-    self.postMessage({ type: 'chamfer-req', id, mask: mask.buffer, W, H }, [mask.buffer]);
+    self.postMessage({ type: "chamfer-req", id, mask: mask.buffer, W, H }, [mask.buffer]);
   });
 }
 
 self.onmessage = async function (e) {
-  if (e.data && e.data.type === 'chamfer-res') {
+  if (e.data && e.data.type === "chamfer-res") {
     const resolve = _chamferPending.get(e.data.id);
-    if (resolve) { _chamferPending.delete(e.data.id); resolve(e.data.dist ? new Float32Array(e.data.dist) : null); }
+    if (resolve) {
+      _chamferPending.delete(e.data.id);
+      resolve(e.data.dist ? new Float32Array(e.data.dist) : null);
+    }
     return;
   }
 
@@ -30,19 +33,19 @@ self.onmessage = async function (e) {
     const ownership = await computeOwnershipMap(images, precomputedPlacements, outW, outH, blendMode, seed | 0, ditherExp);
     postDone(precomputedPlacements, ownership);
   } catch (err) {
-    self.postMessage({ type: 'error', text: err.message });
+    self.postMessage({ type: "error", text: err.message });
   }
 };
 
 // Post the merge result; transfer whatever ownership buffers it carries.
 function postDone(placements, ownership) {
   const transfer = [];
-  for (const key of ['owner', 'ownerA', 'ownerB', 'blend']) if (ownership[key]) transfer.push(ownership[key].buffer);
-  self.postMessage({ type: 'done', placements, ownership }, transfer);
+  for (const key of ["owner", "ownerA", "ownerB", "blend"]) if (ownership[key]) transfer.push(ownership[key].buffer);
+  self.postMessage({ type: "done", placements, ownership }, transfer);
 }
 
 function postProgress(pct) {
-  self.postMessage({ type: 'progress', pct: Math.round(pct) });
+  self.postMessage({ type: "progress", pct: Math.round(pct) });
 }
 
 // Throttle chamfer jobs to 8 in flight (each runs in the main thread's pool).
@@ -61,9 +64,11 @@ async function parallelChamfer(count, W, H, getEntry, onResult, onDone) {
   }
 
   async function lane(j) {
-    while (j < count) { await runOne(j); j = nextIdx++; }
+    while (j < count) {
+      await runOne(j);
+      j = nextIdx++;
+    }
   }
 
   await Promise.all(Array.from({ length: CONCURRENCY }, (_, i) => lane(i)));
 }
-
