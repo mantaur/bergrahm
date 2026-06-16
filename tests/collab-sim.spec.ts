@@ -21,17 +21,35 @@ test('host: getCollabState reflects the loaded session', async ({ page }) => {
   expect(cs.outH).toBe(1920);
 });
 
-// The join snapshot must carry the slide count, else a peer that joins a carousel
-// session gets the wide width but slides=1 (so it won't slice on download).
-test('host: getSessionMeta carries the slide count to joiners', async ({ page }) => {
+// The join snapshot must carry every synced setting (slides/seed/sharpness), else a
+// peer that joins inherits the wrong slice count or merge parameters. These used to
+// drift because getSessionMeta and the live broadcast were separate serializers.
+test('host: getSessionMeta carries slides + seed + sharpness to joiners', async ({ page }) => {
   await addImage(page);
   await page.evaluate(() => {
-    const s = document.getElementById('cfg-slides') as HTMLInputElement;
-    s.value = '3';
-    s.dispatchEvent(new Event('input'));
+    const set = (id: string, v: string) => {
+      const el = document.getElementById(id) as HTMLInputElement;
+      el.value = v;
+      el.dispatchEvent(new Event('input'));
+    };
+    set('cfg-slides', '3');
+    set('cfg-seed', '7');
+    set('cfg-dither-exp', '9');
   });
   const meta = await page.evaluate(() => (window as any).getSessionMeta());
   expect(meta.slides).toBe(3);
+  expect(meta.seed).toBe(7);
+  expect(meta.ditherExp).toBe(9);
+});
+
+test('guest: applyRemoteSettings applies seed + sharpness', async ({ page }) => {
+  await page.evaluate(() => (window as any).applyRemoteSettings({ seed: 13, ditherExp: 5 }));
+  const v = await page.evaluate(() => ({
+    seed: (document.getElementById('cfg-seed') as HTMLInputElement).value,
+    dither: (document.getElementById('cfg-dither-exp') as HTMLInputElement).value,
+  }));
+  expect(v.seed).toBe('13');
+  expect(v.dither).toBe('5');
 });
 
 // ── Guest side: receiving a pushed session ──────────────────────────────────────

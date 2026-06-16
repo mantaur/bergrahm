@@ -357,7 +357,7 @@
     <script src="gpuCheck.js?v=1"></script>
     <script src="sessionIO.js?v=9"></script>
     <script src="viewport.js?v=4"></script>
-    <script src="imageMerge.js?v=63"></script>
+    <script src="imageMerge.js?v=64"></script>
     <script>
       // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -495,21 +495,11 @@
         var positions = window.getSimPositions();
         return {
           imageCount: state.images.length,
-          outW: state.outW,
-          outH: state.outH,
-          slides: slidesN(),
-          fillColor: state.fillColor,
-          blendMode: cfgBlendMode.value,
-          seed: parseInt(cfgSeed.value) || 42,
-          ditherExp: parseInt(cfgDitherExp.value) || 4,
+          ..._settingsPayload(), // outW/outH/slides/fillColor/blendMode/seed/ditherExp/simX1..Y2
           rankOrder: state.rankOrder.slice(),
           paintIdx: state.paintIdx,
           simViewScale: viewport.scale,
           simViewOffset: viewport.offset,
-          simX1: simX1,
-          simY1: simY1,
-          simX2: simX2,
-          simY2: simY2,
           images: state.images.map(function (entry, i) {
             var pos = positions[entry.id];
             return {
@@ -597,6 +587,8 @@
           cfgDitherFields.classList.toggle("im-hidden", s.blendMode !== "dither");
           cfgDitherExpField.classList.toggle("im-hidden", s.blendMode !== "dither" && s.blendMode !== "gradient");
         }
+        if (s.seed != null) cfgSeed.value = s.seed;
+        if (s.ditherExp != null) cfgDitherExp.value = s.ditherExp;
 
         if (s.simX1 != null) {
           simX1 = +s.simX1;

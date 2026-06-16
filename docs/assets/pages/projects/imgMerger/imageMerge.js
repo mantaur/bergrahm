@@ -142,6 +142,13 @@ cfgBlendMode.addEventListener("change", () => {
   if (!window._collabApplyingRemote) _broadcastSettings();
 });
 
+// Seed / sharpness changes also sync to peers (they affect the merge result).
+[cfgSeed, cfgDitherExp].forEach((el) =>
+  el.addEventListener("input", () => {
+    if (!window._collabApplyingRemote) _broadcastSettings();
+  }),
+);
+
 // W/H inputs are the FULL output. The preset is a per-slide format; Slides (N)
 // multiplies the preset width (carousel) and slices the download into N frames.
 let _slideBaseW = 1080,
@@ -236,6 +243,26 @@ cfgFillTransparent.addEventListener("click", () => {
   if (!window._collabApplyingRemote) _broadcastSettings();
 });
 
+// Single source of truth for the peer-synced settings -- used by BOTH the live
+// broadcast and the join snapshot (getSessionMeta), so the two can't drift (which
+// is how seed/ditherExp/slides previously failed to sync). applyRemoteSettings
+// consumes every key here.
+function _settingsPayload() {
+  return {
+    outW: state.outW,
+    outH: state.outH,
+    slides: slidesN(),
+    fillColor: state.fillColor,
+    blendMode: cfgBlendMode.value,
+    seed: parseInt(cfgSeed.value, 10) || 42,
+    ditherExp: parseInt(cfgDitherExp.value, 10) || 4,
+    simX1,
+    simY1,
+    simX2,
+    simY2,
+  };
+}
+
 let _broadcastSettingsTimer = null;
 function _broadcastSettings() {
   if (_broadcastSettingsTimer) clearTimeout(_broadcastSettingsTimer);
@@ -243,7 +270,7 @@ function _broadcastSettings() {
     _broadcastSettingsTimer = null;
     window.dispatchEvent(
       new CustomEvent("collab:settings-changed", {
-        detail: { outW: state.outW, outH: state.outH, fillColor: state.fillColor, blendMode: cfgBlendMode.value, slides: slidesN(), simX1, simY1, simX2, simY2 },
+        detail: _settingsPayload(),
       }),
     );
   }, 200);
