@@ -37,6 +37,17 @@ test.describe('real collab (live broker)', () => {
       await expect(a.locator('#collab-peer-badge')).toBeVisible();
       await expect(b.locator('#collab-peer-badge')).toBeVisible();
 
+      // Settings sync through the Yjs CRDT over the data channel: a host edit converges
+      // to the guest's UI.
+      await a.evaluate(() => {
+        const el = document.getElementById('cfg-seed') as HTMLInputElement;
+        el.value = '88';
+        el.dispatchEvent(new Event('input'));
+      });
+      await expect
+        .poll(() => b.evaluate(() => (document.getElementById('cfg-seed') as HTMLInputElement).value), { timeout: 25000 })
+        .toBe('88');
+
       // Presenter mode: host enables it, then closes the modal and pans;
       // the guest's viewport should follow.
       const gBefore = await b.evaluate(() => (window as any).getSimState().viewOffset);

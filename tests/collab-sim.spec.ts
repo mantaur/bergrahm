@@ -63,6 +63,29 @@ test('collab sync-status drives the sim-status pill', async ({ page }) => {
   await expect(page.locator('#sim-status')).toHaveText('', { timeout: 5000 }); // self-clears
 });
 
+// ── Shared metadata via Yjs (settings domain) ────────────────────────────────────
+// Settings sync through a Yjs CRDT (window.ydoc) instead of a raw broadcast: a local
+// edit lands in the shared doc, and a remote doc update applies to the local UI.
+test('a local settings edit writes into the shared Y.Doc', async ({ page }) => {
+  await page.evaluate(() => {
+    const el = document.getElementById('cfg-seed') as HTMLInputElement;
+    el.value = '77';
+    el.dispatchEvent(new Event('input'));
+  });
+  // _broadcastSettings is debounced ~200ms; poll the doc.
+  await expect.poll(() => page.evaluate(() => (window as any).ydoc.getMap('settings').get('seed'))).toBe(77);
+});
+
+test('a remote Y.Doc settings update applies to the local UI', async ({ page }) => {
+  await page.evaluate(() => {
+    const yd = (window as any).ydoc;
+    yd.transact(() => yd.getMap('settings').set('seed', 99), 'remote'); // simulate a peer update
+  });
+  await expect
+    .poll(() => page.evaluate(() => (document.getElementById('cfg-seed') as HTMLInputElement).value))
+    .toBe('99');
+});
+
 // ── Guest side: receiving a pushed session ──────────────────────────────────────
 
 test('guest: a pushed session-meta populates the skeleton', async ({ page }) => {

@@ -36,6 +36,52 @@
 //   { type: 'session-start', totalBytes }
 //   [ArrayBuffer chunks...]
 //   { type: 'session-end' }
+//   --- shared metadata (Yjs CRDT) ---
+//   { type: 'ydoc-update',           update }   base64 Yjs update; host relays; idempotent
+
+import * as Y from "./vendor/yjs.mjs";
+
+// ── Shared metadata document (CRDT) ───────────────────────────────────────────
+// Metadata that multiple peers edit concurrently lives in a Yjs document so it
+// converges to one consistent state without a central authority -- no last-writer
+// races. Large binary (image bytes) stays OUT of the doc and rides the content-
+// addressed asset pull; thumbnails + encodings are derived/sync separately. Updates
+// ride the existing PeerJS data channels (this is the transport "provider").
+const ydoc = new Y.Doc();
+window.ydoc = ydoc; // exposed for the app's observers + tests
+const ySettings = ydoc.getMap("settings"); // outW/outH/slides/fillColor/blendMode/seed/ditherExp/simX1..Y2
+
+function _encU(u) {
+  let s = "";
+  for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+  return btoa(s);
+}
+function _decU(s) {
+  const bin = atob(s);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
+}
+
+// Local doc changes -> peers. Remote-applied changes carry origin "remote" and are
+// relayed (in handleMsg), not re-broadcast here, so there is no echo loop.
+ydoc.on("update", (update, origin) => {
+  if (origin === "remote") return;
+  if (!localPeerId) return;
+  broadcast({ type: "ydoc-update", update: _encU(update) });
+});
+
+// Send our whole doc state to a connection (join / reconnect convergence).
+function _sendDocState(conn) {
+  if (conn && conn.open) conn.send(JSON.stringify({ type: "ydoc-update", update: _encU(Y.encodeStateAsUpdate(ydoc)) }));
+}
+
+// Remote settings changes -> apply to local UI. Local writes (origin "local") are
+// skipped; applyRemoteSettings self-guards against re-broadcasting.
+ySettings.observe((event, transaction) => {
+  if (transaction.origin !== "remote") return;
+  if (window.applyRemoteSettings) window.applyRemoteSettings(ySettings.toJSON());
+});
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -347,6 +393,11 @@ function handleMsg(msg, fromPeerId) {
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
+    case "ydoc-update":
+      Y.applyUpdate(ydoc, _decU(msg.update), "remote");
+      if (isHost) broadcast(msg, fromPeerId); // relay to the other guests (idempotent)
+      break;
+
     case "rank-order":
       if (window.applyRemoteRankOrder) window.applyRemoteRankOrder(msg.order);
       if (isHost) broadcast(msg, fromPeerId);
@@ -490,6 +541,7 @@ function handleMsg(msg, fromPeerId) {
         } else if (conn) {
           const cs = window.getCollabState ? window.getCollabState() : null;
           if (cs && cs.imageCount > 0) sendSessionTo(conn);
+          _sendDocState(conn); // converge shared metadata (settings, ...) with the joiner
         }
       }
       break;
@@ -993,9 +1045,12 @@ function leaveRoom() {
 
 // ── App event hooks ───────────────────────────────────────────────────────────
 
+// Settings now sync through the CRDT (converges, no last-writer race) rather than a
+// raw broadcast. Write even when solo so the doc holds current settings for joiners.
 window.addEventListener("collab:settings-changed", ({ detail }) => {
-  if (!localPeerId) return;
-  broadcast({ type: "settings", settings: detail });
+  ydoc.transact(() => {
+    for (const k in detail) if (detail[k] !== undefined) ySettings.set(k, detail[k]);
+  }, "local");
 });
 
 window.addEventListener("collab:rank-order-changed", ({ detail: { order } }) => {
@@ -1168,10 +1223,17 @@ function _applySimSnapshot(entry) {
   window.applySimSnapshot(entry);
   if (!localPeerId) return;
   if (entry.bounds) {
-    // Bounds go via settings so peers re-derive auto-scale (applyRemoteSettings).
+    // Bounds go through the settings CRDT so peers re-derive auto-scale.
     const b = window.getSimBounds ? window.getSimBounds() : {};
     const cs = window.getCollabState ? window.getCollabState() : {};
-    broadcast({ type: "settings", settings: { outW: cs.outW, outH: cs.outH, simX1: b.simX1, simY1: b.simY1, simX2: b.simX2, simY2: b.simY2 } });
+    ydoc.transact(() => {
+      ySettings.set("outW", cs.outW);
+      ySettings.set("outH", cs.outH);
+      ySettings.set("simX1", b.simX1);
+      ySettings.set("simY1", b.simY1);
+      ySettings.set("simX2", b.simX2);
+      ySettings.set("simY2", b.simY2);
+    }, "local");
   }
   if (entry.groups && entry.groups.length) {
     const all = window.getSimPositions ? window.getSimPositions() : {};

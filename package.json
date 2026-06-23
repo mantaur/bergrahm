@@ -14,5 +14,8 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed"
+  },
+  "dependencies": {
+    "yjs": "^13.6.31"
   }
 }
