@@ -357,7 +357,7 @@
     <script src="gpuCheck.js?v=1"></script>
     <script src="sessionIO.js?v=9"></script>
     <script src="viewport.js?v=6"></script>
-    <script src="imageMerge.js?v=69"></script>
+    <script src="imageMerge.js?v=70"></script>
     <script>
       // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -459,11 +459,13 @@
       window.getImageBuffer = async function (imgIdx) {
         var entry = imgById(imgIdx);
         if (!entry || !entry.blob) return null;
+        await ensureAssetHash(entry); // content key travels with the bytes
         var buf = await entry.blob.arrayBuffer();
         var g = simGroups.get(imgIdx);
         return {
           buffer: buf,
           id: entry.id,
+          assetHash: entry.assetHash,
           name: entry.name,
           w: entry.w,
           h: entry.h,
@@ -504,6 +506,7 @@
             var pos = positions[entry.id];
             return {
               id: entry.id,
+              assetHash: entry.assetHash || null, // bytes pulled on demand by hash
               name: entry.name,
               w: entry.w,
               h: entry.h,
@@ -625,6 +628,6 @@
         buildRankList();
       };
     </script>
-    <script type="module" src="collaborate.js?v=24"></script>
+    <script type="module" src="collaborate.js?v=25"></script>
   </body>
 </html>

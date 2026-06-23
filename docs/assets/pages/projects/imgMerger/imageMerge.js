@@ -483,6 +483,7 @@ cfgImages.addEventListener("change", () => {
         id: newImgId(),
         file,
         blob: file,
+        assetHash: null,
         name: file.name,
         thumbUrl,
         w,
@@ -492,6 +493,7 @@ cfgImages.addEventListener("change", () => {
         scale: null,
         simHidden: false,
       };
+      ensureAssetHash(state.images[idx]); // content-address the bytes for on-demand serving
       loaded++;
       if (loaded === files.length) {
         // Append the new images' ids to rankOrder and seed their undo stacks.
@@ -4101,6 +4103,7 @@ function _sessionEntry(si, id) {
     id,
     file: null,
     blob: null,
+    assetHash: si.assetHash || null, // content key; bytes pulled on demand
     name: si.name,
     thumbUrl: null,
     w: si.w,
@@ -4258,6 +4261,69 @@ function _importImage(i, msg, ctx) {
   _showMergeBtn(); // offer merge only once every placed image has its pixels
 }
 
+// ── Content-addressed asset store ─────────────────────────────────────────────
+// Image *bytes* are keyed by a content hash and fetched on demand (pull), decoupled
+// from metadata sync. A peer that knows an image exists (from metadata carrying its
+// assetHash) but lacks the bytes requests them and retries until they arrive -- so a
+// stalled byte payload (the small header still got through) self-heals instead of
+// leaving a stuck skeleton. crypto.subtle is deliberately avoided: it is undefined on
+// plain-http LAN origins, a common collab setup here.
+const assetStore = new Map(); // assetHash -> Blob (compressed bytes)
+
+async function _assetHash(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let h1 = 0x811c9dc5,
+    h2 = 0x01000193;
+  for (let i = 0; i < bytes.length; i++) {
+    h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ bytes[i], 0x85ebca6b) >>> 0;
+  }
+  return bytes.length.toString(16) + "-" + h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
+
+// Ensure an entry's bytes are hashed + registered; returns the hash.
+async function ensureAssetHash(entry) {
+  if (!entry.blob) return entry.assetHash || null;
+  if (!entry.assetHash) entry.assetHash = await _assetHash(entry.blob);
+  assetStore.set(entry.assetHash, entry.blob);
+  return entry.assetHash;
+}
+
+window.hasAsset = (hash) => assetStore.has(hash);
+window.getAssetBuffer = async (hash) => {
+  const b = assetStore.get(hash);
+  return b ? await b.arrayBuffer() : null;
+};
+
+// Pull bytes for any local image we have metadata for but no bytes. The retry timer
+// re-requests outstanding assets until satisfied (idempotent; host serves or relays).
+function reconcileAssets() {
+  for (const e of state.images) {
+    if (e.assetHash && !e.blob && !assetStore.has(e.assetHash)) {
+      window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash: e.assetHash } }));
+    }
+  }
+}
+setInterval(reconcileAssets, 4000);
+
+// Bytes arrived for an asset: store and fill every image entry waiting on it.
+window.addEventListener("collab:remote-asset", async ({ detail: { hash, jpegBase64 } }) => {
+  const blob = await (await fetch(jpegBase64)).blob();
+  if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
+  assetStore.set(hash, blob);
+  for (const e of state.images) {
+    if (e.assetHash === hash && !e.blob) {
+      e.blob = blob;
+      const bm = await createImageBitmap(blob);
+      e.thumbUrl = buildThumb(bm, e.w, e.h);
+      bm.close();
+      _updateFilmstripThumb(e.id);
+      simRefreshGroup(e.id);
+      _simViewDirty = true;
+    }
+  }
+});
+
 // ── Collaboration remote-event handlers ───────────────────────────────────────
 
 let _collabJoinTotal = 0;
@@ -4290,7 +4356,9 @@ window.addEventListener("collab:remote-image", async (e) => {
 
   const newId = id || newImgId();
   if (imgById(newId)) return; // already have this image (duplicate / echo)
-  state.images.push({ id: newId, file: null, blob, name, thumbUrl, w, h, polygons: polygons || [], currentPoly: [], scale: null, simHidden: false });
+  const newEntry = { id: newId, file: null, blob, assetHash: null, name, thumbUrl, w, h, polygons: polygons || [], currentPoly: [], scale: null, simHidden: false };
+  state.images.push(newEntry);
+  ensureAssetHash(newEntry); // register bytes so this peer can serve them on request
   state.undoStack.set(newId, []);
   state.rankOrder.push(newId);
 
@@ -4583,7 +4651,7 @@ window.addEventListener("collab:remote-image-thumb", ({ detail: { imgIdx, thumb 
 // the live-add binary fill. Idempotent: an entry that already has a blob is left alone
 // (a re-stream after reconnect must not clobber newer local edits).
 async function _populateImageEntry(detail) {
-  const { imgIdx, w, h, jpegBase64, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
+  const { imgIdx, w, h, jpegBase64, assetHash, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
   const entry = imgById(imgIdx);
   if (!entry || entry.blob) {
     if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
@@ -4595,6 +4663,8 @@ async function _populateImageEntry(detail) {
   entry.blob = blob; // kept compressed; decoded on demand
   entry.thumbUrl = buildThumb(bm, w, h);
   bm.close();
+  if (assetHash) entry.assetHash = assetHash;
+  ensureAssetHash(entry); // register bytes so this peer can serve them on request
   if (polygons) entry.polygons = polygons;
   if (currentPoly) entry.currentPoly = currentPoly;
   if (scale != null) entry.scale = scale;

@@ -200,6 +200,50 @@ test('guest: a live-add skeleton is idempotent by id', async ({ page }) => {
   await expect.poll(() => imageCount(page)).toBe(1);
 });
 
+// ── Content-addressed asset layer ────────────────────────────────────────────────
+
+// Bytes are pulled by content hash and self-heal: a skeleton that knows its assetHash
+// but lacks pixels stays pending until the asset arrives, then fills -- independent of
+// whether the original push succeeded.
+test('guest: a content-addressed asset fills the image waiting on it', async ({ page }) => {
+  await emitRemote(page, 'collab:remote-image-skeleton', {
+    id: 'ca-1', assetHash: 'deadbeef', name: 'ca.png', w: 400, h: 400,
+    polygons: [[{ x: 40, y: 40 }, { x: 360, y: 40 }, { x: 200, y: 360 }]],
+    simPos: { x: 200, y: 200 }, simAngle: 0,
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  await expect(page.locator('#rank-list .im-rank-thumb')).toHaveClass(/im-rank-thumb-pending/);
+  await expect(page.locator('#btn-merge')).toHaveClass(/im-hidden/);
+
+  await emitRemote(page, 'collab:remote-asset', { hash: 'deadbeef', jpegBase64: TINY_IMG_DATAURL });
+  await expect(page.locator('#rank-list .im-rank-thumb')).not.toHaveClass(/im-rank-thumb-pending/);
+  await expect(page.locator('#btn-merge')).not.toHaveClass(/im-hidden/);
+});
+
+// The reconcile loop requests bytes for a skeleton it knows the hash of but lacks.
+test('guest: reconcile requests a missing asset by hash', async ({ page }) => {
+  await emitRemote(page, 'collab:remote-image-skeleton', {
+    id: 'ca-2', assetHash: 'cafe1234', name: 'ca.png', w: 400, h: 400,
+    polygons: [], simPos: { x: 200, y: 200 }, simAngle: 0,
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  // Force a reconcile rather than waiting on the 4s timer.
+  await page.evaluate(() => (window as any).reconcileAssets());
+  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e) => e.detail.hash === 'cafe1234')).toBe(true);
+});
+
+// A locally added image is content-addressed and registered so this peer can serve it.
+test('local add registers a content-addressed asset', async ({ page }) => {
+  await addImage(page);
+  const r = await page.evaluate(async () => {
+    const id = (window as any).getSessionMeta().images[0].id;
+    const buf = await (window as any).getImageBuffer(id);
+    return { hash: buf.assetHash, has: (window as any).hasAsset(buf.assetHash) };
+  });
+  expect(r.hash).toBeTruthy();
+  expect(r.has).toBe(true);
+});
+
 // ── Adding an image over collab ──────────────────────────────────────────────────
 
 test('remote: an incoming image is appended', async ({ page }) => {

@@ -424,6 +424,10 @@ function handleMsg(msg, fromPeerId) {
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
+    case "asset-request":
+      _serveAsset(msg.hash, fromPeerId);
+      break;
+
     case "session-meta":
       window.dispatchEvent(new CustomEvent("collab:remote-session-meta", { detail: msg }));
       if (isHost) broadcast(msg, fromPeerId);
@@ -515,7 +519,11 @@ function setupConn(conn, isGuestSide) {
         const { kind, ...meta } = pendingImageMeta;
         pendingImageMeta = null;
         const blobUrl = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
-        if (kind === "add") {
+        if (kind === "asset") {
+          // Pulled bytes (content-addressed). The app stores them by hash and fills any
+          // image waiting on them. No relay: a still-missing peer re-requests on retry.
+          window.dispatchEvent(new CustomEvent("collab:remote-asset", { detail: { hash: meta.hash, jpegBase64: blobUrl } }));
+        } else if (kind === "add") {
           // Skeleton already shown from the header; this fills it with pixels.
           window.dispatchEvent(new CustomEvent("collab:remote-image-binary", { detail: { imgIdx: meta.id, jpegBase64: blobUrl, ...meta } }));
           if (isHost) _forwardImageBinary(meta, buf, conn.peer); // relay to the other guests
@@ -551,10 +559,14 @@ function setupConn(conn, isGuestSide) {
       };
     } else if (msg.type === "image-binary") {
       // Header for a live-add binary that follows (appends a new image). Show the
-      // skeleton now -- the bytes land in the very next message and fill it.
-      const meta = { id: msg.id, name: msg.name, w: msg.w, h: msg.h, polygons: msg.polygons, simPos: msg.simPos, simAngle: msg.simAngle };
+      // skeleton now -- the bytes land in the next message and fill it; if they stall,
+      // the assetHash on the skeleton lets the asset reconcile pull them later.
+      const meta = { id: msg.id, assetHash: msg.assetHash, name: msg.name, w: msg.w, h: msg.h, polygons: msg.polygons, simPos: msg.simPos, simAngle: msg.simAngle };
       pendingImageMeta = { kind: "add", ...meta };
       window.dispatchEvent(new CustomEvent("collab:remote-image-skeleton", { detail: meta }));
+    } else if (msg.type === "asset-binary") {
+      // Header for content-addressed asset bytes that follow (pull response).
+      pendingImageMeta = { kind: "asset", hash: msg.hash };
     } else if (msg.type === "session-start") {
       receiving = { chunks: [], totalBytes: msg.totalBytes };
       showGuestPrompt("Receiving session...");
@@ -730,10 +742,10 @@ async function sendSessionTo(conn, { replace = false } = {}) {
 // why the old string-based live-add path never delivered large images.
 async function sendImageBinary(conn, packet) {
   if (!packet || !conn || !conn.open) return false;
-  const { buffer, id, name, w, h, polygons, simPos, simAngle } = packet;
+  const { buffer, id, assetHash, name, w, h, polygons, simPos, simAngle } = packet;
   if (!(await _waitDrain(conn)) || !conn.open) return false; // closed / stalled -> give up
   try {
-    conn.send(JSON.stringify({ type: "image-binary", id, name, w, h, polygons, simPos, simAngle }));
+    conn.send(JSON.stringify({ type: "image-binary", id, assetHash, name, w, h, polygons, simPos, simAngle }));
     await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
     conn.send(buffer);
     return true;
@@ -751,6 +763,41 @@ async function _forwardImageBinary(meta, buffer, excludePeerId) {
     await sendImageBinary(conn, { buffer, ...meta });
   }
 }
+
+// ── Content-addressed asset pull ──────────────────────────────────────────────
+// Bytes are fetched on demand by content hash with retry, so a stalled/lost payload
+// self-heals: the requester re-asks until some peer serves it. Metadata (which carries
+// the assetHash) syncs reliably on its own; the large bytes ride this pull path.
+
+async function sendAssetBinary(conn, hash, buffer) {
+  if (!conn || !conn.open || !buffer) return;
+  if (!(await _waitDrain(conn)) || !conn.open) return;
+  try {
+    conn.send(JSON.stringify({ type: "asset-binary", hash }));
+    await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
+    conn.send(buffer);
+  } catch (e) {
+    console.warn("[collab] asset-binary send failed:", e);
+  }
+}
+
+// Serve an asset to a requester if we hold it; otherwise the host relays the request
+// onward (and will cache the response), and the requester re-asks on its retry timer.
+async function _serveAsset(hash, fromPeerId) {
+  if (window.hasAsset?.(hash)) {
+    const buf = await window.getAssetBuffer?.(hash);
+    const conn = isHost ? guestConns.get(fromPeerId) : hostConn;
+    if (buf && conn) sendAssetBinary(conn, hash, buf);
+  } else if (isHost) {
+    broadcast({ type: "asset-request", hash }, fromPeerId);
+  }
+}
+
+// App asks for bytes it's missing -> request them from peers (host serves or relays).
+window.addEventListener("collab:asset-needed", ({ detail: { hash } }) => {
+  if (!localPeerId) return;
+  broadcast({ type: "asset-request", hash });
+});
 
 // ── Join as host ──────────────────────────────────────────────────────────────
 
