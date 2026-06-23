@@ -148,6 +148,58 @@ test('guest: a replace session-meta still replaces wholesale', async ({ page }) 
   expect(ids).toEqual(['fresh-a']);
 });
 
+// On reconnect the host re-sends its (possibly stale) snapshot; the guest must push back
+// any fully-loaded local images the host is missing -- this is what delivers images that
+// stalled mid-upload before the drop. The host dedups by id.
+test('guest: a merge re-sends images the host is missing', async ({ page }) => {
+  await addImage(page); // 1 local image with pixels
+  const localId = await imgIdAt(page, 0);
+  const before = (await collabOut(page, 'collab:images-added')).length;
+
+  // Host reconnects us with a snapshot that does NOT contain our image.
+  await emitRemote(page, 'collab:remote-session-meta', {
+    imageCount: 0, replace: false,
+    outW: 400, outH: 400, fillColor: '#181a1b',
+    rankOrder: [], paintIdx: 0, images: [],
+  });
+
+  await expect.poll(async () => (await collabOut(page, 'collab:images-added')).length).toBeGreaterThan(before);
+  const ev = await collabOut(page, 'collab:images-added');
+  expect(ev.at(-1).detail.ids).toContain(localId);
+});
+
+// Live add (binary path): the image-binary header lands first and shows a pending
+// skeleton row immediately; the bytes arrive next and fill it. Avoids a blank wait
+// while a large image streams in.
+test('guest: a live-add skeleton shows pending, then the binary fill completes it', async ({ page }) => {
+  await emitRemote(page, 'collab:remote-image-skeleton', {
+    id: 'live-a', name: 'live.png', w: 400, h: 400,
+    polygons: [[{ x: 40, y: 40 }, { x: 360, y: 40 }, { x: 200, y: 360 }]],
+    simPos: { x: 200, y: 200 }, simAngle: 0,
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  await expect(page.locator('#rank-list .im-rank-thumb')).toHaveClass(/im-rank-thumb-pending/);
+  await expect(page.locator('#btn-merge')).toHaveClass(/im-hidden/); // no pixels yet -> no merge
+
+  await emitRemote(page, 'collab:remote-image-binary', {
+    imgIdx: 'live-a', name: 'live.png', w: 2, h: 2, jpegBase64: TINY_IMG_DATAURL,
+  });
+  await expect(page.locator('#rank-list .im-rank-thumb')).not.toHaveClass(/im-rank-thumb-pending/);
+  await expect(page.locator('#btn-merge')).not.toHaveClass(/im-hidden/);
+  expect(await imageCount(page)).toBe(1); // filled in place, not appended twice
+});
+
+// A duplicate skeleton (re-delivered header / echo) must not create a second row.
+test('guest: a live-add skeleton is idempotent by id', async ({ page }) => {
+  const skel = {
+    id: 'dup-a', name: 'dup.png', w: 400, h: 400,
+    polygons: [], simPos: { x: 200, y: 200 }, simAngle: 0,
+  };
+  await emitRemote(page, 'collab:remote-image-skeleton', skel);
+  await emitRemote(page, 'collab:remote-image-skeleton', skel);
+  await expect.poll(() => imageCount(page)).toBe(1);
+});
+
 // ── Adding an image over collab ──────────────────────────────────────────────────
 
 test('remote: an incoming image is appended', async ({ page }) => {

@@ -138,8 +138,11 @@ function worldToClient(physX, physY) {
 
 function _updateQR() {
   if (typeof QRCode === "undefined") return;
-  const code = roomInp.value.trim();
   qrContainer.innerHTML = "";
+  // Only show the QR once we've actually joined (become host/guest). Showing it earlier
+  // means a scan could claim this room's host id before the local user does.
+  if (!localPeerId) return;
+  const code = roomInp.value.trim();
   if (!code) return;
   const u = new URL(window.location.href);
   u.searchParams.set("room", code);
@@ -513,7 +516,8 @@ function setupConn(conn, isGuestSide) {
         pendingImageMeta = null;
         const blobUrl = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
         if (kind === "add") {
-          window.dispatchEvent(new CustomEvent("collab:remote-image", { detail: { jpegBase64: blobUrl, ...meta } }));
+          // Skeleton already shown from the header; this fills it with pixels.
+          window.dispatchEvent(new CustomEvent("collab:remote-image-binary", { detail: { imgIdx: meta.id, jpegBase64: blobUrl, ...meta } }));
           if (isHost) _forwardImageBinary(meta, buf, conn.peer); // relay to the other guests
         } else {
           const { imgIdx, ...imgMeta } = meta;
@@ -546,17 +550,11 @@ function setupConn(conn, isGuestSide) {
         simAngle: msg.simAngle,
       };
     } else if (msg.type === "image-binary") {
-      // Header for a live-add binary that follows (appends a new image)
-      pendingImageMeta = {
-        kind: "add",
-        id: msg.id,
-        name: msg.name,
-        w: msg.w,
-        h: msg.h,
-        polygons: msg.polygons,
-        simPos: msg.simPos,
-        simAngle: msg.simAngle,
-      };
+      // Header for a live-add binary that follows (appends a new image). Show the
+      // skeleton now -- the bytes land in the very next message and fill it.
+      const meta = { id: msg.id, name: msg.name, w: msg.w, h: msg.h, polygons: msg.polygons, simPos: msg.simPos, simAngle: msg.simAngle };
+      pendingImageMeta = { kind: "add", ...meta };
+      window.dispatchEvent(new CustomEvent("collab:remote-image-skeleton", { detail: meta }));
     } else if (msg.type === "session-start") {
       receiving = { chunks: [], totalBytes: msg.totalBytes };
       showGuestPrompt("Receiving session...");
@@ -646,12 +644,23 @@ function _scheduleReconnect() {
 
 // ── Streaming session send ────────────────────────────────────────────────────
 
+const DRAIN_HIGH = 512 * 1024; // bytes buffered before we throttle
+const DRAIN_TIMEOUT = 20000; // ms; a channel stuck this long is treated as dead, not slow
+
+// Wait for the send buffer to drain. Returns false if the connection closed or stayed
+// backed up past the timeout (a stalled mobile uplink). Callers MUST stop on false --
+// the old unconditional loop spun forever on a dead channel and froze the whole upload
+// at "Sending 1/N" with nothing delivered.
 async function _waitDrain(conn) {
   const dc = conn.dataChannel;
-  if (!dc) return;
-  while (dc.bufferedAmount > 512 * 1024) {
+  if (!dc) return conn.open;
+  const start = Date.now();
+  while (dc.bufferedAmount > DRAIN_HIGH) {
+    if (!conn.open) return false;
+    if (Date.now() - start > DRAIN_TIMEOUT) return false;
     await new Promise((r) => setTimeout(r, 30));
   }
+  return conn.open;
 }
 
 function _dataUrlToBuffer(dataUrl) {
@@ -720,15 +729,17 @@ async function sendSessionTo(conn, { replace = false } = {}) {
 // 4K photo overflows the DataChannel's max message size and silently fails, which is
 // why the old string-based live-add path never delivered large images.
 async function sendImageBinary(conn, packet) {
-  if (!packet || !conn || !conn.open) return;
+  if (!packet || !conn || !conn.open) return false;
   const { buffer, id, name, w, h, polygons, simPos, simAngle } = packet;
-  await _waitDrain(conn);
+  if (!(await _waitDrain(conn)) || !conn.open) return false; // closed / stalled -> give up
   try {
     conn.send(JSON.stringify({ type: "image-binary", id, name, w, h, polygons, simPos, simAngle }));
     await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
     conn.send(buffer);
+    return true;
   } catch (e) {
     console.warn("[collab] image-binary send failed:", e);
+    return false;
   }
 }
 
@@ -753,6 +764,7 @@ function joinAsHost(roomCode) {
     isHost = true;
     _setRole();
     setStatus("Hosting - waiting for guests", true);
+    _updateQR(); // now joined -> safe to surface the shareable QR
     rafId = requestAnimationFrame(rafLoop);
     simCanvasEl.addEventListener("mousemove", onMouseMove);
     _startHostPing();
@@ -804,6 +816,7 @@ function joinAsGuest(roomCode, retries = 0) {
     hostConn.on("open", () => {
       _setRole();
       setStatus("Connected as guest", true);
+      _updateQR(); // joined -> the QR points at this same room, safe to show
       updatePeerCount();
       // Authenticate: send our name + password attempt. The host replies with the
       // session if it matches, or 'auth-failed' if not.
@@ -923,6 +936,7 @@ function leaveRoom() {
   btnCollab.classList.remove("im-collab-live");
   collabPeerBadge.classList.add("im-hidden");
   _setRole();
+  _updateQR(); // left the room -> hide the QR again
   setStatus("Not connected");
 
   const u = new URL(window.location.href);
@@ -948,7 +962,8 @@ window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
   if (targets().length === 0) return; // solo / no peers -> nothing to upload, no indicator
 
   const total = ids.length;
-  let done = 0;
+  let done = 0,
+    failed = false;
   // Progress shows on the sim-status pill (visible while editing, unlike the modal
   // bars) and mirrors to the modal send bar for when the modal is open. Each send
   // awaits DataChannel drain, so the count tracks the real upload, not just queueing.
@@ -961,12 +976,14 @@ window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
   // backpressured buffer. Encodings sync separately via 'encoding' messages.
   for (const id of ids) {
     const packet = await window.getImageBuffer?.(id);
-    if (packet) for (const conn of targets()) await sendImageBinary(conn, packet);
+    if (packet) for (const conn of targets()) if (!(await sendImageBinary(conn, packet))) failed = true;
     done++;
     tick();
   }
   hideSendProgress();
-  _setSyncStatus("Synced " + total + (total === 1 ? " image" : " images") + " to peers");
+  // A peer that dropped/stalled is re-synced automatically on reconnect (missing-id
+  // resync after a session-meta merge), so don't claim a success we didn't get.
+  _setSyncStatus(failed ? "Some images will finish syncing on reconnect" : "Synced " + total + (total === 1 ? " image" : " images") + " to peers");
 });
 
 // A local session import: the host re-streams the whole session to every guest

@@ -18,8 +18,8 @@
 //   getArtboard()-> { x1, y1, x2, y2 }  the output rect, for centerOnArtboard()
 //   getGroup(i)  -> sim group | null    a placed image, for centerOnImage()
 const viewport = (function () {
-  const VIEW_MIN = 0.1,
-    VIEW_MAX = 10;
+  const VIEW_MIN = 0.1, // furthest zoom-out
+    VIEW_MAX = 100; // furthest zoom-in (was 10; raised for pixel-level inspection of 4K images)
   const clamp = (s) => Math.max(VIEW_MIN, Math.min(VIEW_MAX, s));
 
   // ── Owned state ──

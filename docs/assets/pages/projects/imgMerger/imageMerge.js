@@ -4268,10 +4268,11 @@ let _collabJoinFullsDone = 0;
 // messages self-clear; an empty string clears immediately.
 window.addEventListener("collab:sync-status", ({ detail: { text } }) => {
   updateSimStatus(text || "");
-  if (text && text.startsWith("Synced")) {
+  // Terminal messages (anything but the live "Syncing k/N" progress) self-clear.
+  if (text && !text.startsWith("Syncing")) {
     setTimeout(() => {
       if (simStatusEl.textContent === text) updateSimStatus("");
-    }, 3000);
+    }, 4000);
   }
 });
 
@@ -4484,6 +4485,7 @@ function _updateFilmstripThumb(imgIdx) {
 // the remote-image-full handler so a re-stream can't clobber local edits.
 function _mergeRemoteSessionMeta(meta) {
   const have = new Set(state.images.map((e) => e.id));
+  const hostHas = new Set(meta.images.map((si) => si.id));
   const added = [];
   meta.images.forEach((si) => {
     const id = si.id || newImgId();
@@ -4494,7 +4496,14 @@ function _mergeRemoteSessionMeta(meta) {
     if (!state.rankOrder.includes(id)) state.rankOrder.push(id);
     added.push({ id, simPos: si.simPos, simAngle: si.simAngle || 0 });
   });
-  if (added.length === 0) return; // host's session is a subset of ours -- nothing to do
+
+  // Re-send any fully-loaded local images the host is missing -- e.g. a live add that
+  // never reached the host before the connection dropped. This is what actually
+  // delivers images after a stalled mid-upload reconnect; the host dedups by id.
+  const missing = state.images.filter((e) => e.blob && !hostHas.has(e.id)).map((e) => e.id);
+  if (missing.length) window.dispatchEvent(new CustomEvent("collab:images-added", { detail: { ids: missing } }));
+
+  if (added.length === 0) return; // host's session is a subset of ours -- nothing new to render
 
   buildRankList();
   updateStepMeta("step-images", imageCountLabel(state.images.length), true);
@@ -4570,30 +4579,58 @@ window.addEventListener("collab:remote-image-thumb", ({ detail: { imgIdx, thumb 
   _updateFilmstripThumb(imgIdx);
 });
 
-window.addEventListener("collab:remote-image-full", async ({ detail }) => {
-  const { imgIdx, name, w, h, jpegBase64, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
+// Fill a skeleton entry (blob:null) with its pixels. Shared by the join re-stream and
+// the live-add binary fill. Idempotent: an entry that already has a blob is left alone
+// (a re-stream after reconnect must not clobber newer local edits).
+async function _populateImageEntry(detail) {
+  const { imgIdx, w, h, jpegBase64, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
   const entry = imgById(imgIdx);
-  if (!entry) return;
-  // Already have the pixels (live add, or a re-stream after reconnect): don't refetch
-  // or overwrite -- the local copy may carry newer edits than the host's snapshot.
-  if (entry.blob) {
+  if (!entry || entry.blob) {
     if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
-  } else {
-    const blob = await (await fetch(jpegBase64)).blob();
-    if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
-    const bm = await createImageBitmap(blob);
-    entry.blob = blob; // kept compressed; decoded on demand
-    entry.thumbUrl = buildThumb(bm, w, h);
-    bm.close();
-    if (polygons) entry.polygons = polygons;
-    if (currentPoly) entry.currentPoly = currentPoly;
-    if (scale != null) entry.scale = scale;
-    if (scaleFixed != null) entry.scaleFixed = scaleFixed;
-    if (simHidden != null) entry.simHidden = simHidden;
-    _updateFilmstripThumb(imgIdx);
-    simRefreshGroup(imgIdx); // re-checks merge readiness (via _showMergeBtn)
-    _simViewDirty = true;
+    return;
   }
+  const blob = await (await fetch(jpegBase64)).blob();
+  if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
+  const bm = await createImageBitmap(blob);
+  entry.blob = blob; // kept compressed; decoded on demand
+  entry.thumbUrl = buildThumb(bm, w, h);
+  bm.close();
+  if (polygons) entry.polygons = polygons;
+  if (currentPoly) entry.currentPoly = currentPoly;
+  if (scale != null) entry.scale = scale;
+  if (scaleFixed != null) entry.scaleFixed = scaleFixed;
+  if (simHidden != null) entry.simHidden = simHidden;
+  _updateFilmstripThumb(imgIdx);
+  simRefreshGroup(imgIdx); // re-checks merge readiness (via _showMergeBtn)
+  _simViewDirty = true;
+}
+
+// Live-add skeleton: the image-binary header arrives just before its bytes, so we show
+// a pending filmstrip row + sim group immediately (named, correct aspect) instead of a
+// blank wait while a large image streams in. remote-image-binary fills it shortly after.
+window.addEventListener("collab:remote-image-skeleton", ({ detail }) => {
+  const { id, simPos, simAngle } = detail;
+  if (!id || imgById(id)) return; // dedup: already have this image (skeleton or full)
+  state.images.push(_sessionEntry(detail, id));
+  state.undoStack.set(id, []);
+  if (!state.rankOrder.includes(id)) state.rankOrder.push(id);
+  buildRankList();
+  updateStepMeta("step-images", imageCountLabel(state.images.length), true);
+  paintArea.classList.remove("im-hidden");
+  unlockStep("step-paint");
+  simRefreshGroup(id);
+  const g = simGroups.get(id);
+  if (simPos && g) placeGroup(g, simPos.x, simPos.y, simAngle || 0);
+  _simViewDirty = true;
+});
+
+// Live-add fill: the bytes for an image whose skeleton already landed (see
+// remote-image-skeleton). No join-counter / status -- progress is shown sender-side.
+window.addEventListener("collab:remote-image-binary", ({ detail }) => _populateImageEntry(detail));
+
+window.addEventListener("collab:remote-image-full", async ({ detail }) => {
+  if (!imgById(detail.imgIdx)) return;
+  await _populateImageEntry(detail);
   // Status sequence on the guest: Waiting... -> Importing k/N -> the imported count.
   if (++_collabJoinFullsDone >= _collabJoinTotal) {
     loadPainterImage(state.paintIdx);
