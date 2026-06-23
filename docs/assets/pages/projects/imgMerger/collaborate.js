@@ -50,6 +50,7 @@ import * as Y from "./vendor/yjs.mjs";
 const ydoc = new Y.Doc();
 window.ydoc = ydoc; // exposed for the app's observers + tests
 const ySettings = ydoc.getMap("settings"); // outW/outH/slides/fillColor/blendMode/seed/ditherExp/simX1..Y2
+const yRank = ydoc.getArray("rankOrder"); // image stacking order (array of ids)
 
 function _encU(u) {
   let s = "";
@@ -81,6 +82,11 @@ function _sendDocState(conn) {
 ySettings.observe((event, transaction) => {
   if (transaction.origin !== "remote") return;
   if (window.applyRemoteSettings) window.applyRemoteSettings(ySettings.toJSON());
+});
+
+yRank.observe((event, transaction) => {
+  if (transaction.origin !== "remote") return;
+  if (window.applyRemoteRankOrder) window.applyRemoteRankOrder(yRank.toArray());
 });
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -1053,9 +1059,12 @@ window.addEventListener("collab:settings-changed", ({ detail }) => {
   }, "local");
 });
 
+// Rank order syncs through the CRDT (replace-in-place; the array is small).
 window.addEventListener("collab:rank-order-changed", ({ detail: { order } }) => {
-  if (!localPeerId) return;
-  broadcast({ type: "rank-order", order });
+  ydoc.transact(() => {
+    if (yRank.length) yRank.delete(0, yRank.length);
+    yRank.insert(0, order);
+  }, "local");
 });
 
 window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {

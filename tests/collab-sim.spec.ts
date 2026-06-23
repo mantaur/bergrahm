@@ -86,6 +86,31 @@ test('a remote Y.Doc settings update applies to the local UI', async ({ page }) 
     .toBe('99');
 });
 
+test('a rank-order change writes into the shared Y.Doc', async ({ page }) => {
+  await addImage(page, [FIXTURE_IMG, FIXTURE_IMG]);
+  await expect.poll(() => imageCount(page)).toBe(2);
+  const ids = await page.evaluate(() => (window as any).getSessionMeta().rankOrder);
+  const reversed = [...ids].reverse();
+  await page.evaluate((order) => window.dispatchEvent(new CustomEvent('collab:rank-order-changed', { detail: { order } })), reversed);
+  await expect.poll(() => page.evaluate(() => (window as any).ydoc.getArray('rankOrder').toArray())).toEqual(reversed);
+});
+
+test('a remote Y.Doc rank-order update applies locally', async ({ page }) => {
+  await addImage(page, [FIXTURE_IMG, FIXTURE_IMG]);
+  await expect.poll(() => imageCount(page)).toBe(2);
+  const ids = await page.evaluate(() => (window as any).getSessionMeta().rankOrder);
+  const reversed = [...ids].reverse();
+  await page.evaluate((order) => {
+    const yd = (window as any).ydoc;
+    yd.transact(() => {
+      const yr = yd.getArray('rankOrder');
+      if (yr.length) yr.delete(0, yr.length);
+      yr.insert(0, order);
+    }, 'remote');
+  }, reversed);
+  await expect.poll(() => page.evaluate(() => (window as any).getSessionMeta().rankOrder)).toEqual(reversed);
+});
+
 // ── Guest side: receiving a pushed session ──────────────────────────────────────
 
 test('guest: a pushed session-meta populates the skeleton', async ({ page }) => {
