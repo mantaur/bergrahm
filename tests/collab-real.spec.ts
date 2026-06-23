@@ -59,6 +59,12 @@ test.describe('real collab (live broker)', () => {
       await a.locator('#rank-list > li').first().locator('.im-film-rm').click();
       await expect(a.locator('#rank-list > li')).toHaveCount(0);
       await expect(b.locator('#rank-list > li')).toHaveCount(0, { timeout: 25000 });
+
+      // Guest adds an image -> it streams up to the host (the binary live-add path; a
+      // base64 JSON string would overflow the DataChannel and never arrive).
+      await b.locator('#cfg-images').setInputFiles(FIXTURE_IMG);
+      await expect(b.locator('#rank-list > li')).toHaveCount(1);
+      await expect(a.locator('#rank-list > li')).toHaveCount(1, { timeout: 25000 });
     } finally {
       await ctxA.close();
       await ctxB.close();

@@ -14,7 +14,8 @@
 //   { type: 'drag',                  imgIdx, x, y, angle, scale? }
 //   { type: 'grab',                  imgIdx, color }
 //   { type: 'release',               imgIdx }
-//   { type: 'image',                 ...imagePacketFields }
+//   { type: 'image-binary',          id, name, w, h, polygons, simPos, simAngle } + binary ArrayBuffer (next message)
+//   { type: 'image',                 ...imagePacketFields }   (legacy string add; superseded by image-binary)
 //   { type: 'image-removed',         imgIdx }
 //   { type: 'encoding',              imgName, encoding }
 //   { type: 'polygon',               imgIdx, polygons }
@@ -232,6 +233,12 @@ function showRecvProgress(msg, pct) {
 function hideRecvProgress() {
   recvProgressEl.classList.add("im-hidden");
   recvBarEl.style.width = "0%";
+}
+
+// Drive the editor's sim-status pill (owned by imageMerge.js) for collab progress that
+// must stay visible while the modal is closed -- e.g. live image-upload sync.
+function _setSyncStatus(text) {
+  window.dispatchEvent(new CustomEvent("collab:sync-status", { detail: { text } }));
 }
 
 // ── Cursor DOM ────────────────────────────────────────────────────────────────
@@ -493,17 +500,25 @@ function handleMsg(msg, fromPeerId) {
 
 function setupConn(conn, isGuestSide) {
   let receiving = null; // legacy ZIP receive state
-  let pendingImageMeta = null; // set by image-full-binary header; cleared when binary arrives
+  let pendingImageMeta = null; // set by image-(full-)binary header; cleared when binary arrives
 
   conn.on("data", (data) => {
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
       const buf = ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
       if (pendingImageMeta !== null) {
-        // Full-res image binary sent by host; reassembled by PeerJS chunking
-        const { imgIdx, ...imgMeta } = pendingImageMeta;
+        // Image binary, reassembled by PeerJS chunking. `kind` distinguishes a join
+        // re-stream that populates an existing skeleton ('full') from a live add that
+        // appends a brand-new image ('add').
+        const { kind, ...meta } = pendingImageMeta;
         pendingImageMeta = null;
         const blobUrl = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
-        handleMsg({ type: "image-full", imgIdx, jpegBase64: blobUrl, ...imgMeta }, conn.peer);
+        if (kind === "add") {
+          window.dispatchEvent(new CustomEvent("collab:remote-image", { detail: { jpegBase64: blobUrl, ...meta } }));
+          if (isHost) _forwardImageBinary(meta, buf, conn.peer); // relay to the other guests
+        } else {
+          const { imgIdx, ...imgMeta } = meta;
+          handleMsg({ type: "image-full", imgIdx, jpegBase64: blobUrl, ...imgMeta }, conn.peer);
+        }
       } else if (receiving) {
         receiving.chunks.push(buf);
         const got = receiving.chunks.reduce((s, c) => s + c.byteLength, 0);
@@ -515,8 +530,9 @@ function setupConn(conn, isGuestSide) {
     const msg = JSON.parse(data);
 
     if (msg.type === "image-full-binary") {
-      // Metadata header for the binary image that follows
+      // Header for the join re-stream binary that follows (populates a skeleton)
       pendingImageMeta = {
+        kind: "full",
         imgIdx: msg.imgIdx,
         name: msg.name,
         w: msg.w,
@@ -526,6 +542,18 @@ function setupConn(conn, isGuestSide) {
         scale: msg.scale,
         scaleFixed: msg.scaleFixed,
         simHidden: msg.simHidden,
+        simPos: msg.simPos,
+        simAngle: msg.simAngle,
+      };
+    } else if (msg.type === "image-binary") {
+      // Header for a live-add binary that follows (appends a new image)
+      pendingImageMeta = {
+        kind: "add",
+        id: msg.id,
+        name: msg.name,
+        w: msg.w,
+        h: msg.h,
+        polygons: msg.polygons,
         simPos: msg.simPos,
         simAngle: msg.simAngle,
       };
@@ -634,13 +662,17 @@ function _dataUrlToBuffer(dataUrl) {
   return buf.buffer;
 }
 
-async function sendSessionTo(conn) {
+// `replace` true only for an explicit host-side import re-stream: it tells the guest
+// to adopt this session wholesale. The default (join handshake / reconnect) is false,
+// so a guest that already has images merges instead of being wiped -- otherwise a
+// reconnecting guest with more/newer images gets clobbered by the host's snapshot.
+async function sendSessionTo(conn, { replace = false } = {}) {
   try {
     const meta = window.getSessionMeta?.();
     if (!meta || meta.imageCount === 0) return;
 
     // Phase 1: instant skeleton — synchronous, no pixel reads
-    conn.send(JSON.stringify({ type: "session-meta", ...meta }));
+    conn.send(JSON.stringify({ type: "session-meta", replace, ...meta }));
 
     // Phase 2: thumbnails — precomputed small JPEGs, sent synchronously (keyed by id)
     for (let i = 0; i < meta.imageCount; i++) {
@@ -680,6 +712,32 @@ async function sendSessionTo(conn) {
   } catch (err) {
     hideSendProgress();
     console.warn("[collab] session send failed:", err);
+  }
+}
+
+// Send one live-added image over a connection as a header + chunked binary, with
+// backpressure -- the same robust path the join stream uses. A base64 JSON string of a
+// 4K photo overflows the DataChannel's max message size and silently fails, which is
+// why the old string-based live-add path never delivered large images.
+async function sendImageBinary(conn, packet) {
+  if (!packet || !conn || !conn.open) return;
+  const { buffer, id, name, w, h, polygons, simPos, simAngle } = packet;
+  await _waitDrain(conn);
+  try {
+    conn.send(JSON.stringify({ type: "image-binary", id, name, w, h, polygons, simPos, simAngle }));
+    await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
+    conn.send(buffer);
+  } catch (e) {
+    console.warn("[collab] image-binary send failed:", e);
+  }
+}
+
+// Host relays a guest-originated image to the other guests (star topology), reusing
+// the already-reassembled bytes so it stays binary + chunked rather than a string.
+async function _forwardImageBinary(meta, buffer, excludePeerId) {
+  for (const [pid, conn] of guestConns) {
+    if (pid === excludePeerId) continue;
+    await sendImageBinary(conn, { buffer, ...meta });
   }
 }
 
@@ -886,10 +944,29 @@ window.addEventListener("collab:rank-order-changed", ({ detail: { order } }) => 
 
 window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
   if (!localPeerId) return;
-  const packets = await Promise.all(ids.map((id) => window.getImagePacket(id)));
-  for (const packet of packets) {
-    if (packet) broadcast({ type: "image", ...packet });
+  const targets = () => (isHost ? [...guestConns.values()] : hostConn ? [hostConn] : []);
+  if (targets().length === 0) return; // solo / no peers -> nothing to upload, no indicator
+
+  const total = ids.length;
+  let done = 0;
+  // Progress shows on the sim-status pill (visible while editing, unlike the modal
+  // bars) and mirrors to the modal send bar for when the modal is open. Each send
+  // awaits DataChannel drain, so the count tracks the real upload, not just queueing.
+  const tick = () => {
+    showSendProgress("Sending " + done + "/" + total + " to peers...", (done / total) * 100);
+    _setSyncStatus(done < total ? "Syncing " + done + "/" + total + " to peers" : "");
+  };
+  tick();
+  // Sequential (not Promise.all): parallel sends would just pile into the same
+  // backpressured buffer. Encodings sync separately via 'encoding' messages.
+  for (const id of ids) {
+    const packet = await window.getImageBuffer?.(id);
+    if (packet) for (const conn of targets()) await sendImageBinary(conn, packet);
+    done++;
+    tick();
   }
+  hideSendProgress();
+  _setSyncStatus("Synced " + total + (total === 1 ? " image" : " images") + " to peers");
 });
 
 // A local session import: the host re-streams the whole session to every guest
@@ -898,7 +975,7 @@ window.addEventListener("collab:session-loaded", () => {
   hideGuestPrompt();
   if (isHost)
     for (const conn of guestConns.values()) {
-      if (conn.open) sendSessionTo(conn);
+      if (conn.open) sendSessionTo(conn, { replace: true });
     }
 });
 

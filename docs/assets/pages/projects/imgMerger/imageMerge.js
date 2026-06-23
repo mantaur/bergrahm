@@ -4263,6 +4263,18 @@ function _importImage(i, msg, ctx) {
 let _collabJoinTotal = 0;
 let _collabJoinFullsDone = 0;
 
+// Collab live-sync progress (e.g. uploading added images to peers). Shown on the
+// sim-status pill so it's visible while the collab modal is closed. Terminal "Synced"
+// messages self-clear; an empty string clears immediately.
+window.addEventListener("collab:sync-status", ({ detail: { text } }) => {
+  updateSimStatus(text || "");
+  if (text && text.startsWith("Synced")) {
+    setTimeout(() => {
+      if (simStatusEl.textContent === text) updateSimStatus("");
+    }, 3000);
+  }
+});
+
 window.addEventListener("collab:remote-session", async (e) => {
   await _doImportReplace(e.detail.blob);
 });
@@ -4270,6 +4282,7 @@ window.addEventListener("collab:remote-session", async (e) => {
 window.addEventListener("collab:remote-image", async (e) => {
   const { id, name, w, h, jpegBase64, encoding, polygons, simPos, simAngle } = e.detail;
   const blob = await (await fetch(jpegBase64)).blob();
+  if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64); // live-add binary path
   const bm = await createImageBitmap(blob);
   const thumbUrl = buildThumb(bm, w, h);
   bm.close();
@@ -4465,7 +4478,49 @@ function _updateFilmstripThumb(imgIdx) {
   }
 }
 
+// Reconnect / late join with local images present: append only the images we don't
+// already have (by id) and leave everything we hold untouched. The image-full stream
+// that follows populates the new skeletons; already-loaded entries are protected in
+// the remote-image-full handler so a re-stream can't clobber local edits.
+function _mergeRemoteSessionMeta(meta) {
+  const have = new Set(state.images.map((e) => e.id));
+  const added = [];
+  meta.images.forEach((si) => {
+    const id = si.id || newImgId();
+    if (have.has(id)) return;
+    const entry = _sessionEntry(si, id);
+    state.images.push(entry);
+    state.undoStack.set(id, []);
+    if (!state.rankOrder.includes(id)) state.rankOrder.push(id);
+    added.push({ id, simPos: si.simPos, simAngle: si.simAngle || 0 });
+  });
+  if (added.length === 0) return; // host's session is a subset of ours -- nothing to do
+
+  buildRankList();
+  updateStepMeta("step-images", imageCountLabel(state.images.length), true);
+  paintArea.classList.remove("im-hidden");
+  unlockStep("step-paint");
+
+  for (const { id, simPos, simAngle } of added) {
+    simRefreshGroup(id);
+    const g = simGroups.get(id);
+    if (simPos && g) placeGroup(g, simPos.x, simPos.y, simAngle);
+  }
+  _simViewDirty = true;
+
+  _collabJoinTotal = meta.imageCount; // host re-streams full images for all of its ids
+  _collabJoinFullsDone = 0;
+  updateSimStatus("Waiting...");
+}
+
+// A join snapshot. `meta.replace` is set only when the host explicitly re-streams an
+// imported session; otherwise (first join, reconnect) we must NOT wipe local state --
+// a reconnecting guest often holds more/newer images than the host's snapshot.
 window.addEventListener("collab:remote-session-meta", ({ detail: meta }) => {
+  if (!meta.replace && state.images.length > 0) {
+    _mergeRemoteSessionMeta(meta);
+    return;
+  }
   const n = meta.imageCount;
 
   state.images = meta.images.map((si) => _sessionEntry(si, si.id || newImgId()));
@@ -4519,20 +4574,26 @@ window.addEventListener("collab:remote-image-full", async ({ detail }) => {
   const { imgIdx, name, w, h, jpegBase64, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
   const entry = imgById(imgIdx);
   if (!entry) return;
-  const blob = await (await fetch(jpegBase64)).blob();
-  if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
-  const bm = await createImageBitmap(blob);
-  entry.blob = blob; // kept compressed; decoded on demand
-  entry.thumbUrl = buildThumb(bm, w, h);
-  bm.close();
-  if (polygons) entry.polygons = polygons;
-  if (currentPoly) entry.currentPoly = currentPoly;
-  if (scale != null) entry.scale = scale;
-  if (scaleFixed != null) entry.scaleFixed = scaleFixed;
-  if (simHidden != null) entry.simHidden = simHidden;
-  _updateFilmstripThumb(imgIdx);
-  simRefreshGroup(imgIdx); // re-checks merge readiness (via _showMergeBtn)
-  _simViewDirty = true;
+  // Already have the pixels (live add, or a re-stream after reconnect): don't refetch
+  // or overwrite -- the local copy may carry newer edits than the host's snapshot.
+  if (entry.blob) {
+    if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
+  } else {
+    const blob = await (await fetch(jpegBase64)).blob();
+    if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
+    const bm = await createImageBitmap(blob);
+    entry.blob = blob; // kept compressed; decoded on demand
+    entry.thumbUrl = buildThumb(bm, w, h);
+    bm.close();
+    if (polygons) entry.polygons = polygons;
+    if (currentPoly) entry.currentPoly = currentPoly;
+    if (scale != null) entry.scale = scale;
+    if (scaleFixed != null) entry.scaleFixed = scaleFixed;
+    if (simHidden != null) entry.simHidden = simHidden;
+    _updateFilmstripThumb(imgIdx);
+    simRefreshGroup(imgIdx); // re-checks merge readiness (via _showMergeBtn)
+    _simViewDirty = true;
+  }
   // Status sequence on the guest: Waiting... -> Importing k/N -> the imported count.
   if (++_collabJoinFullsDone >= _collabJoinTotal) {
     loadPainterImage(state.paintIdx);

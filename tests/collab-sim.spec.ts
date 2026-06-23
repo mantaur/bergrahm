@@ -52,6 +52,17 @@ test('guest: applyRemoteSettings applies seed + sharpness', async ({ page }) => 
   expect(v.dither).toBe('5');
 });
 
+// Live-upload progress (sending added images to peers) shows on the sim-status pill so
+// it's visible while the collab modal is closed. "Synced" messages self-clear.
+test('collab sync-status drives the sim-status pill', async ({ page }) => {
+  await emitRemote(page, 'collab:sync-status', { text: 'Syncing 1/3 to peers' });
+  await expect(page.locator('#sim-status')).toHaveText('Syncing 1/3 to peers');
+
+  await emitRemote(page, 'collab:sync-status', { text: 'Synced 3 images to peers' });
+  await expect(page.locator('#sim-status')).toHaveText('Synced 3 images to peers');
+  await expect(page.locator('#sim-status')).toHaveText('', { timeout: 5000 }); // self-clears
+});
+
 // ── Guest side: receiving a pushed session ──────────────────────────────────────
 
 test('guest: a pushed session-meta populates the skeleton', async ({ page }) => {
@@ -95,6 +106,46 @@ test('guest: merge button stays hidden until pixels arrive', async ({ page }) =>
     imgIdx: 'ra', name: 'a.png', w: 2, h: 2, jpegBase64: TINY_IMG_DATAURL, polygons: undefined,
   });
   await expect(page.locator('#btn-merge')).not.toHaveClass(/im-hidden/);
+});
+
+// Regression: a reconnecting guest holds more/newer images than the host's snapshot.
+// A join-handshake session-meta (replace falsy) must MERGE, never wipe -- otherwise the
+// host's stale snapshot clobbers the guest's images (the "pushes one image back, removes
+// the rest" data-loss bug). Only an explicit re-stream (replace:true) replaces wholesale.
+test('guest: a non-replace session-meta merges instead of wiping local images', async ({ page }) => {
+  await addImage(page, [FIXTURE_IMG, FIXTURE_IMG, FIXTURE_IMG]);
+  await expect.poll(() => imageCount(page)).toBe(3);
+  const idsBefore = await page.evaluate(() => (window as any).getSessionMeta().rankOrder);
+
+  // Host (with a stale 1-image snapshot) reconnects us: must not wipe our 3.
+  await emitRemote(page, 'collab:remote-session-meta', {
+    imageCount: 1, replace: false,
+    outW: 400, outH: 400, fillColor: '#181a1b',
+    rankOrder: ['stale-a'], paintIdx: 0,
+    images: [{ id: 'stale-a', name: 'stale.png', w: 400, h: 400, polygons: [], scale: null }],
+  });
+
+  // All three local images survive; the only-new id is appended.
+  await expect.poll(() => imageCount(page)).toBe(4);
+  const idsAfter = await page.evaluate(() => (window as any).getSessionMeta().rankOrder);
+  for (const id of idsBefore) expect(idsAfter).toContain(id);
+  expect(idsAfter).toContain('stale-a');
+});
+
+test('guest: a replace session-meta still replaces wholesale', async ({ page }) => {
+  await addImage(page, [FIXTURE_IMG, FIXTURE_IMG]);
+  await expect.poll(() => imageCount(page)).toBe(2);
+
+  await emitRemote(page, 'collab:remote-session-meta', {
+    imageCount: 1, replace: true,
+    outW: 400, outH: 400, fillColor: '#181a1b',
+    rankOrder: ['fresh-a'], paintIdx: 0,
+    images: [{ id: 'fresh-a', name: 'fresh.png', w: 400, h: 400, polygons: [], scale: null }],
+  });
+
+  await expect.poll(() => imageCount(page)).toBe(1);
+  const ids = await page.evaluate(() => (window as any).getSessionMeta().rankOrder);
+  expect(ids).toEqual(['fresh-a']);
 });
 
 // ── Adding an image over collab ──────────────────────────────────────────────────
