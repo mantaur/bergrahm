@@ -111,6 +111,31 @@ test('a remote Y.Doc rank-order update applies locally', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => (window as any).getSessionMeta().rankOrder)).toEqual(reversed);
 });
 
+test('a polygon edit round-trips through the Y.Doc', async ({ page }) => {
+  await addImage(page);
+  const id = await imgIdAt(page, 0);
+  await page.evaluate(
+    ({ id, poly }) => window.dispatchEvent(new CustomEvent('collab:polygon-changed', { detail: { imgIdx: id, polygons: poly } })),
+    { id, poly: [[{ x: 10, y: 10 }, { x: 90, y: 10 }, { x: 50, y: 90 }]] },
+  );
+  await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('polygons').get(id)?.length, id)).toBe(1);
+
+  // A remote doc update applies to the local mask.
+  await page.evaluate((id) => {
+    const yd = (window as any).ydoc;
+    const two = [[{ x: 1, y: 1 }, { x: 2, y: 2 }, { x: 3, y: 1 }], [{ x: 4, y: 4 }, { x: 5, y: 5 }, { x: 6, y: 4 }]];
+    yd.transact(() => yd.getMap('polygons').set(id, two), 'remote');
+  }, id);
+  await expect.poll(() => polyCount(page, 0)).toBe(2);
+});
+
+test('a scale edit writes into the Y.Doc', async ({ page }) => {
+  await addImage(page);
+  const id = await imgIdAt(page, 0);
+  await page.evaluate((id) => window.dispatchEvent(new CustomEvent('collab:scales-changed', { detail: { scales: { [id]: 0.5 } } })), id);
+  await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('scales').get(id), id)).toBe(0.5);
+});
+
 // ── Guest side: receiving a pushed session ──────────────────────────────────────
 
 test('guest: a pushed session-meta populates the skeleton', async ({ page }) => {

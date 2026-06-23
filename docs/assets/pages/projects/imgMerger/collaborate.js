@@ -51,6 +51,8 @@ const ydoc = new Y.Doc();
 window.ydoc = ydoc; // exposed for the app's observers + tests
 const ySettings = ydoc.getMap("settings"); // outW/outH/slides/fillColor/blendMode/seed/ditherExp/simX1..Y2
 const yRank = ydoc.getArray("rankOrder"); // image stacking order (array of ids)
+const yPoly = ydoc.getMap("polygons"); // id -> polygon list (mask)
+const yScales = ydoc.getMap("scales"); // id -> scale (null = auto)
 
 function _encU(u) {
   let s = "";
@@ -87,6 +89,18 @@ ySettings.observe((event, transaction) => {
 yRank.observe((event, transaction) => {
   if (transaction.origin !== "remote") return;
   if (window.applyRemoteRankOrder) window.applyRemoteRankOrder(yRank.toArray());
+});
+
+yPoly.observe((event, transaction) => {
+  if (transaction.origin !== "remote") return;
+  for (const id of event.keysChanged) {
+    window.dispatchEvent(new CustomEvent("collab:remote-polygon", { detail: { imgIdx: id, polygons: yPoly.get(id) } }));
+  }
+});
+
+yScales.observe((event, transaction) => {
+  if (transaction.origin !== "remote") return;
+  window.dispatchEvent(new CustomEvent("collab:remote-scales", { detail: { scales: yScales.toJSON() } }));
 });
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -1119,9 +1133,11 @@ window.addEventListener("collab:canvas-resized", () => {
   broadcast({ type: "positions", positions, ...bounds });
 });
 
+// Scales sync through the CRDT (per-image map of id -> scale).
 window.addEventListener("collab:scales-changed", ({ detail: { scales } }) => {
-  if (!localPeerId) return;
-  broadcast({ type: "scales", scales });
+  ydoc.transact(() => {
+    for (const id in scales) yScales.set(id, scales[id]);
+  }, "local");
 });
 
 window.addEventListener("collab:encoding-ready", ({ detail: { imgIdx } }) => {
@@ -1155,9 +1171,9 @@ window.addEventListener("collab:body-releasing", ({ detail: { imgIdx } }) => {
   broadcast({ type: "release", imgIdx });
 });
 
+// Polygon masks sync through the CRDT (per-image map of id -> polygon list).
 window.addEventListener("collab:polygon-changed", ({ detail: { imgIdx, polygons } }) => {
-  if (!localPeerId) return;
-  broadcast({ type: "polygon", imgIdx, polygons });
+  ydoc.transact(() => yPoly.set(imgIdx, polygons), "local");
 });
 
 // Presenter mode: stream the local viewport to followers, throttled (leading + trailing).
