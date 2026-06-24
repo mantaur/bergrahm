@@ -357,7 +357,7 @@
     <script src="gpuCheck.js?v=1"></script>
     <script src="sessionIO.js?v=9"></script>
     <script src="viewport.js?v=6"></script>
-    <script src="imageMerge.js?v=70"></script>
+    <script src="imageMerge.js?v=72"></script>
     <script>
       // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -474,6 +474,27 @@
           scale: entry.scale,
           scaleFixed: entry.scaleFixed || false,
           simHidden: entry.simHidden || false,
+          simPos: g ? { x: g.x, y: g.y } : null,
+          simAngle: g ? g.angle : 0,
+        };
+      };
+
+      // Per-image membership metadata for the shared doc (no bytes). Awaits the content
+      // hash so peers can pull the bytes by assetHash.
+      window.getImageMembership = async function (imgIdx) {
+        var entry = imgById(imgIdx);
+        if (!entry) return null;
+        await ensureAssetHash(entry);
+        var g = simGroups.get(imgIdx);
+        return {
+          id: entry.id,
+          name: entry.name,
+          w: entry.w,
+          h: entry.h,
+          assetHash: entry.assetHash || null,
+          simHidden: entry.simHidden || false,
+          scaleFixed: entry.scaleFixed || false,
+          currentPoly: entry.currentPoly || [],
           simPos: g ? { x: g.x, y: g.y } : null,
           simAngle: g ? g.angle : 0,
         };
@@ -628,6 +649,6 @@
         buildRankList();
       };
     </script>
-    <script type="module" src="collaborate.js?v=28"></script>
+    <script type="module" src="collaborate.js?v=29"></script>
   </body>
 </html>

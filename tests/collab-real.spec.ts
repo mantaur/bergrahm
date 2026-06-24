@@ -61,21 +61,25 @@ test.describe('real collab (live broker)', () => {
         return Math.hypot(o.x - gBefore.x, o.y - gBefore.y);
       }, { timeout: 25000 }).toBeGreaterThan(1);
 
-      // Host adds an image -> it streams to the guest.
+      // Host adds an image -> membership converges to the guest (rank item appears),
+      // then the BYTES pull through the content-addressed asset layer: the guest's
+      // pending thumbnail resolves once it has fetched the image by hash.
       await a.locator('#cfg-images').setInputFiles(FIXTURE_IMG);
       await expect(a.locator('#rank-list > li')).toHaveCount(1);
       await expect(b.locator('#rank-list > li')).toHaveCount(1, { timeout: 25000 });
+      await expect(b.locator('#rank-list .im-rank-thumb')).not.toHaveClass(/im-rank-thumb-pending/, { timeout: 25000 });
 
-      // Host removes the image -> the removal propagates to the guest.
+      // Host removes the image -> the removal propagates via the membership doc.
       await a.locator('#rank-list > li').first().locator('.im-film-rm').click();
       await expect(a.locator('#rank-list > li')).toHaveCount(0);
       await expect(b.locator('#rank-list > li')).toHaveCount(0, { timeout: 25000 });
 
-      // Guest adds an image -> it streams up to the host (the binary live-add path; a
-      // base64 JSON string would overflow the DataChannel and never arrive).
+      // Guest adds an image -> membership converges up to the host, and the host pulls
+      // the bytes by hash (the path that used to fail / loop).
       await b.locator('#cfg-images').setInputFiles(FIXTURE_IMG);
       await expect(b.locator('#rank-list > li')).toHaveCount(1);
       await expect(a.locator('#rank-list > li')).toHaveCount(1, { timeout: 25000 });
+      await expect(a.locator('#rank-list .im-rank-thumb')).not.toHaveClass(/im-rank-thumb-pending/, { timeout: 25000 });
     } finally {
       await ctxA.close();
       await ctxB.close();

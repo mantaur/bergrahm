@@ -53,6 +53,7 @@ const ySettings = ydoc.getMap("settings"); // outW/outH/slides/fillColor/blendMo
 const yRank = ydoc.getArray("rankOrder"); // image stacking order (array of ids)
 const yPoly = ydoc.getMap("polygons"); // id -> polygon list (mask)
 const yScales = ydoc.getMap("scales"); // id -> scale (null = auto)
+const yImages = ydoc.getMap("images"); // id -> per-image membership meta (name,w,h,assetHash,...); BYTES are NOT here -- pulled by assetHash
 
 function _encU(u) {
   let s = "";
@@ -101,6 +102,19 @@ yPoly.observe((event, transaction) => {
 yScales.observe((event, transaction) => {
   if (transaction.origin !== "remote") return;
   window.dispatchEvent(new CustomEvent("collab:remote-scales", { detail: { scales: yScales.toJSON() } }));
+});
+
+// Membership: the image list lives in the doc. A remote add/remove reconciles local
+// state to the doc (building skeletons / dropping images), applying each new image's
+// polygons + scale from the doc at build time -- so a mask that arrived before its
+// image is no longer lost (the old drop-on-missing bug). Bytes are pulled by assetHash
+// via the content-addressed asset layer, never streamed through the doc.
+function _membershipSnapshot() {
+  return { images: yImages.toJSON(), order: yRank.toArray(), polygons: yPoly.toJSON(), scales: yScales.toJSON() };
+}
+yImages.observe((event, transaction) => {
+  if (transaction.origin !== "remote") return;
+  if (window.applyRemoteMembership) window.applyRemoteMembership(_membershipSnapshot());
 });
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -768,6 +782,7 @@ async function sendSessionTo(conn, { replace = false } = {}) {
     conn.send(JSON.stringify({ type: "session-meta", replace, ...meta }));
 
     // Phase 2: thumbnails — precomputed small JPEGs, sent synchronously (keyed by id)
+    // for an instant preview while the full bytes pull in.
     for (let i = 0; i < meta.imageCount; i++) {
       const id = meta.images[i].id;
       const thumb = window.getImageThumb?.(id);
@@ -775,35 +790,12 @@ async function sendSessionTo(conn, { replace = false } = {}) {
     }
     conn.send(JSON.stringify({ type: "session-thumbs-done", total: meta.imageCount }));
 
-    // Phase 3: full-res images as binary.
-    // PeerJS chunks ArrayBuffers automatically (never chunks JSON strings), so large images
-    // that would overflow the WebRTC send buffer are safely fragmented.
-    showSendProgress("Sending 1/" + meta.imageCount + "...", 0);
-    for (let i = 0; i < meta.imageCount; i++) {
-      showSendProgress("Sending " + (i + 1) + "/" + meta.imageCount + "...", (i / meta.imageCount) * 100);
-      const id = meta.images[i].id;
-      const packet = await window.getImageBuffer?.(id); // async JPEG encode, non-blocking
-      await _waitDrain(conn);
-      if (packet) {
-        const { buffer, ...imgMeta } = packet;
-        try {
-          conn.send(JSON.stringify({ type: "image-full-binary", imgIdx: id, ...imgMeta }));
-          await new Promise((r) => setTimeout(r, 0)); // yield before blocking chunk loop
-          conn.send(buffer);
-        } catch (e) {
-          console.warn("[collab] image-full send failed for index", i, e);
-        }
-      }
-      showSendProgress("Sending " + (i + 1) + "/" + meta.imageCount + "...", ((i + 1) / meta.imageCount) * 100);
-      try {
-        conn.send(JSON.stringify({ type: "session-host-progress", sent: i + 1, total: meta.imageCount }));
-      } catch (_) {}
-    }
-
+    // Full-res bytes are NOT streamed here anymore: each image's assetHash (in the
+    // session-meta + the shared doc) lets the guest pull bytes on demand, deduped and
+    // cached by content hash. That removes the re-stream-on-every-reconnect loop that
+    // saturated the channel (starving heartbeat pongs -> drop -> reconnect -> re-stream).
     conn.send(JSON.stringify({ type: "session-done" }));
-    hideSendProgress();
   } catch (err) {
-    hideSendProgress();
     console.warn("[collab] session send failed:", err);
   }
 }
@@ -946,6 +938,11 @@ function joinAsGuest(roomCode, retries = 0) {
           password: passInp ? passInp.value.trim() : "",
         }),
       );
+      // Send our doc state up so the host merges anything we hold (images added while
+      // disconnected, edits made offline). Yjs merges are commutative + idempotent, so
+      // exchanging full state both ways converges -- this replaces the old fragile
+      // "resend missing images" reconnect hack. Bytes then flow via asset pull.
+      _sendDocState(hostConn);
       // No blocking overlay: the host pushes its session automatically, and the
       // guest can always import a session file manually from the normal UI.
     });
@@ -1081,34 +1078,24 @@ window.addEventListener("collab:rank-order-changed", ({ detail: { order } }) => 
   }, "local");
 });
 
+// Adding images announces membership in the doc (converges, no last-writer race); the
+// bytes are NOT pushed -- peers pull them by assetHash via the asset layer. Written even
+// when solo so a later joiner converges. Await the hashes first (getImageMembership
+// registers the bytes), then write membership + rank in one transaction.
 window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
-  if (!localPeerId) return;
-  const targets = () => (isHost ? [...guestConns.values()] : hostConn ? [hostConn] : []);
-  if (targets().length === 0) return; // solo / no peers -> nothing to upload, no indicator
-
-  const total = ids.length;
-  let done = 0,
-    failed = false;
-  // Progress shows on the sim-status pill (visible while editing, unlike the modal
-  // bars) and mirrors to the modal send bar for when the modal is open. Each send
-  // awaits DataChannel drain, so the count tracks the real upload, not just queueing.
-  const tick = () => {
-    showSendProgress("Sending " + done + "/" + total + " to peers...", (done / total) * 100);
-    _setSyncStatus(done < total ? "Syncing " + done + "/" + total + " to peers" : "");
-  };
-  tick();
-  // Sequential (not Promise.all): parallel sends would just pile into the same
-  // backpressured buffer. Encodings sync separately via 'encoding' messages.
+  const metas = [];
   for (const id of ids) {
-    const packet = await window.getImageBuffer?.(id);
-    if (packet) for (const conn of targets()) if (!(await sendImageBinary(conn, packet))) failed = true;
-    done++;
-    tick();
+    const m = await window.getImageMembership?.(id);
+    if (m) metas.push(m);
   }
-  hideSendProgress();
-  // A peer that dropped/stalled is re-synced automatically on reconnect (missing-id
-  // resync after a session-meta merge), so don't claim a success we didn't get.
-  _setSyncStatus(failed ? "Some images will finish syncing on reconnect" : "Synced " + total + (total === 1 ? " image" : " images") + " to peers");
+  if (!metas.length) return;
+  ydoc.transact(() => {
+    const have = yRank.toArray();
+    for (const m of metas) {
+      yImages.set(m.id, m);
+      if (!have.includes(m.id)) yRank.push([m.id]);
+    }
+  }, "local");
 });
 
 // A local session import: the host re-streams the whole session to every guest
@@ -1121,9 +1108,16 @@ window.addEventListener("collab:session-loaded", () => {
     }
 });
 
+// Removal deletes the image from the doc (membership) plus its per-image metadata;
+// peers reconcile via the yImages observer. Written even when solo.
 window.addEventListener("collab:image-removed", ({ detail: { imgIdx } }) => {
-  if (!localPeerId) return;
-  broadcast({ type: "image-removed", imgIdx });
+  ydoc.transact(() => {
+    yImages.delete(imgIdx);
+    const i = yRank.toArray().indexOf(imgIdx);
+    if (i !== -1) yRank.delete(i, 1);
+    yPoly.delete(imgIdx);
+    yScales.delete(imgIdx);
+  }, "local");
 });
 
 window.addEventListener("collab:canvas-resized", () => {

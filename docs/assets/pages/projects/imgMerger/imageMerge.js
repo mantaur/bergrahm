@@ -544,9 +544,13 @@ function removeImage(imgIdx, opts = {}) {
   }
 
   // Stable ids: a removal is a plain delete -- nothing else needs remapping.
+  const goneHash = state.images[idx].assetHash;
   state.images.splice(idx, 1);
   state.undoStack.delete(imgIdx);
   state.rankOrder = state.rankOrder.filter((id) => id !== imgIdx);
+  // Evict the bytes if no remaining image references them (bounds memory; also avoids a
+  // stale store entry suppressing a later pull of the same content).
+  if (goneHash && !state.images.some((e) => e.assetHash === goneHash)) assetStore.delete(goneHash);
 
   // SAM: drop cache/queue entries for this id. If a worker is mid-encode for it,
   // mark the id stale so onEncoded discards the incoming result.
@@ -4295,14 +4299,33 @@ window.getAssetBuffer = async (hash) => {
   return b ? await b.arrayBuffer() : null;
 };
 
-// Pull bytes for any local image we have metadata for but no bytes. The retry timer
-// re-requests outstanding assets until satisfied (idempotent; host serves or relays).
-function reconcileAssets() {
+// Populate a skeleton entry from bytes already in the local store (decode -> thumb).
+async function _fillEntryFromStore(entry) {
+  const blob = assetStore.get(entry.assetHash);
+  if (!blob || entry.blob) return false;
+  entry.blob = blob;
+  const bm = await createImageBitmap(blob);
+  entry.thumbUrl = buildThumb(bm, entry.w, entry.h);
+  bm.close();
+  _updateFilmstripThumb(entry.id);
+  simRefreshGroup(entry.id);
+  _simViewDirty = true;
+  return true;
+}
+
+// For each image lacking bytes: if we already hold them by hash (a shared/re-added
+// content, or a pull that landed), fill from the store; otherwise request them. The 4s
+// timer re-requests until satisfied (idempotent; host serves or relays). Filling from
+// the store is essential -- content addressing means the bytes may already be local, in
+// which case no request is ever made and the entry must be populated from the store.
+async function reconcileAssets() {
+  let filled = false;
   for (const e of state.images) {
-    if (e.assetHash && !e.blob && !assetStore.has(e.assetHash)) {
-      window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash: e.assetHash } }));
-    }
+    if (!e.assetHash || e.blob) continue;
+    if (assetStore.has(e.assetHash)) filled = (await _fillEntryFromStore(e)) || filled;
+    else window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash: e.assetHash } }));
   }
+  if (filled) _updateLoadingStatus();
 }
 setInterval(reconcileAssets, 4000);
 
@@ -4311,17 +4334,11 @@ window.addEventListener("collab:remote-asset", async ({ detail: { hash, jpegBase
   const blob = await (await fetch(jpegBase64)).blob();
   if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
   assetStore.set(hash, blob);
+  let filled = false;
   for (const e of state.images) {
-    if (e.assetHash === hash && !e.blob) {
-      e.blob = blob;
-      const bm = await createImageBitmap(blob);
-      e.thumbUrl = buildThumb(bm, e.w, e.h);
-      bm.close();
-      _updateFilmstripThumb(e.id);
-      simRefreshGroup(e.id);
-      _simViewDirty = true;
-    }
+    if (e.assetHash === hash && !e.blob) filled = (await _fillEntryFromStore(e)) || filled;
   }
+  if (filled) _updateLoadingStatus();
 });
 
 // ── Collaboration remote-event handlers ───────────────────────────────────────
@@ -4553,7 +4570,6 @@ function _updateFilmstripThumb(imgIdx) {
 // the remote-image-full handler so a re-stream can't clobber local edits.
 function _mergeRemoteSessionMeta(meta) {
   const have = new Set(state.images.map((e) => e.id));
-  const hostHas = new Set(meta.images.map((si) => si.id));
   const added = [];
   meta.images.forEach((si) => {
     const id = si.id || newImgId();
@@ -4565,12 +4581,9 @@ function _mergeRemoteSessionMeta(meta) {
     added.push({ id, simPos: si.simPos, simAngle: si.simAngle || 0 });
   });
 
-  // Re-send any fully-loaded local images the host is missing -- e.g. a live add that
-  // never reached the host before the connection dropped. This is what actually
-  // delivers images after a stalled mid-upload reconnect; the host dedups by id.
-  const missing = state.images.filter((e) => e.blob && !hostHas.has(e.id)).map((e) => e.id);
-  if (missing.length) window.dispatchEvent(new CustomEvent("collab:images-added", { detail: { ids: missing } }));
-
+  // (Reconnect convergence is handled by the shared membership doc + asset pull now:
+  // each peer exchanges full doc state on connect, and missing bytes are pulled by
+  // assetHash. No "resend missing images" hack -- that caused a re-stream storm.)
   if (added.length === 0) return; // host's session is a subset of ours -- nothing new to render
 
   buildRankList();
@@ -4588,6 +4601,84 @@ function _mergeRemoteSessionMeta(meta) {
   _collabJoinTotal = meta.imageCount; // host re-streams full images for all of its ids
   _collabJoinFullsDone = 0;
   updateSimStatus("Waiting...");
+}
+
+// Reconcile the local image list to the shared membership doc. Builds skeletons for new
+// ids (applying each one's polygons + scale from the doc at build time, so a mask that
+// arrived before its image is no longer dropped), removes images the doc no longer has,
+// and sets rank order. Bytes are pulled by assetHash (reconcileAssets), never streamed.
+// Idempotent + order-independent -- safe to run on any remote membership change.
+window.applyRemoteMembership = function (snap) {
+  const { images, order, polygons, scales } = snap;
+  const incoming = new Set(Object.keys(images));
+
+  for (const e of [...state.images]) {
+    if (!incoming.has(e.id)) removeImage(e.id, { broadcast: false });
+  }
+
+  for (const id of Object.keys(images)) {
+    if (imgById(id)) continue;
+    const m = images[id];
+    const si = { ...m, polygons: polygons[id] || [], scale: scales[id] ?? null, scaleFixed: scales[id] != null };
+    state.images.push(_sessionEntry(si, id));
+    state.undoStack.set(id, []);
+  }
+
+  // Re-apply masks + scale for every doc image (covers an edit to one we already held,
+  // and re-applies a mask that landed before its image).
+  for (const id of Object.keys(images)) {
+    const e = imgById(id);
+    if (!e) continue;
+    if (polygons[id]) e.polygons = polygons[id];
+    if (scales[id] !== undefined) {
+      e.scale = scales[id];
+      e.scaleFixed = scales[id] != null;
+    }
+  }
+
+  const valid = (order || []).filter((id) => imgById(id));
+  if (valid.length === state.images.length) state.rankOrder = valid;
+  else for (const id of Object.keys(images)) if (!state.rankOrder.includes(id)) state.rankOrder.push(id);
+
+  const n = state.images.length;
+  buildRankList();
+  updateStepMeta("step-images", n > 0 ? imageCountLabel(n) : "Upload to start", n > 0);
+  if (n > 0) {
+    paintArea.classList.remove("im-hidden");
+    unlockStep("step-paint");
+  } else {
+    paintArea.classList.add("im-hidden");
+    lockStep("step-paint");
+  }
+
+  if (simRafId === null && n > 0) initSim();
+  if (simRafId !== null) {
+    for (const id of Object.keys(images)) {
+      simRefreshGroup(id);
+      const g = simGroups.get(id);
+      const m = images[id];
+      if (m.simPos && g) placeGroup(g, m.simPos.x, m.simPos.y, m.simAngle || 0);
+    }
+  }
+  _simViewDirty = true;
+  _updateLoadingStatus();
+  reconcileAssets(); // pull bytes for any new skeletons now, not on the next 4s tick
+};
+
+// Status pill while bytes pull in: "Loading k/N" until every image has its blob.
+function _updateLoadingStatus() {
+  const total = state.images.length;
+  if (total === 0) return;
+  const loaded = state.images.filter((e) => e.blob).length;
+  if (loaded >= total) {
+    const msg = imageCountLabel(total);
+    updateSimStatus(msg);
+    setTimeout(() => {
+      if (simStatusEl.textContent === msg) updateSimStatus("");
+    }, 2000);
+  } else {
+    updateSimStatus("Loading " + loaded + "/" + total);
+  }
 }
 
 // A join snapshot. `meta.replace` is set only when the host explicitly re-streams an

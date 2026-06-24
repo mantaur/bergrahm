@@ -17,12 +17,31 @@ of the doc.
 
 ## Migrated (done, tested -- offline + real-WebRTC smoke for settings)
 
-| Domain     | Y type                      | Apply event (remote)        |
-|------------|-----------------------------|-----------------------------|
-| settings   | `ydoc.getMap("settings")`   | `applyRemoteSettings(json)` |
-| rankOrder  | `ydoc.getArray("rankOrder")`| `applyRemoteRankOrder(arr)` |
-| polygons   | `ydoc.getMap("polygons")`   | `collab:remote-polygon`     |
-| scales     | `ydoc.getMap("scales")`     | `collab:remote-scales`      |
+| Domain     | Y type                      | Apply event (remote)         |
+|------------|-----------------------------|------------------------------|
+| settings   | `ydoc.getMap("settings")`   | `applyRemoteSettings(json)`  |
+| rankOrder  | `ydoc.getArray("rankOrder")`| `applyRemoteRankOrder(arr)`  |
+| polygons   | `ydoc.getMap("polygons")`   | `collab:remote-polygon`      |
+| scales     | `ydoc.getMap("scales")`     | `collab:remote-scales`       |
+| membership | `ydoc.getMap("images")`     | `applyRemoteMembership(snap)`|
+
+### Membership notes (the image list)
+- `yImages` holds per-image meta only (id, name, w, h, **assetHash**, simHidden,
+  scaleFixed, currentPoly, simPos/simAngle). **Bytes are never in the doc** -- they are
+  pulled by `assetHash` via the content-addressed asset layer.
+- `applyRemoteMembership(snap)` reconciles local state to `{images, order, polygons,
+  scales}`: builds skeletons for new ids (applying mask+scale from the doc at build
+  time -> fixes the "mask arrived before its image" drop), removes images the doc lacks,
+  sets rank order, then `reconcileAssets()` pulls bytes.
+- **Mutual doc exchange on (re)connect**: both host and guest `_sendDocState` to each
+  other. Yjs merges are commutative + idempotent, so this converges membership without
+  re-streaming -- it replaced the old "resend missing images" hack AND the full-res
+  streaming in `sendSessionTo` (both were the reconnect-storm loop).
+- **Asset reconcile must fill-from-store, not only request**: content addressing means
+  the bytes may already be local (shared/re-added content, or a prior pull). If
+  `assetStore.has(hash)`, populate the entry from the store; only request when truly
+  absent. `removeImage` evicts unreferenced bytes (memory + avoids a stale store entry
+  suppressing a later pull). This was a real bug caught by the real-WebRTC smoke.
 
 ## The migration pattern (per domain)
 
@@ -39,25 +58,26 @@ Key mechanisms / gotchas:
 - `applyRemoteSettings` self-guards (`window._collabApplyingRemote`) so applying a
   remote change can't re-broadcast. Reuse that pattern for any new apply path that
   touches inputs which themselves trigger `collab:*-changed`.
-- **Transitional dual-system**: un-migrated domains still use the old messages, and
-  the old handleMsg cases (`settings`/`rank-order`/`polygon`/`scales`) remain as
-  harmless dead code. Remove them once nothing sends those messages. session-meta
-  still redundantly carries settings; drop that after membership is migrated.
+- **Transitional dual-system**: the old handleMsg cases (`settings`/`rank-order`/
+  `polygon`/`scales`/`image`/`image-removed`/`image-binary`/`image-full`) and the
+  `sendImageBinary`/`_forwardImageBinary`/skeleton receive paths remain as harmless
+  dead code (nothing sends those messages now). `sendSessionTo` still sends
+  `session-meta` + thumbnails on join (redundant with the doc but deduped by id); it no
+  longer streams full-res bytes. Safe cleanup once confident: drop the dead messages and
+  fold `session-meta`'s remaining role (paintIdx, simView) into the doc, retiring
+  `sendSessionTo` entirely.
 
 ## Remaining domains
 
 1. **positions** (high-frequency; live drag). Today: `collab:body-moved` /
    `bodies-moved` / `body-dragging` -> `positions` -> `collab:remote-positions`.
-   Recommend: `ydoc.getMap("positions")` of `id -> {x,y,angle}`. **Keep live-drag
-   frames on the ephemeral `drag`/`positions` message** (don't write the doc every
-   frame); write the doc only on **commit** (`body-moved`/`bodies-moved`). MUST be
-   verified in a real browser for drag smoothness + convergence.
-2. **Per-image membership + metadata** (name, w, h, assetHash, simHidden,
-   currentPoly). The image LIST. Intertwines with the asset layer and the
-   session-meta join. Recommend `ydoc.getMap("images")` of `id -> Y.Map(meta)`;
-   add/remove flow through the doc; the asset layer pulls bytes by `assetHash`. This
-   replaces session-meta's image list + the skeleton/announce path. Largest change.
-3. **Presence** (cursors, grab-locks). Natural fit for Yjs **Awareness**, but the
+   Membership carries a *creation-time* simPos, and live moves still ride the ephemeral
+   `positions` path -- so a peer that joins AFTER moves can see a stale initial
+   position until the next move. To fix: write committed positions into the doc on
+   `body-moved`/`bodies-moved` (a `ydoc.getMap("positions")` of `id -> {x,y,angle}`, or
+   fold into the membership entry), keeping live-drag frames ephemeral. MUST be verified
+   in a real browser for drag smoothness + convergence.
+2. **Presence** (cursors, grab-locks). Natural fit for Yjs **Awareness**, but the
    vendored bundle is `yjs` only (no `y-protocols/awareness`). Either vendor
    awareness separately, or leave presence on the existing ephemeral messages
    (ephemeral data is a weak CRDT fit anyway). Lowest priority.

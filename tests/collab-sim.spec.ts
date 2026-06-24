@@ -136,6 +136,53 @@ test('a scale edit writes into the Y.Doc', async ({ page }) => {
   await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('scales').get(id), id)).toBe(0.5);
 });
 
+// ── Per-image membership via Yjs ──────────────────────────────────────────────────
+// The image LIST lives in ydoc.getMap("images"); bytes are pulled by assetHash. A local
+// add announces membership in the doc (with its content hash registered); a remote
+// membership snapshot builds/removes images locally, applying masks from the doc.
+
+test('a local add registers per-image membership in the Y.Doc', async ({ page }) => {
+  await addImage(page);
+  const id = await imgIdAt(page, 0);
+  const m = await expect
+    .poll(() => page.evaluate((id) => (window as any).ydoc.getMap('images').get(id) || null, id))
+    .not.toBeNull()
+    .then(() => page.evaluate((id) => (window as any).ydoc.getMap('images').get(id), id));
+  expect(m.id).toBe(id);
+  expect(m.assetHash).toBeTruthy(); // bytes are content-addressed for pull
+});
+
+test('a remote membership snapshot builds an image with its mask from the doc', async ({ page }) => {
+  // Mask present in the doc; image announced via membership. The mask must apply even
+  // though it is delivered alongside (not after) the image -- the old drop-on-missing bug.
+  await page.evaluate(() => {
+    (window as any).applyRemoteMembership({
+      images: { m1: { id: 'm1', name: 'm.png', w: 400, h: 400, assetHash: 'h1', simHidden: false, scaleFixed: false, simPos: { x: 200, y: 200 }, simAngle: 0 } },
+      order: ['m1'],
+      polygons: { m1: [[{ x: 40, y: 40 }, { x: 360, y: 40 }, { x: 200, y: 360 }]] },
+      scales: {},
+    });
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  expect(await polyCount(page, 0)).toBe(1); // mask applied at build, not dropped
+  await expect(page.locator('#rank-list .im-rank-thumb')).toHaveClass(/im-rank-thumb-pending/); // no bytes yet
+});
+
+test('a remote membership snapshot removes an image the doc no longer has', async ({ page }) => {
+  await page.evaluate(() => {
+    const mk = (id: string) => ({ id, name: id + '.png', w: 400, h: 400, assetHash: id, simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 });
+    (window as any).applyRemoteMembership({ images: { a: mk('a'), b: mk('b') }, order: ['a', 'b'], polygons: {}, scales: {} });
+  });
+  await expect.poll(() => imageCount(page)).toBe(2);
+  // Doc now drops "a".
+  await page.evaluate(() => {
+    const mk = (id: string) => ({ id, name: id + '.png', w: 400, h: 400, assetHash: id, simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 });
+    (window as any).applyRemoteMembership({ images: { b: mk('b') }, order: ['b'], polygons: {}, scales: {} });
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as any).getSessionMeta().rankOrder)).toEqual(['b']);
+});
+
 // ── Guest side: receiving a pushed session ──────────────────────────────────────
 
 test('guest: a pushed session-meta populates the skeleton', async ({ page }) => {
@@ -221,24 +268,25 @@ test('guest: a replace session-meta still replaces wholesale', async ({ page }) 
   expect(ids).toEqual(['fresh-a']);
 });
 
-// On reconnect the host re-sends its (possibly stale) snapshot; the guest must push back
-// any fully-loaded local images the host is missing -- this is what delivers images that
-// stalled mid-upload before the drop. The host dedups by id.
-test('guest: a merge re-sends images the host is missing', async ({ page }) => {
+// Reconnect convergence: a locally-added image lives in the membership doc, so on
+// reconnect the doc is exchanged and the peer pulls bytes by hash -- no "resend missing
+// images" re-stream (that caused the loop). Here we assert the image is in the doc and a
+// stale session-meta merge does NOT trigger a re-send.
+test('guest: a locally added image is in the membership doc and is not re-streamed on a stale merge', async ({ page }) => {
   await addImage(page); // 1 local image with pixels
   const localId = await imgIdAt(page, 0);
-  const before = (await collabOut(page, 'collab:images-added')).length;
+  await expect.poll(() => page.evaluate((id) => !!(window as any).ydoc.getMap('images').get(id), localId)).toBe(true);
 
-  // Host reconnects us with a snapshot that does NOT contain our image.
+  const before = (await collabOut(page, 'collab:images-added')).length;
+  // A stale session-meta merge (host without our image) must NOT re-fire images-added.
   await emitRemote(page, 'collab:remote-session-meta', {
     imageCount: 0, replace: false,
     outW: 400, outH: 400, fillColor: '#181a1b',
     rankOrder: [], paintIdx: 0, images: [],
   });
-
-  await expect.poll(async () => (await collabOut(page, 'collab:images-added')).length).toBeGreaterThan(before);
-  const ev = await collabOut(page, 'collab:images-added');
-  expect(ev.at(-1).detail.ids).toContain(localId);
+  await page.waitForTimeout(300);
+  expect((await collabOut(page, 'collab:images-added')).length).toBe(before); // no re-stream
+  expect(await imageCount(page)).toBe(1); // our image is untouched
 });
 
 // Live add (binary path): the image-binary header lands first and shows a pending
