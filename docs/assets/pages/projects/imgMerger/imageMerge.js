@@ -4340,6 +4340,13 @@ async function _fillEntryFromStore(entry) {
 // timer re-requests until satisfied (idempotent; host serves or relays). Filling from
 // the store is essential -- content addressing means the bytes may already be local, in
 // which case no request is ever made and the entry must be populated from the store.
+// De-dup: a hash requested within this window is not re-requested. The 4s reconcile
+// would otherwise re-ask for an asset that is still in flight (a transfer can take longer
+// than 4s), piling duplicate full re-serves onto the sender. Cleared the moment bytes
+// arrive, so a genuinely lost transfer is re-requested promptly on the next tick.
+const ASSET_REQ_BACKOFF = 12000;
+const _assetReqAt = new Map(); // assetHash -> last request time
+
 async function reconcileAssets() {
   let filled = false;
   // Pull in carousel (rank) order -- nearest the top fills first -- matching the YOLO
@@ -4350,10 +4357,15 @@ async function reconcileAssets() {
     return r === -1 ? Infinity : r;
   };
   const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
+  const now = Date.now();
   for (const e of ordered) {
     if (!e.assetHash || e.blob) continue;
-    if (assetStore.has(e.assetHash)) filled = (await _fillEntryFromStore(e)) || filled;
-    else window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash: e.assetHash } }));
+    if (assetStore.has(e.assetHash)) {
+      filled = (await _fillEntryFromStore(e)) || filled;
+    } else if (now - (_assetReqAt.get(e.assetHash) || 0) >= ASSET_REQ_BACKOFF) {
+      _assetReqAt.set(e.assetHash, now);
+      window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash: e.assetHash } }));
+    }
   }
   if (filled) _updateLoadingStatus();
 }
@@ -4364,6 +4376,7 @@ window.addEventListener("collab:remote-asset", async ({ detail: { hash, jpegBase
   const blob = await (await fetch(jpegBase64)).blob();
   if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
   assetStore.set(hash, blob);
+  _assetReqAt.delete(hash); // satisfied -- allow an immediate re-request if it ever recurs
   let filled = false;
   for (const e of state.images) {
     if (e.assetHash === hash && !e.blob) filled = (await _fillEntryFromStore(e)) || filled;

@@ -120,7 +120,9 @@ yImages.observe((event, transaction) => {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PING_INTERVAL = 3000; // ms between host pings to each guest
-const PING_TIMEOUT = 10000; // ms without a pong before host drops the guest
+const PING_TIMEOUT = 20000; // ms without a pong before host drops the guest. Generous so a
+// momentarily pegged phone (decoding a 12MP photo, GC pause) isn't dropped, which would
+// trigger a costly reconnect + session re-sync
 
 const COLORS = ["#e05252", "#4a9eed", "#52c97a", "#e0a033", "#9b6be0", "#30b5be", "#e0709a", "#8fbe4a"];
 const STORAGE_NAME_KEY = "collab-name";
@@ -397,6 +399,7 @@ function onMouseMove(e) {
 // On host: send to all guests.
 // On guest: send to host (who will rebroadcast).
 function broadcast(msg, excludePeerId) {
+  if (window._txStats) window._txStats[msg.type] = (window._txStats[msg.type] || 0) + 1;
   const str = JSON.stringify(msg);
   if (isHost) {
     for (const [pid, conn] of guestConns) {
@@ -574,7 +577,12 @@ function handleMsg(msg, fromPeerId) {
           _dropGuest(fromPeerId);
         } else if (conn) {
           const cs = window.getCollabState ? window.getCollabState() : null;
-          if (cs && cs.imageCount > 0) sendSessionTo(conn);
+          // Only blast the session (meta + every thumbnail) to a guest that has nothing.
+          // A reconnecting guest that already holds images skips it: the doc state below
+          // conveys membership, and any genuinely-missing image is pulled by hash (its
+          // thumbnail is rebuilt from the pulled bytes). This stops a reconnect storm from
+          // re-sending all thumbnails on every reconnect -- the background-traffic bug.
+          if (cs && cs.imageCount > 0 && !msg.have) sendSessionTo(conn);
           _sendDocState(conn); // converge shared metadata (settings, ...) with the joiner
         }
       }
@@ -814,6 +822,10 @@ function _concatParts(parts) {
 // its retry timer; no partial state is kept -- this is not resume).
 async function _sendChunked(conn, header, buffer) {
   const view = ArrayBuffer.isView(buffer) ? buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) : buffer;
+  if (window._txStats) {
+    window._txStats["bin:" + header.type] = (window._txStats["bin:" + header.type] || 0) + 1;
+    window._txBytes = (window._txBytes || 0) + view.byteLength;
+  }
   if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return false;
   conn.send(JSON.stringify({ ...header, bytes: view.byteLength }));
   for (let off = 0; off < view.byteLength; off += CHUNK_SIZE) {
@@ -986,6 +998,10 @@ function joinAsGuest(roomCode, retries = 0) {
           type: "join",
           name: nameInp.value.trim() || "Anonymous",
           password: passInp ? passInp.value.trim() : "",
+          // Tell the host whether we already hold images so it can skip re-blasting the
+          // whole session (meta + thumbnails) on a reconnect -- avoids a reconnect storm
+          // continuously re-sending thumbnails.
+          have: window.getCollabState ? window.getCollabState().imageCount || 0 : 0,
         }),
       );
       // Send our doc state up so the host merges anything we hold (images added while

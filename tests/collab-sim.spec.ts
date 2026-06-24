@@ -353,6 +353,19 @@ test('guest: reconcile requests a missing asset by hash', async ({ page }) => {
   await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e) => e.detail.hash === 'cafe1234')).toBe(true);
 });
 
+// De-dup: repeated reconciles within the backoff window don't re-ask for the same hash,
+// so a transfer in flight isn't drowned in duplicate re-serves.
+test('guest: a missing asset is not re-requested within the backoff window', async ({ page }) => {
+  await emitRemote(page, 'collab:remote-image-skeleton', {
+    id: 'ca-3', assetHash: 'beef99', name: 'ca.png', w: 400, h: 400,
+    polygons: [], simPos: { x: 200, y: 200 }, simAngle: 0,
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  for (let i = 0; i < 3; i++) await page.evaluate(() => (window as any).reconcileAssets());
+  const reqs = (await collabOut(page, 'collab:asset-needed')).filter((e: any) => e.detail.hash === 'beef99');
+  expect(reqs.length).toBe(1); // requested once, then de-duped
+});
+
 // Pull order follows the carousel (rank) order, like the YOLO encode queue: the image
 // nearest the top of the list requests its bytes first, regardless of insertion order.
 test('guest: reconcile requests assets in carousel (rank) order', async ({ page }) => {
@@ -367,11 +380,11 @@ test('guest: reconcile requests assets in carousel (rank) order', async ({ page 
   });
   await expect.poll(() => imageCount(page)).toBe(3);
 
-  const before = (await collabOut(page, 'collab:asset-needed')).length;
-  await page.evaluate(() => (window as any).reconcileAssets());
-  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).length).toBeGreaterThanOrEqual(before + 3);
-
-  const hashes = (await collabOut(page, 'collab:asset-needed')).slice(before, before + 3).map((e: any) => e.detail.hash);
+  // applyRemoteMembership runs a reconcile that requests the three missing hashes; the
+  // request de-dup means each hash is asked for once, so these first three events are the
+  // pull order.
+  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).length).toBeGreaterThanOrEqual(3);
+  const hashes = (await collabOut(page, 'collab:asset-needed')).slice(0, 3).map((e: any) => e.detail.hash);
   expect(hashes).toEqual(['hc', 'ha', 'hb']); // rank order, not insertion order
 });
 
