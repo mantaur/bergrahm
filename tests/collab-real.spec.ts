@@ -86,6 +86,92 @@ test.describe('real collab (live broker)', () => {
     }
   });
 
+  // Regression: uploading many DISTINCT images at once made the receiver scramble
+  // them -- many asset sends raced on one connection, and the receiver pairs a binary
+  // with the single preceding header, so interleaved sends stored one image's bytes
+  // under another's hash (wrong thumbnail / wrong image). Per-connection send
+  // serialization fixes it. Here: guest adds N distinct images; the host must end up
+  // with each hash mapping to bytes that actually hash back to that key (no cross-wire).
+  test('many distinct images sync without cross-wiring', async ({ browser }) => {
+    const N = 6;
+    const room = 'pw-' + Math.random().toString(36).slice(2, 9);
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    await routeVendor(ctxA);
+    await routeVendor(ctxB);
+    const a = await ctxA.newPage();
+    const b = await ctxB.newPage();
+
+    try {
+      await a.goto(PAGE);
+      await a.locator('#btn-collab').click();
+      await a.locator('#collab-room-inp').fill(room);
+      await a.locator('#btn-collab-join').click();
+      await expect(a.locator('#collab-status')).toHaveText(/Hosting/, { timeout: 25000 });
+      await b.goto(PAGE + '?room=' + room);
+      await expect(b.locator('#collab-status')).toHaveText(/Connected as guest/, { timeout: 25000 });
+
+      // Generate N visually-distinct PNGs (distinct bytes -> distinct content hashes).
+      const dataUrls: string[] = await b.evaluate((n) => {
+        const urls: string[] = [];
+        for (let i = 0; i < n; i++) {
+          const c = document.createElement('canvas');
+          c.width = 96;
+          c.height = 96;
+          const x = c.getContext('2d')!;
+          x.fillStyle = `rgb(${(i * 37) % 256},${(i * 73) % 256},${(i * 109) % 256})`;
+          x.fillRect(0, 0, 96, 96);
+          x.fillStyle = '#fff';
+          x.font = '40px sans-serif';
+          x.fillText('I' + i, 8, 56);
+          urls.push(c.toDataURL('image/png'));
+        }
+        return urls;
+      }, N);
+      const files = dataUrls.map((u, i) => ({ name: `d${i}.png`, mimeType: 'image/png', buffer: Buffer.from(u.split(',')[1], 'base64') }));
+
+      // Guest adds them all at once -> they sync to the host.
+      await b.locator('#cfg-images').setInputFiles(files);
+      await expect(b.locator('#rank-list > li')).toHaveCount(N);
+      await expect(a.locator('#rank-list > li')).toHaveCount(N, { timeout: 30000 });
+      // All host thumbnails resolve (bytes pulled).
+      await expect(a.locator('#rank-list .im-rank-thumb-pending')).toHaveCount(0, { timeout: 30000 });
+
+      // Integrity: every host image's stored bytes must hash back to its own assetHash.
+      const bad = await a.evaluate(async () => {
+        const ah = (bytes: Uint8Array) => {
+          let h1 = 0x811c9dc5,
+            h2 = 0x01000193;
+          for (let i = 0; i < bytes.length; i++) {
+            h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+            h2 = Math.imul(h2 ^ bytes[i], 0x85ebca6b) >>> 0;
+          }
+          return bytes.length.toString(16) + '-' + h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
+        };
+        const meta = (window as any).getSessionMeta();
+        const mism: string[] = [];
+        const seen = new Set<string>();
+        for (const im of meta.images) {
+          const buf = await (window as any).getAssetBuffer(im.assetHash);
+          if (!buf) {
+            mism.push(im.id + ':nobytes');
+            continue;
+          }
+          const got = ah(new Uint8Array(buf));
+          if (got !== im.assetHash) mism.push(im.id + ':' + im.assetHash + '!=' + got);
+          seen.add(im.assetHash);
+        }
+        return { mism, distinct: seen.size, count: meta.images.length };
+      });
+      expect(bad.mism).toEqual([]); // no bytes stored under the wrong hash
+      expect(bad.distinct).toBe(N); // all distinct content
+      expect(bad.count).toBe(N);
+    } finally {
+      await ctxA.close();
+      await ctxB.close();
+    }
+  });
+
   test('a room password gates guests', async ({ browser }) => {
     const room = 'pw-' + Math.random().toString(36).slice(2, 9);
     const ctxA = await browser.newContext();

@@ -761,6 +761,21 @@ async function _waitDrain(conn) {
   return conn.open;
 }
 
+// Per-connection serialized send queue. A two-part send (a header string followed by a
+// chunked binary, with a yield between) MUST NOT interleave with another on the same
+// connection: the receiver pairs a binary with the single immediately-preceding header,
+// so interleaved sends (header A, header B, bytes A, bytes B) would store A's bytes
+// under B's key -- cross-wiring images. Serializing per connection keeps each
+// header->bytes pair atomic on the wire. (This is why uploading many images at once
+// scrambled thumbnails: many asset sends raced on one channel.)
+const _sendChains = new WeakMap(); // conn -> Promise (tail of its serialized chain)
+function _enqueueSend(conn, task) {
+  const prev = _sendChains.get(conn) || Promise.resolve();
+  const next = prev.then(task).catch((e) => console.warn("[collab] queued send failed:", e));
+  _sendChains.set(conn, next);
+  return next;
+}
+
 function _dataUrlToBuffer(dataUrl) {
   const b64 = dataUrl.split(",")[1];
   const binary = atob(b64);
@@ -804,19 +819,16 @@ async function sendSessionTo(conn, { replace = false } = {}) {
 // backpressure -- the same robust path the join stream uses. A base64 JSON string of a
 // 4K photo overflows the DataChannel's max message size and silently fails, which is
 // why the old string-based live-add path never delivered large images.
-async function sendImageBinary(conn, packet) {
-  if (!packet || !conn || !conn.open) return false;
+function sendImageBinary(conn, packet) {
+  if (!packet || !conn || !conn.open) return Promise.resolve(false);
   const { buffer, id, assetHash, name, w, h, polygons, simPos, simAngle } = packet;
-  if (!(await _waitDrain(conn)) || !conn.open) return false; // closed / stalled -> give up
-  try {
+  // Queued for the same reason as sendAssetBinary (header+bytes must stay atomic).
+  return _enqueueSend(conn, async () => {
+    if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return;
     conn.send(JSON.stringify({ type: "image-binary", id, assetHash, name, w, h, polygons, simPos, simAngle }));
     await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
     conn.send(buffer);
-    return true;
-  } catch (e) {
-    console.warn("[collab] image-binary send failed:", e);
-    return false;
-  }
+  });
 }
 
 // Host relays a guest-originated image to the other guests (star topology), reusing
@@ -833,16 +845,15 @@ async function _forwardImageBinary(meta, buffer, excludePeerId) {
 // self-heals: the requester re-asks until some peer serves it. Metadata (which carries
 // the assetHash) syncs reliably on its own; the large bytes ride this pull path.
 
-async function sendAssetBinary(conn, hash, buffer) {
+function sendAssetBinary(conn, hash, buffer) {
   if (!conn || !conn.open || !buffer) return;
-  if (!(await _waitDrain(conn)) || !conn.open) return;
-  try {
+  // Queued: serialize header+bytes per connection so concurrent serves can't interleave.
+  return _enqueueSend(conn, async () => {
+    if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return;
     conn.send(JSON.stringify({ type: "asset-binary", hash }));
     await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
     conn.send(buffer);
-  } catch (e) {
-    console.warn("[collab] asset-binary send failed:", e);
-  }
+  });
 }
 
 // Serve an asset to a requester if we hold it; otherwise the host relays the request

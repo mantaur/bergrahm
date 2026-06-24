@@ -42,6 +42,13 @@ of the doc.
   `assetStore.has(hash)`, populate the entry from the store; only request when truly
   absent. `removeImage` evicts unreferenced bytes (memory + avoids a stale store entry
   suppressing a later pull). This was a real bug caught by the real-WebRTC smoke.
+- **Two-part sends (header string + chunked binary) MUST be serialized per connection**
+  (`_enqueueSend` / `_sendChains`). The receiver pairs a binary with the single
+  immediately-preceding header (`pendingImageMeta`), so concurrent un-awaited sends on
+  one channel interleave (header A, header B, bytes A, bytes B) and store A's bytes
+  under B's hash -- cross-wiring images. Symptom: uploading many images at once scrambled
+  thumbnails ("one thumb on many pictures"). Covered by the "many distinct images sync
+  without cross-wiring" real-collab test.
 
 ## The migration pattern (per domain)
 
