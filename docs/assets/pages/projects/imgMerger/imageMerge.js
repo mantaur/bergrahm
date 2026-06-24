@@ -4342,7 +4342,15 @@ async function _fillEntryFromStore(entry) {
 // which case no request is ever made and the entry must be populated from the store.
 async function reconcileAssets() {
   let filled = false;
-  for (const e of state.images) {
+  // Pull in carousel (rank) order -- nearest the top fills first -- matching the YOLO
+  // encode queue's priority. Requests fire in this order over the ordered channel, so the
+  // host serves them top-down. Any id not yet in rankOrder sorts last.
+  const rankOf = (id) => {
+    const r = state.rankOrder.indexOf(id);
+    return r === -1 ? Infinity : r;
+  };
+  const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
+  for (const e of ordered) {
     if (!e.assetHash || e.blob) continue;
     if (assetStore.has(e.assetHash)) filled = (await _fillEntryFromStore(e)) || filled;
     else window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash: e.assetHash } }));

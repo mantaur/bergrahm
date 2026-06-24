@@ -353,6 +353,28 @@ test('guest: reconcile requests a missing asset by hash', async ({ page }) => {
   await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e) => e.detail.hash === 'cafe1234')).toBe(true);
 });
 
+// Pull order follows the carousel (rank) order, like the YOLO encode queue: the image
+// nearest the top of the list requests its bytes first, regardless of insertion order.
+test('guest: reconcile requests assets in carousel (rank) order', async ({ page }) => {
+  await page.evaluate(() => {
+    const mk = (id: string, hash: string) => ({ id, name: id + '.png', w: 400, h: 400, assetHash: hash, simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 });
+    // Insertion order a,b,c but carousel order c,a,b.
+    (window as any).applyRemoteMembership({
+      images: { a: mk('a', 'ha'), b: mk('b', 'hb'), c: mk('c', 'hc') },
+      order: ['c', 'a', 'b'],
+      polygons: {}, scales: {},
+    });
+  });
+  await expect.poll(() => imageCount(page)).toBe(3);
+
+  const before = (await collabOut(page, 'collab:asset-needed')).length;
+  await page.evaluate(() => (window as any).reconcileAssets());
+  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).length).toBeGreaterThanOrEqual(before + 3);
+
+  const hashes = (await collabOut(page, 'collab:asset-needed')).slice(before, before + 3).map((e: any) => e.detail.hash);
+  expect(hashes).toEqual(['hc', 'ha', 'hb']); // rank order, not insertion order
+});
+
 // A locally added image is content-addressed and registered so this peer can serve it.
 test('local add registers a content-addressed asset', async ({ page }) => {
   await addImage(page);
