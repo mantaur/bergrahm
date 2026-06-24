@@ -593,30 +593,40 @@ function handleMsg(msg, fromPeerId) {
 
 function setupConn(conn, isGuestSide) {
   let receiving = null; // legacy ZIP receive state
-  let pendingImageMeta = null; // set by image-(full-)binary header; cleared when binary arrives
+  let pendingImageMeta = null; // header for an incoming chunked binary; collects its slices
+
+  // A chunked binary is fully received; reassemble its slices and hand off. `kind`
+  // distinguishes pulled content-addressed bytes ('asset'), a live add that appends a new
+  // image ('add'), and a join re-stream that fills an existing skeleton ('full').
+  function finalizeBinary(meta) {
+    const buf = _concatParts(meta.parts);
+    const blobUrl = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+    if (meta.kind === "asset") {
+      // The app stores the bytes by hash and fills any image waiting on them. No relay:
+      // a still-missing peer re-requests on its retry timer.
+      window.dispatchEvent(new CustomEvent("collab:remote-asset", { detail: { hash: meta.hash, jpegBase64: blobUrl } }));
+    } else if (meta.kind === "add") {
+      const { kind, parts, got, bytes, ...m } = meta;
+      window.dispatchEvent(new CustomEvent("collab:remote-image-binary", { detail: { imgIdx: m.id, jpegBase64: blobUrl, ...m } }));
+      if (isHost) _forwardImageBinary(m, buf, conn.peer); // relay to the other guests
+    } else {
+      const { kind, parts, got, bytes, imgIdx, ...imgMeta } = meta;
+      handleMsg({ type: "image-full", imgIdx, jpegBase64: blobUrl, ...imgMeta }, conn.peer);
+    }
+  }
 
   conn.on("data", (data) => {
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
       const buf = ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
       if (pendingImageMeta !== null) {
-        // Image binary, reassembled by PeerJS chunking. `kind` distinguishes a join
-        // re-stream that populates an existing skeleton ('full') from a live add that
-        // appends a brand-new image ('add').
-        const { kind, ...meta } = pendingImageMeta;
+        // Collect slices until the header's declared byte count is reached (legacy
+        // single-shot headers omit `bytes` -> the first slice completes them).
+        pendingImageMeta.parts.push(buf);
+        pendingImageMeta.got += buf.byteLength;
+        if (pendingImageMeta.bytes != null && pendingImageMeta.got < pendingImageMeta.bytes) return;
+        const meta = pendingImageMeta;
         pendingImageMeta = null;
-        const blobUrl = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
-        if (kind === "asset") {
-          // Pulled bytes (content-addressed). The app stores them by hash and fills any
-          // image waiting on them. No relay: a still-missing peer re-requests on retry.
-          window.dispatchEvent(new CustomEvent("collab:remote-asset", { detail: { hash: meta.hash, jpegBase64: blobUrl } }));
-        } else if (kind === "add") {
-          // Skeleton already shown from the header; this fills it with pixels.
-          window.dispatchEvent(new CustomEvent("collab:remote-image-binary", { detail: { imgIdx: meta.id, jpegBase64: blobUrl, ...meta } }));
-          if (isHost) _forwardImageBinary(meta, buf, conn.peer); // relay to the other guests
-        } else {
-          const { imgIdx, ...imgMeta } = meta;
-          handleMsg({ type: "image-full", imgIdx, jpegBase64: blobUrl, ...imgMeta }, conn.peer);
-        }
+        finalizeBinary(meta);
       } else if (receiving) {
         receiving.chunks.push(buf);
         const got = receiving.chunks.reduce((s, c) => s + c.byteLength, 0);
@@ -631,6 +641,9 @@ function setupConn(conn, isGuestSide) {
       // Header for the join re-stream binary that follows (populates a skeleton)
       pendingImageMeta = {
         kind: "full",
+        parts: [],
+        got: 0,
+        bytes: msg.bytes,
         imgIdx: msg.imgIdx,
         name: msg.name,
         w: msg.w,
@@ -648,11 +661,11 @@ function setupConn(conn, isGuestSide) {
       // skeleton now -- the bytes land in the next message and fill it; if they stall,
       // the assetHash on the skeleton lets the asset reconcile pull them later.
       const meta = { id: msg.id, assetHash: msg.assetHash, name: msg.name, w: msg.w, h: msg.h, polygons: msg.polygons, simPos: msg.simPos, simAngle: msg.simAngle };
-      pendingImageMeta = { kind: "add", ...meta };
+      pendingImageMeta = { kind: "add", parts: [], got: 0, bytes: msg.bytes, ...meta };
       window.dispatchEvent(new CustomEvent("collab:remote-image-skeleton", { detail: meta }));
     } else if (msg.type === "asset-binary") {
       // Header for content-addressed asset bytes that follow (pull response).
-      pendingImageMeta = { kind: "asset", hash: msg.hash };
+      pendingImageMeta = { kind: "asset", parts: [], got: 0, bytes: msg.bytes, hash: msg.hash };
     } else if (msg.type === "session-start") {
       receiving = { chunks: [], totalBytes: msg.totalBytes };
       showGuestPrompt("Receiving session...");
@@ -742,8 +755,11 @@ function _scheduleReconnect() {
 
 // ── Streaming session send ────────────────────────────────────────────────────
 
-const DRAIN_HIGH = 512 * 1024; // bytes buffered before we throttle
+const DRAIN_HIGH = 256 * 1024; // bytes buffered before we throttle; also bounds how much
+// bulk sits ahead of a heartbeat pong queued mid-transfer
 const DRAIN_TIMEOUT = 20000; // ms; a channel stuck this long is treated as dead, not slow
+// (binary sends are sliced into CHUNK_SIZE pieces -- declared up top -- so a ping/pong
+// interleaves between slices instead of waiting behind a whole multi-MB image)
 
 // Wait for the send buffer to drain. Returns false if the connection closed or stayed
 // backed up past the timeout (a stalled mobile uplink). Callers MUST stop on false --
@@ -761,19 +777,50 @@ async function _waitDrain(conn) {
   return conn.open;
 }
 
-// Per-connection serialized send queue. A two-part send (a header string followed by a
-// chunked binary, with a yield between) MUST NOT interleave with another on the same
-// connection: the receiver pairs a binary with the single immediately-preceding header,
-// so interleaved sends (header A, header B, bytes A, bytes B) would store A's bytes
-// under B's key -- cross-wiring images. Serializing per connection keeps each
-// header->bytes pair atomic on the wire. (This is why uploading many images at once
-// scrambled thumbnails: many asset sends raced on one channel.)
+// Per-connection serialized send queue. A binary transfer is a header followed by its
+// byte slices; two transfers MUST NOT interleave on one connection or the receiver
+// (which accumulates slices against the current header) would mix one image's bytes into
+// another -- cross-wiring images. Serializing per connection keeps each header->slices
+// transfer atomic on the wire. (This is why uploading many images at once scrambled
+// thumbnails: many asset sends raced on one channel.) Heartbeat ping/pong are sent
+// outside this queue, so they still interleave between slices -- that is the point.
 const _sendChains = new WeakMap(); // conn -> Promise (tail of its serialized chain)
 function _enqueueSend(conn, task) {
   const prev = _sendChains.get(conn) || Promise.resolve();
   const next = prev.then(task).catch((e) => console.warn("[collab] queued send failed:", e));
   _sendChains.set(conn, next);
   return next;
+}
+
+function _concatParts(parts) {
+  if (parts.length === 1) return parts[0];
+  let total = 0;
+  for (const p of parts) total += p.byteLength;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(new Uint8Array(p), off);
+    off += p.byteLength;
+  }
+  return out.buffer;
+}
+
+// Send a header then the buffer as CHUNK_SIZE slices, draining between each. The drain
+// wait yields to the event loop so an incoming ping is answered -- its pong rides out
+// between slices -- and it bounds the bytes queued ahead of that pong. So a large
+// transfer no longer head-of-line-blocks the heartbeat and trips the host's drop timer.
+// The header carries the total byte length so the receiver knows when reassembly is
+// complete. Returns false if the connection died mid-send (the receiver re-requests on
+// its retry timer; no partial state is kept -- this is not resume).
+async function _sendChunked(conn, header, buffer) {
+  const view = ArrayBuffer.isView(buffer) ? buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) : buffer;
+  if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return false;
+  conn.send(JSON.stringify({ ...header, bytes: view.byteLength }));
+  for (let off = 0; off < view.byteLength; off += CHUNK_SIZE) {
+    if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return false;
+    conn.send(view.slice(off, Math.min(off + CHUNK_SIZE, view.byteLength)));
+  }
+  return true;
 }
 
 function _dataUrlToBuffer(dataUrl) {
@@ -822,13 +869,9 @@ async function sendSessionTo(conn, { replace = false } = {}) {
 function sendImageBinary(conn, packet) {
   if (!packet || !conn || !conn.open) return Promise.resolve(false);
   const { buffer, id, assetHash, name, w, h, polygons, simPos, simAngle } = packet;
-  // Queued for the same reason as sendAssetBinary (header+bytes must stay atomic).
-  return _enqueueSend(conn, async () => {
-    if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return;
-    conn.send(JSON.stringify({ type: "image-binary", id, assetHash, name, w, h, polygons, simPos, simAngle }));
-    await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
-    conn.send(buffer);
-  });
+  // Queued so header+slices stay atomic per connection (no cross-wiring); chunked so the
+  // heartbeat keeps flowing during the transfer.
+  return _enqueueSend(conn, () => _sendChunked(conn, { type: "image-binary", id, assetHash, name, w, h, polygons, simPos, simAngle }, buffer));
 }
 
 // Host relays a guest-originated image to the other guests (star topology), reusing
@@ -847,13 +890,9 @@ async function _forwardImageBinary(meta, buffer, excludePeerId) {
 
 function sendAssetBinary(conn, hash, buffer) {
   if (!conn || !conn.open || !buffer) return;
-  // Queued: serialize header+bytes per connection so concurrent serves can't interleave.
-  return _enqueueSend(conn, async () => {
-    if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return;
-    conn.send(JSON.stringify({ type: "asset-binary", hash }));
-    await new Promise((r) => setTimeout(r, 0)); // yield before the chunked binary
-    conn.send(buffer);
-  });
+  // Queued: serialize per connection so concurrent serves can't interleave; chunked so
+  // the heartbeat keeps flowing while the bytes go out.
+  return _enqueueSend(conn, () => _sendChunked(conn, { type: "asset-binary", hash }, buffer));
 }
 
 // Serve an asset to a requester if we hold it; otherwise the host relays the request
