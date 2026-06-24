@@ -172,6 +172,62 @@ test.describe('real collab (live broker)', () => {
     }
   });
 
+  // A big (multi-chunk) image must reassemble correctly through the resumable partial
+  // path -- the slices accumulate in the persistent _assetPartials buffer, then finalize.
+  test('a large multi-chunk image transfers with correct bytes', async ({ browser }) => {
+    const room = 'pw-' + Math.random().toString(36).slice(2, 9);
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    await routeVendor(ctxA);
+    await routeVendor(ctxB);
+    const a = await ctxA.newPage();
+    const b = await ctxB.newPage();
+    try {
+      await a.goto(PAGE);
+      await a.locator('#btn-collab').click();
+      await a.locator('#collab-room-inp').fill(room);
+      await a.locator('#btn-collab-join').click();
+      await expect(a.locator('#collab-status')).toHaveText(/Hosting/, { timeout: 25000 });
+      await b.goto(PAGE + '?room=' + room);
+      await expect(b.locator('#collab-status')).toHaveText(/Connected as guest/, { timeout: 25000 });
+
+      // Random-noise PNG (incompressible) -> ~200KB -> several 64KB chunks.
+      const dataUrl = await b.evaluate(() => {
+        const c = document.createElement('canvas');
+        c.width = 256; c.height = 256;
+        const x = c.getContext('2d')!;
+        const img = x.createImageData(256, 256);
+        for (let i = 0; i < img.data.length; i++) img.data[i] = i % 4 === 3 ? 255 : (Math.random() * 256) | 0;
+        x.putImageData(img, 0, 0);
+        return c.toDataURL('image/png');
+      });
+      const file = { name: 'big.png', mimeType: 'image/png', buffer: Buffer.from(dataUrl.split(',')[1], 'base64') };
+      expect(file.buffer.byteLength).toBeGreaterThan(64 * 1024); // multi-chunk
+
+      await b.locator('#cfg-images').setInputFiles([file]);
+      await expect(a.locator('#rank-list > li')).toHaveCount(1, { timeout: 30000 });
+      await expect(a.locator('#rank-list .im-rank-thumb-pending')).toHaveCount(0, { timeout: 30000 });
+
+      const ok = await a.evaluate(async () => {
+        const ah = (bytes: Uint8Array) => {
+          let h1 = 0x811c9dc5, h2 = 0x01000193;
+          for (let i = 0; i < bytes.length; i++) {
+            h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+            h2 = Math.imul(h2 ^ bytes[i], 0x85ebca6b) >>> 0;
+          }
+          return bytes.length.toString(16) + '-' + h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
+        };
+        const meta = (window as any).getSessionMeta();
+        const buf = await (window as any).getAssetBuffer(meta.images[0].assetHash);
+        return !!buf && ah(new Uint8Array(buf)) === meta.images[0].assetHash;
+      });
+      expect(ok).toBe(true); // reassembled bytes hash back to the declared content key
+    } finally {
+      await ctxA.close();
+      await ctxB.close();
+    }
+  });
+
   test('a room password gates guests', async ({ browser }) => {
     const room = 'pw-' + Math.random().toString(36).slice(2, 9);
     const ctxA = await browser.newContext();

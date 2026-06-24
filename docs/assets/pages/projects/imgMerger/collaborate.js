@@ -567,7 +567,7 @@ function handleMsg(msg, fromPeerId) {
       break;
 
     case "asset-request":
-      _serveAsset(msg.hash, fromPeerId);
+      _serveAsset(msg.hash, fromPeerId, msg.offset || 0);
       break;
 
     case "session-meta":
@@ -686,14 +686,26 @@ function setupConn(conn, isGuestSide) {
       const buf = ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
       _dbg("rx", "bin:" + (pendingImageMeta ? pendingImageMeta.kind : receiving ? "session" : "?"), buf.byteLength);
       if (pendingImageMeta !== null) {
-        // Collect slices until the header's declared byte count is reached (legacy
-        // single-shot headers omit `bytes` -> the first slice completes them).
-        pendingImageMeta.parts.push(buf);
-        pendingImageMeta.got += buf.byteLength;
-        if (pendingImageMeta.bytes != null && pendingImageMeta.got < pendingImageMeta.bytes) return;
+        if (pendingImageMeta.kind === "skip") {
+          // Dropping a misaligned / duplicate transfer's bytes until its declared end.
+          pendingImageMeta.remaining -= buf.byteLength;
+          if (pendingImageMeta.remaining <= 0) pendingImageMeta = null;
+          return;
+        }
+        // Asset slices accumulate in the persistent partial (`ref`); add/full use the
+        // per-connection meta itself. Legacy single-shot headers omit `bytes`.
+        const store = pendingImageMeta.ref || pendingImageMeta;
+        store.parts.push(buf);
+        store.got += buf.byteLength;
+        if (pendingImageMeta.bytes != null && store.got < pendingImageMeta.bytes) return;
         const meta = pendingImageMeta;
         pendingImageMeta = null;
-        finalizeBinary(meta);
+        if (meta.kind === "asset") {
+          _assetPartials.delete(meta.hash);
+          finalizeBinary({ kind: "asset", hash: meta.hash, parts: meta.ref.parts });
+        } else {
+          finalizeBinary(meta);
+        }
       } else if (receiving) {
         receiving.chunks.push(buf);
         const got = receiving.chunks.reduce((s, c) => s + c.byteLength, 0);
@@ -732,8 +744,26 @@ function setupConn(conn, isGuestSide) {
       pendingImageMeta = { kind: "add", parts: [], got: 0, bytes: msg.bytes, ...meta };
       window.dispatchEvent(new CustomEvent("collab:remote-image-skeleton", { detail: meta }));
     } else if (msg.type === "asset-binary") {
-      // Header for content-addressed asset bytes that follow (pull response).
-      pendingImageMeta = { kind: "asset", parts: [], got: 0, bytes: msg.bytes, hash: msg.hash };
+      // Header for content-addressed asset bytes that follow (pull response). Slices land
+      // in a persistent partial so a dropped transfer resumes from `got` on the re-request.
+      const off = msg.offset || 0;
+      let p = _assetPartials.get(msg.hash);
+      if (p && p.owner && p.owner !== conn) {
+        // Another connection is already filling this hash (relay duplicate) -> drop this one.
+        pendingImageMeta = { kind: "skip", remaining: msg.bytes - off };
+      } else if (p && off === p.got) {
+        p.owner = conn; // resume where we left off
+        p.bytes = msg.bytes;
+        pendingImageMeta = { kind: "asset", hash: msg.hash, ref: p, bytes: msg.bytes };
+      } else if (off === 0) {
+        p = { parts: [], got: 0, bytes: msg.bytes, owner: conn }; // fresh transfer
+        _assetPartials.set(msg.hash, p);
+        pendingImageMeta = { kind: "asset", hash: msg.hash, ref: p, bytes: msg.bytes };
+      } else {
+        // Offset we can't splice onto what we hold -> drop it and restart clean next pull.
+        if (p) { p.parts = []; p.got = 0; p.owner = null; }
+        pendingImageMeta = { kind: "skip", remaining: msg.bytes - off };
+      }
     } else if (msg.type === "session-start") {
       receiving = { chunks: [], totalBytes: msg.totalBytes };
       showGuestPrompt("Receiving session...");
@@ -750,6 +780,9 @@ function setupConn(conn, isGuestSide) {
   });
 
   conn.on("close", () => {
+    // Release any resumable transfers this connection owned so a re-pull (from any peer)
+    // can continue them; the received bytes so far are kept for the resume.
+    for (const p of _assetPartials.values()) if (p.owner === conn) p.owner = null;
     if (isGuestSide) {
       _dropGuest(conn.peer);
     } else {
@@ -856,6 +889,14 @@ async function _waitDrain(conn) {
 // thumbnails: many asset sends raced on one channel.) Heartbeat ping/pong are sent
 // outside this queue, so they still interleave between slices -- that is the point.
 const _sendChains = new WeakMap(); // conn -> Promise (tail of its serialized chain)
+
+// Resume support: received asset slices accumulate here keyed by content hash, persisting
+// across connection drops. A re-request carries the current `got` as its offset, so the
+// sender resumes from there instead of restarting at byte 0. `owner` is the connection
+// currently filling a partial, so a duplicate serve from another peer (relay) is dropped
+// rather than corrupting the buffer; it is cleared when that connection closes.
+const _assetPartials = new Map(); // hash -> { parts: [], got, bytes, owner }
+
 function _enqueueSend(conn, task) {
   const prev = _sendChains.get(conn) || Promise.resolve();
   const next = prev.then(task).catch((e) => console.warn("[collab] queued send failed:", e));
@@ -883,11 +924,13 @@ function _concatParts(parts) {
 // The header carries the total byte length so the receiver knows when reassembly is
 // complete. Returns false if the connection died mid-send (the receiver re-requests on
 // its retry timer; no partial state is kept -- this is not resume).
-async function _sendChunked(conn, header, buffer) {
+async function _sendChunked(conn, header, buffer, offset = 0) {
   const view = ArrayBuffer.isView(buffer) ? buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) : buffer;
   if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return false;
-  conn.send(JSON.stringify({ ...header, bytes: view.byteLength }));
-  for (let off = 0; off < view.byteLength; off += CHUNK_SIZE) {
+  // `bytes` is the total length (the receiver's completion target); slices start at
+  // `offset` so an interrupted transfer resumes instead of restarting.
+  conn.send(JSON.stringify({ ...header, bytes: view.byteLength, offset }));
+  for (let off = offset; off < view.byteLength; off += CHUNK_SIZE) {
     if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return false;
     const slice = view.slice(off, Math.min(off + CHUNK_SIZE, view.byteLength));
     conn.send(slice);
@@ -967,29 +1010,32 @@ async function _forwardImageBinary(meta, buffer, excludePeerId) {
 // self-heals: the requester re-asks until some peer serves it. Metadata (which carries
 // the assetHash) syncs reliably on its own; the large bytes ride this pull path.
 
-function sendAssetBinary(conn, hash, buffer) {
+function sendAssetBinary(conn, hash, buffer, offset = 0) {
   if (!conn || !conn.open || !buffer) return;
   // Queued: serialize per connection so concurrent serves can't interleave; chunked so
-  // the heartbeat keeps flowing while the bytes go out.
-  return _enqueueSend(conn, () => _sendChunked(conn, { type: "asset-binary", hash }, buffer));
+  // the heartbeat keeps flowing while the bytes go out; from `offset` to resume.
+  return _enqueueSend(conn, () => _sendChunked(conn, { type: "asset-binary", hash }, buffer, offset));
 }
 
 // Serve an asset to a requester if we hold it; otherwise the host relays the request
 // onward (and will cache the response), and the requester re-asks on its retry timer.
-async function _serveAsset(hash, fromPeerId) {
+// `offset` is how many bytes the requester already has (resume from there).
+async function _serveAsset(hash, fromPeerId, offset = 0) {
   if (window.hasAsset?.(hash)) {
     const buf = await window.getAssetBuffer?.(hash);
     const conn = isHost ? guestConns.get(fromPeerId) : hostConn;
-    if (buf && conn) sendAssetBinary(conn, hash, buf);
+    if (buf && conn && offset <= buf.byteLength) sendAssetBinary(conn, hash, buf, offset);
   } else if (isHost) {
-    broadcast({ type: "asset-request", hash }, fromPeerId);
+    broadcast({ type: "asset-request", hash, offset }, fromPeerId);
   }
 }
 
-// App asks for bytes it's missing -> request them from peers (host serves or relays).
+// App asks for bytes it's missing -> request them from peers (host serves or relays),
+// carrying how much we already have so the serve resumes rather than restarts.
 window.addEventListener("collab:asset-needed", ({ detail: { hash } }) => {
   if (!localPeerId) return;
-  broadcast({ type: "asset-request", hash });
+  const p = _assetPartials.get(hash);
+  broadcast({ type: "asset-request", hash, offset: p ? p.got : 0 });
 });
 
 // ── Join as host ──────────────────────────────────────────────────────────────
