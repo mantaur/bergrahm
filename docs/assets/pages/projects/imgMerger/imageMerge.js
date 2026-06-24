@@ -1174,7 +1174,6 @@ function onEncoded(wIdx, { imgIdx, segments, origW, origH }) {
   }
 
   yoloPool.embeddingCache.set(imgIdx, { segments, origW, origH });
-  window.dispatchEvent(new CustomEvent("collab:encoding-ready", { detail: { imgIdx } }));
 
   markDotEncoded(imgIdx);
 
@@ -4584,14 +4583,6 @@ function _restoreEncodings(encodings, ids) {
     });
   });
 }
-
-window.addEventListener("collab:remote-encoding", (e) => {
-  const { imgName, encoding } = e.detail;
-  const entry = state.images.find((im) => im.name === imgName);
-  if (!entry || yoloPool.embeddingCache.has(entry.id)) return;
-  _restoreEncodings([encoding], [entry.id]);
-  markDotEncoded(entry.id);
-});
 
 // ── Streaming collab join handlers ────────────────────────────────────────────
 

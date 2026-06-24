@@ -73,9 +73,9 @@ test.describe('Session import', () => {
     expect(await imageCount(page)).toBe(1);
   });
 
-  // The host streams imported images to a collab guest via these window getters.
-  // They must yield portable data -- raw bytes + data: URLs (never entry.img, which
-  // no longer exists, nor blob: URLs which are only valid in the host's document).
+  // The host streams imported images to a collab guest via these window getters:
+  // raw bytes by content hash (getImageBuffer) + a portable data-URL thumbnail
+  // (getImageThumb, never a blob: URL, which is only valid in the host's document).
   test('imported images expose portable bytes + data-URL thumb for collab streaming', async ({ page }) => {
     await page.locator('#inp-import-session').setInputFiles(SESSION_ZIP);
     await expect.poll(() => imageCount(page)).toBe(2);
@@ -85,17 +85,16 @@ test.describe('Session import', () => {
       const id   = meta.images[0].id;
       const buf  = await (window as any).getImageBuffer(id);
       if (!buf) return null; // pixels still streaming in
-      const pkt = await (window as any).getImagePacket(id);
       return {
         bufLen: buf.buffer.byteLength,
-        jpegPrefix: pkt ? pkt.jpegBase64.slice(0, 11) : '',
+        assetHash: buf.assetHash || '',
         thumb: (window as any).getImageThumb(id) || '',
       };
     });
 
     await expect.poll(async () => (await read())?.bufLen ?? 0).toBeGreaterThan(0);
     const r = await read();
-    expect(r!.jpegPrefix).toBe('data:image/');           // portable data URL, not blob:
-    expect(r!.thumb.startsWith('data:')).toBe(true);     // portable thumbnail
+    expect(r!.assetHash).toBeTruthy();                   // content key travels with the bytes
+    expect(r!.thumb.startsWith('data:')).toBe(true);     // portable thumbnail, not blob:
   });
 });

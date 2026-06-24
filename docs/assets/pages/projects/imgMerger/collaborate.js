@@ -484,11 +484,6 @@ function handleMsg(msg, fromPeerId) {
       if (isHost) broadcast(msg, fromPeerId);
       break;
 
-    case "encoding":
-      window.dispatchEvent(new CustomEvent("collab:remote-encoding", { detail: msg }));
-      if (isHost) broadcast(msg, fromPeerId);
-      break;
-
     case "polygon":
       window.dispatchEvent(
         new CustomEvent("collab:remote-polygon", {
@@ -1198,13 +1193,6 @@ window.addEventListener("collab:scales-changed", ({ detail: { scales } }) => {
   ydoc.transact(() => {
     for (const id in scales) yScales.set(id, scales[id]);
   }, "local");
-});
-
-window.addEventListener("collab:encoding-ready", ({ detail: { imgIdx } }) => {
-  if (!localPeerId) return;
-  const packet = window.getEncodingPacket ? window.getEncodingPacket(imgIdx) : null;
-  if (!packet) return;
-  broadcast({ type: "encoding", ...packet });
 });
 
 window.addEventListener("collab:body-dragging", ({ detail }) => {

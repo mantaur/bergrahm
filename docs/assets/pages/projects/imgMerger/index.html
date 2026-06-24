@@ -357,29 +357,9 @@
     <script src="gpuCheck.js?v=1"></script>
     <script src="sessionIO.js?v=9"></script>
     <script src="viewport.js?v=6"></script>
-    <script src="imageMerge.js?v=75"></script>
+    <script src="imageMerge.js?v=76"></script>
     <script>
       // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
-
-      function _maskToBase64(mask) {
-        var str = "";
-        for (var i = 0; i < mask.length; i += 8192) str += String.fromCharCode.apply(null, mask.subarray(i, i + 8192));
-        return btoa(str);
-      }
-
-      function _encodeSegments(segments) {
-        return segments.map(function (s) {
-          return {
-            classId: s.classId,
-            className: s.className,
-            score: s.score,
-            bbox: s.bbox,
-            maskW: s.maskW,
-            maskH: s.maskH,
-            mask: _maskToBase64(s.mask),
-          };
-        });
-      }
 
       window.getSimState = function () {
         return {
@@ -428,32 +408,6 @@
         });
       }
 
-      window.getImagePacket = async function (imgIdx) {
-        var entry = imgById(imgIdx);
-        if (!entry || !entry.blob) return null;
-        var jpegBase64 = await _blobToDataURL(entry.blob); // portable; decoded on demand elsewhere
-        var enc = yoloPool.embeddingCache.get(imgIdx);
-        var encoding = enc
-          ? {
-              origW: enc.origW,
-              origH: enc.origH,
-              segments: _encodeSegments(enc.segments),
-            }
-          : null;
-        var g = simGroups.get(imgIdx);
-        return {
-          id: entry.id,
-          name: entry.name,
-          w: entry.w,
-          h: entry.h,
-          jpegBase64: jpegBase64,
-          encoding: encoding,
-          polygons: entry.polygons,
-          simPos: g ? { x: g.x, y: g.y } : null,
-          simAngle: g ? g.angle : 0,
-        };
-      };
-
       // Stream the stored compressed bytes straight to the guest -- no decode or
       // re-encode (the bytes are already an encoded image; decode happens on demand).
       window.getImageBuffer = async function (imgIdx) {
@@ -497,20 +451,6 @@
           currentPoly: entry.currentPoly || [],
           simPos: g ? { x: g.x, y: g.y } : null,
           simAngle: g ? g.angle : 0,
-        };
-      };
-
-      window.getEncodingPacket = function (imgIdx) {
-        var entry = imgById(imgIdx);
-        var enc = yoloPool.embeddingCache.get(imgIdx);
-        if (!entry || !enc) return null;
-        return {
-          imgName: entry.name,
-          encoding: {
-            origW: enc.origW,
-            origH: enc.origH,
-            segments: _encodeSegments(enc.segments),
-          },
         };
       };
 
@@ -649,6 +589,6 @@
         buildRankList();
       };
     </script>
-    <script type="module" src="collaborate.js?v=32"></script>
+    <script type="module" src="collaborate.js?v=33"></script>
   </body>
 </html>

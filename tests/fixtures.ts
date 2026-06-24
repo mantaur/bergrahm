@@ -26,7 +26,7 @@ const COLLAB_OUT_TYPES = [
   'collab:settings-changed', 'collab:rank-order-changed', 'collab:body-grabbing',
   'collab:body-moved', 'collab:body-releasing', 'collab:body-lift',
   'collab:body-dragging',
-  'collab:scales-changed', 'collab:canvas-resized', 'collab:encoding-ready',
+  'collab:scales-changed', 'collab:canvas-resized',
   'collab:viewport-changed', 'collab:session-loaded', 'collab:asset-needed',
 ];
 
