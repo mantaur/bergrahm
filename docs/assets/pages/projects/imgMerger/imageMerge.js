@@ -714,6 +714,16 @@ function onDragEnd(e) {
 const MAX_UNDO = 30;
 const DISPLAY_MAX_W = 860; // max display width for painter canvas
 
+// The painter canvases are display-only; polygon coordinates live in image-pixel
+// space (entry.w x entry.h). The backing store is capped to the on-screen size so a
+// multi-megapixel phone photo doesn't allocate a ~50MB canvas that the mobile browser
+// then evicts (iOS blanks oversized backing stores). A context transform maps
+// image-pixel drawing onto the smaller store, so coordinates, sync and merge are
+// unchanged -- only the resolution of the pixels we keep around shrinks.
+let _paintImgW = 0,
+  _paintImgH = 0,
+  _paintBScale = 1;
+
 function loadPainterImage(rankIdx) {
   state.paintIdx = rankIdx;
   const imgIdx = state.rankOrder[rankIdx];
@@ -730,17 +740,27 @@ function loadPainterImage(rankIdx) {
   const dispW = Math.round(entry.w * scale);
   const dispH = Math.round(entry.h * scale);
 
-  paintCanvas.width = entry.w;
-  paintCanvas.height = entry.h;
-  maskCanvas.width = entry.w;
-  maskCanvas.height = entry.h;
+  // Cap the backing store to the on-screen size (x capped DPR) so a 12MP phone photo
+  // doesn't allocate a canvas the browser blanks under memory pressure.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const bScale = Math.min(1, Math.max(1, Math.round(dispW * dpr)) / entry.w);
+  const bw = Math.max(1, Math.round(entry.w * bScale));
+  const bh = Math.max(1, Math.round(entry.h * bScale));
+  _paintImgW = entry.w;
+  _paintImgH = entry.h;
+  _paintBScale = bScale;
+
+  paintCanvas.width = bw;
+  paintCanvas.height = bh;
+  maskCanvas.width = bw;
+  maskCanvas.height = bh;
 
   paintCanvas.style.width = dispW + "px";
   paintCanvas.style.height = dispH + "px";
   maskCanvas.style.width = dispW + "px";
   maskCanvas.style.height = dispH + "px";
 
-  // Decode on demand and draw; release immediately (the canvas keeps the pixels).
+  // Decode on demand and draw scaled into the capped store; release immediately.
   decodeEntry(entry)
     .then((bm) => {
       if (!bm) return;
@@ -748,7 +768,7 @@ function loadPainterImage(rankIdx) {
         bm.close();
         return;
       } // navigated away
-      paintCtx.drawImage(bm, 0, 0);
+      paintCtx.drawImage(bm, 0, 0, bw, bh);
       bm.close();
     })
     .catch(() => {});
@@ -792,8 +812,8 @@ let rubberBandPt = null;
 
 function getCanvasPos(e) {
   const rect = paintCanvas.getBoundingClientRect();
-  const scaleX = paintCanvas.width / rect.width;
-  const scaleY = paintCanvas.height / rect.height;
+  const scaleX = _paintImgW / rect.width;
+  const scaleY = _paintImgH / rect.height;
   const clientX = e.touches ? e.touches[0].clientX : e.clientX;
   const clientY = e.touches ? e.touches[0].clientY : e.clientY;
   return {
@@ -804,7 +824,7 @@ function getCanvasPos(e) {
 
 /** Snap radius in canvas-native pixels (accounts for display scaling). */
 function snapRadius() {
-  return SNAP_RADIUS_PX * (paintCanvas.width / paintCanvas.getBoundingClientRect().width);
+  return SNAP_RADIUS_PX * (_paintImgW / paintCanvas.getBoundingClientRect().width);
 }
 
 // Scale a desired CSS-pixel size into native canvas pixels so lines/dots are
@@ -812,12 +832,14 @@ function snapRadius() {
 function canvasPx(cssPx) {
   const cssW = paintCanvas.getBoundingClientRect().width;
   if (!cssW) return cssPx;
-  return Math.max(cssPx, (cssPx * paintCanvas.width) / cssW);
+  return Math.max(cssPx, (cssPx * _paintImgW) / cssW);
 }
 
 function redrawPolyOverlay(imgIdx) {
   const entry = imgById(imgIdx);
-  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  // Draw in image-pixel space; the transform maps it onto the capped backing store.
+  maskCtx.setTransform(_paintBScale, 0, 0, _paintBScale, 0, 0);
+  maskCtx.clearRect(0, 0, _paintImgW, _paintImgH);
 
   // Completed polygons
   for (const poly of entry.polygons) {

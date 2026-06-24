@@ -64,6 +64,49 @@ test.describe('Polygon mask', () => {
     const events = await collabOut(page, 'collab:polygon-changed');
     expect(events.at(-1).detail.polygons).toHaveLength(0);
   });
+
+  // On a multi-megapixel image the painter caps the canvas backing store (so mobile
+  // browsers don't blank a ~50MB canvas), but polygon coordinates MUST stay in
+  // image-pixel space -- that's what merge, cross-peer sync and saved sessions use.
+  // A regression of that decoupling would clamp coords to the small backing store.
+  test('polygon coordinates stay in image-pixel space on a large (capped) canvas', async ({ page }) => {
+    const W = 2400, H = 1600;
+    const dataUrl = await page.evaluate(({ w, h }) => {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const x = c.getContext('2d')!;
+      x.fillStyle = '#3a6';
+      x.fillRect(0, 0, w, h);
+      return c.toDataURL('image/png');
+    }, { w: W, h: H });
+    await page.locator('#cfg-images').setInputFiles({
+      name: 'big.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from(dataUrl.split(',')[1], 'base64'),
+    });
+    await expect(page.locator('#paint-area')).not.toHaveClass(/im-hidden/);
+    await openPaintStep(page);
+
+    const wrap = page.locator('#canvas-wrap');
+    const box = (await wrap.boundingBox())!;
+    const f = (fx: number, fy: number) => ({ x: box.width * fx, y: box.height * fy });
+    const verts = [f(0.25, 0.25), f(0.75, 0.25), f(0.5, 0.75)];
+    for (const v of verts) await wrap.click({ position: v });
+    await wrap.click({ position: verts[0] }); // close
+
+    expect(await polyCount(page, 0)).toBe(1);
+    const poly = await page.evaluate(() => (window as any).getSessionMeta().images[0].polygons[0]);
+    const xs = poly.map((p: any) => p.x);
+    const ys = poly.map((p: any) => p.y);
+    // Right vertex sits near 0.75*W in IMAGE pixels (not clamped to the ~860px store),
+    // and nothing escapes the image bounds.
+    expect(Math.max(...xs)).toBeGreaterThan(W * 0.5);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(W + 1);
+    expect(Math.max(...ys)).toBeLessThanOrEqual(H + 1);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(-1);
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(-1);
+  });
 });
 
 test.describe('Advanced settings', () => {
