@@ -2,8 +2,8 @@
 // channels should be quiet (only heartbeat pings, which are sent outside broadcast()).
 // Uses the live broker, so it is gated behind REAL_COLLAB.
 //   REAL_COLLAB=1 bunx playwright test tests/collab-loop-diag.spec.ts --project=chromium
-// Relies on collaborate.js's opt-in tx counters: set window._txStats={} / _txBytes=0 to
-// begin tallying broadcast + chunked-binary sends by message type.
+// Relies on collaborate.js's opt-in sync counters (window._sync): set _sync.on=true and
+// zero _sync.tx/_sync.rx to begin tallying send + recv by message type.
 import { test, expect } from '@playwright/test';
 import { routeVendor, PAGE } from './fixtures';
 
@@ -55,21 +55,21 @@ test.describe('loop diag', () => {
 
       // Let it settle, then reset counters on both sides.
       await a.waitForTimeout(3000);
-      const reset = () => { (window as any)._txStats = {}; (window as any)._txBytes = 0; };
+      const reset = () => { const s = (window as any)._sync; s.on = true; s.tx = { bytes: 0, msgs: {} }; s.rx = { bytes: 0, msgs: {} }; };
       await a.evaluate(reset);
       await b.evaluate(reset);
 
       // Idle window.
       await a.waitForTimeout(6000);
 
-      const read = () => ({ stats: (window as any)._txStats, bytes: (window as any)._txBytes || 0 });
+      const read = () => { const s = (window as any)._sync; return { tx: s.tx.msgs, rx: s.rx.msgs, bytes: s.tx.bytes + s.rx.bytes }; };
       const sa = await a.evaluate(read);
       const sb = await b.evaluate(read);
-      console.log('HOST(A) idle 6s tx:', JSON.stringify(sa));
-      console.log('GUEST(B) idle 6s tx:', JSON.stringify(sb));
+      console.log('HOST(A) idle 6s:', JSON.stringify(sa));
+      console.log('GUEST(B) idle 6s:', JSON.stringify(sb));
 
-      // After settle, idle traffic should be tiny (heartbeat pings are sent outside
-      // broadcast()). A loop shows up as a large byte count or a repeated message type.
+      // After settle, idle traffic should be tiny -- only heartbeat ping/pong. A loop
+      // shows up as a large byte count or a repeated bulk message type.
       expect(sa.bytes, 'host bytes/6s').toBeLessThan(50 * 1024);
       expect(sb.bytes, 'guest bytes/6s').toBeLessThan(50 * 1024);
     } finally {

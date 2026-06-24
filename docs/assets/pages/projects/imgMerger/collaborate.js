@@ -77,7 +77,11 @@ ydoc.on("update", (update, origin) => {
 
 // Send our whole doc state to a connection (join / reconnect convergence).
 function _sendDocState(conn) {
-  if (conn && conn.open) conn.send(JSON.stringify({ type: "ydoc-update", update: _encU(Y.encodeStateAsUpdate(ydoc)) }));
+  if (conn && conn.open) {
+    const str = JSON.stringify({ type: "ydoc-update", update: _encU(Y.encodeStateAsUpdate(ydoc)) });
+    _dbg("tx", "ydoc-state", str.length);
+    conn.send(str);
+  }
 }
 
 // Remote settings changes -> apply to local UI. Local writes (origin "local") are
@@ -129,6 +133,61 @@ const STORAGE_NAME_KEY = "collab-name";
 const CHUNK_SIZE = 64 * 1024;
 const SIM_UNDO_MAX = 50;
 const HOST_PREFIX = "im-mrg-"; // prefix for deterministic host peer IDs
+
+// ── Sync debug ────────────────────────────────────────────────────────────────
+// Opt-in (?syncdbg=1 or localStorage syncdbg=1) on-screen tally of what crosses the
+// data channels, by message type and direction, so live traffic can be diagnosed by
+// just using the app. Off by default and zero-cost (the counters short-circuit).
+const _sync = { on: false, tx: { bytes: 0, msgs: {} }, rx: { bytes: 0, msgs: {} } };
+window._sync = _sync;
+function _dbg(dir, type, bytes) {
+  if (!_sync.on) return;
+  const side = _sync[dir];
+  side.bytes += bytes;
+  const m = side.msgs[type] || (side.msgs[type] = { count: 0, bytes: 0 });
+  m.count++;
+  m.bytes += bytes;
+}
+
+function _fmtBytes(b) {
+  if (b >= 1048576) return (b / 1048576).toFixed(2) + "MB";
+  if (b >= 1024) return (b / 1024).toFixed(1) + "KB";
+  return Math.round(b) + "B";
+}
+
+// Fixed overlay listing live per-type send/recv rates so the user can see exactly what
+// crosses the wire while using the app. Enable with ?syncdbg=1 or localStorage syncdbg=1.
+function _initSyncDebug() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("syncdbg") && localStorage.getItem("syncdbg") !== "1") return;
+  _sync.on = true;
+  const el = document.createElement("div");
+  el.id = "sync-dbg";
+  el.style.cssText =
+    "position:fixed;left:6px;bottom:6px;z-index:99999;max-width:64vw;font:11px/1.3 monospace;" +
+    "background:rgba(0,0,0,.82);color:#3f8;padding:6px 8px;border-radius:6px;white-space:pre;" +
+    "pointer-events:none;max-height:62vh;overflow:hidden";
+  document.body.appendChild(el);
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const deltas = (cur, old) =>
+    Object.keys(cur)
+      .map((t) => ({ t, dc: cur[t].count - (old[t] ? old[t].count : 0), db: cur[t].bytes - (old[t] ? old[t].bytes : 0) }))
+      .filter((x) => x.dc > 0)
+      .sort((a, b) => b.db - a.db);
+  let prev = { t: performance.now(), tx: 0, rx: 0, txM: {}, rxM: {} };
+  setInterval(() => {
+    const now = performance.now();
+    const dt = (now - prev.t) / 1000 || 1;
+    const rate = (b) => _fmtBytes(b / dt) + "/s";
+    const lines = ["SYNC " + (isHost ? "host" : localPeerId ? "guest" : "off") + "  up " + rate(_sync.tx.bytes - prev.tx) + "  dn " + rate(_sync.rx.bytes - prev.rx)];
+    for (const d of deltas(_sync.tx.msgs, prev.txM).slice(0, 6)) lines.push(" ^ " + d.t + "  x" + d.dc + "  " + _fmtBytes(d.db));
+    for (const d of deltas(_sync.rx.msgs, prev.rxM).slice(0, 6)) lines.push(" v " + d.t + "  x" + d.dc + "  " + _fmtBytes(d.db));
+    lines.push("tot up " + _fmtBytes(_sync.tx.bytes) + "  dn " + _fmtBytes(_sync.rx.bytes));
+    el.textContent = lines.join("\n");
+    prev = { t: now, tx: _sync.tx.bytes, rx: _sync.rx.bytes, txM: clone(_sync.tx.msgs), rxM: clone(_sync.rx.msgs) };
+  }, 800);
+}
+_initSyncDebug();
 
 // ── DOM ───────────────────────────────────────────────────────────────────────
 
@@ -399,8 +458,8 @@ function onMouseMove(e) {
 // On host: send to all guests.
 // On guest: send to host (who will rebroadcast).
 function broadcast(msg, excludePeerId) {
-  if (window._txStats) window._txStats[msg.type] = (window._txStats[msg.type] || 0) + 1;
   const str = JSON.stringify(msg);
+  _dbg("tx", msg.type, str.length);
   if (isHost) {
     for (const [pid, conn] of guestConns) {
       if (pid !== excludePeerId && conn.open) conn.send(str);
@@ -554,7 +613,11 @@ function handleMsg(msg, fromPeerId) {
       break;
 
     case "ping":
-      if (!isHost && hostConn && hostConn.open) hostConn.send(JSON.stringify({ type: "pong" }));
+      if (!isHost && hostConn && hostConn.open) {
+        const pong = JSON.stringify({ type: "pong" });
+        _dbg("tx", "pong", pong.length);
+        hostConn.send(pong);
+      }
       break;
 
     case "pong":
@@ -621,6 +684,7 @@ function setupConn(conn, isGuestSide) {
   conn.on("data", (data) => {
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
       const buf = ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
+      _dbg("rx", "bin:" + (pendingImageMeta ? pendingImageMeta.kind : receiving ? "session" : "?"), buf.byteLength);
       if (pendingImageMeta !== null) {
         // Collect slices until the header's declared byte count is reached (legacy
         // single-shot headers omit `bytes` -> the first slice completes them).
@@ -639,6 +703,7 @@ function setupConn(conn, isGuestSide) {
     }
     if (typeof data !== "string") return;
     const msg = JSON.parse(data);
+    _dbg("rx", msg.type, data.length);
 
     if (msg.type === "image-full-binary") {
       // Header for the join re-stream binary that follows (populates a skeleton)
@@ -733,7 +798,10 @@ function _startHostPing() {
         toDrop.push(peerId);
         continue;
       }
-      if (conn.open) conn.send(ping);
+      if (conn.open) {
+        conn.send(ping);
+        _dbg("tx", "ping", ping.length);
+      }
     }
     for (const peerId of toDrop) _dropGuest(peerId);
   }, PING_INTERVAL);
@@ -817,15 +885,13 @@ function _concatParts(parts) {
 // its retry timer; no partial state is kept -- this is not resume).
 async function _sendChunked(conn, header, buffer) {
   const view = ArrayBuffer.isView(buffer) ? buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) : buffer;
-  if (window._txStats) {
-    window._txStats["bin:" + header.type] = (window._txStats["bin:" + header.type] || 0) + 1;
-    window._txBytes = (window._txBytes || 0) + view.byteLength;
-  }
   if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return false;
   conn.send(JSON.stringify({ ...header, bytes: view.byteLength }));
   for (let off = 0; off < view.byteLength; off += CHUNK_SIZE) {
     if (!conn.open || !(await _waitDrain(conn)) || !conn.open) return false;
-    conn.send(view.slice(off, Math.min(off + CHUNK_SIZE, view.byteLength)));
+    const slice = view.slice(off, Math.min(off + CHUNK_SIZE, view.byteLength));
+    conn.send(slice);
+    _dbg("tx", "bin:" + header.type, slice.byteLength);
   }
   return true;
 }
@@ -848,14 +914,20 @@ async function sendSessionTo(conn, { replace = false } = {}) {
     if (!meta || meta.imageCount === 0) return;
 
     // Phase 1: instant skeleton — synchronous, no pixel reads
-    conn.send(JSON.stringify({ type: "session-meta", replace, ...meta }));
+    const metaStr = JSON.stringify({ type: "session-meta", replace, ...meta });
+    _dbg("tx", "session-meta", metaStr.length);
+    conn.send(metaStr);
 
     // Phase 2: thumbnails — precomputed small JPEGs, sent synchronously (keyed by id)
     // for an instant preview while the full bytes pull in.
     for (let i = 0; i < meta.imageCount; i++) {
       const id = meta.images[i].id;
       const thumb = window.getImageThumb?.(id);
-      if (thumb) conn.send(JSON.stringify({ type: "image-thumb", imgIdx: id, thumb }));
+      if (thumb) {
+        const ts = JSON.stringify({ type: "image-thumb", imgIdx: id, thumb });
+        _dbg("tx", "image-thumb", ts.length);
+        conn.send(ts);
+      }
     }
     conn.send(JSON.stringify({ type: "session-thumbs-done", total: meta.imageCount }));
 
