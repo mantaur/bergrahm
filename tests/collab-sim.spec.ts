@@ -353,6 +353,22 @@ test('guest: reconcile requests a missing asset by hash', async ({ page }) => {
   await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e) => e.detail.hash === 'cafe1234')).toBe(true);
 });
 
+// The tiny thumbnail is content-addressed and pulled first, so a preview appears before
+// the heavy full image bytes land.
+test('guest: a thumbnail fills the preview before the full image bytes', async ({ page }) => {
+  await page.evaluate(() => {
+    (window as any).applyRemoteMembership({
+      images: { th1: { id: 'th1', name: 't.png', w: 400, h: 400, assetHash: 'fullh', thumbHash: 'thumbh', simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 } },
+      order: ['th1'], polygons: {}, scales: {},
+    });
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  await expect(page.locator('#rank-list .im-rank-thumb')).toHaveClass(/im-rank-thumb-pending/);
+  // Only the thumbnail arrives -> the preview resolves even though full bytes are missing.
+  await emitRemote(page, 'collab:remote-asset', { hash: 'thumbh', jpegBase64: TINY_IMG_DATAURL });
+  await expect(page.locator('#rank-list .im-rank-thumb')).not.toHaveClass(/im-rank-thumb-pending/);
+});
+
 // De-dup: repeated reconciles within the backoff window don't re-ask for the same hash,
 // so a transfer in flight isn't drowned in duplicate re-serves.
 test('guest: a missing asset is not re-requested within the backoff window', async ({ page }) => {

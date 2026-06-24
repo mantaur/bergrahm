@@ -484,6 +484,7 @@ cfgImages.addEventListener("change", () => {
         file,
         blob: file,
         assetHash: null,
+        thumbHash: null,
         name: file.name,
         thumbUrl,
         w,
@@ -494,6 +495,7 @@ cfgImages.addEventListener("change", () => {
         simHidden: false,
       };
       ensureAssetHash(state.images[idx]); // content-address the bytes for on-demand serving
+      ensureThumbHash(state.images[idx]); // content-address the tiny preview too
       loaded++;
       if (loaded === files.length) {
         // Append the new images' ids to rankOrder and seed their undo stacks.
@@ -545,12 +547,14 @@ function removeImage(imgIdx, opts = {}) {
 
   // Stable ids: a removal is a plain delete -- nothing else needs remapping.
   const goneHash = state.images[idx].assetHash;
+  const goneThumb = state.images[idx].thumbHash;
   state.images.splice(idx, 1);
   state.undoStack.delete(imgIdx);
   state.rankOrder = state.rankOrder.filter((id) => id !== imgIdx);
   // Evict the bytes if no remaining image references them (bounds memory; also avoids a
   // stale store entry suppressing a later pull of the same content).
   if (goneHash && !state.images.some((e) => e.assetHash === goneHash)) assetStore.delete(goneHash);
+  if (goneThumb && !state.images.some((e) => e.thumbHash === goneThumb)) assetStore.delete(goneThumb);
 
   // SAM: drop cache/queue entries for this id. If a worker is mid-encode for it,
   // mark the id stale so onEncoded discards the incoming result.
@@ -4129,6 +4133,7 @@ function _sessionEntry(si, id) {
     file: null,
     blob: null,
     assetHash: si.assetHash || null, // content key; bytes pulled on demand
+    thumbHash: si.thumbHash || null, // tiny preview, pulled first
     name: si.name,
     thumbUrl: null,
     w: si.w,
@@ -4334,6 +4339,27 @@ async function _fillEntryFromStore(entry) {
   return true;
 }
 
+// Content-address the thumbnail too, so peers can pull the tiny preview by hash before
+// the heavy full image arrives. The thumb blob lives in the same assetStore, keyed by
+// thumbHash. Only the producer of a thumbnail computes its hash (a re-encode elsewhere
+// would differ); other peers carry thumbHash from the doc and pull the bytes.
+async function ensureThumbHash(entry) {
+  if (!entry.thumbUrl) return entry.thumbHash || null;
+  const blob = await (await fetch(entry.thumbUrl)).blob();
+  if (!entry.thumbHash) entry.thumbHash = await _assetHash(blob);
+  assetStore.set(entry.thumbHash, blob);
+  return entry.thumbHash;
+}
+
+// Show the pulled thumbnail preview -- does not need the full image bytes.
+async function _fillThumbFromStore(entry) {
+  const blob = assetStore.get(entry.thumbHash);
+  if (!blob || entry.thumbUrl) return false;
+  entry.thumbUrl = _bufToDataUrl(await blob.arrayBuffer(), "image/jpeg");
+  _updateFilmstripThumb(entry.id);
+  return true;
+}
+
 // For each image lacking bytes: if we already hold them by hash (a shared/re-added
 // content, or a pull that landed), fill from the store; otherwise request them. The 4s
 // timer re-requests until satisfied (idempotent; host serves or relays). Filling from
@@ -4357,14 +4383,22 @@ async function reconcileAssets() {
   };
   const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
   const now = Date.now();
+  const want = (hash) => {
+    if (now - (_assetReqAt.get(hash) || 0) < ASSET_REQ_BACKOFF) return;
+    _assetReqAt.set(hash, now);
+    window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash } }));
+  };
+  // Pass 1: tiny thumbnails first, so a preview shows fast before the heavy bytes.
+  for (const e of ordered) {
+    if (!e.thumbHash || e.thumbUrl) continue;
+    if (assetStore.has(e.thumbHash)) filled = (await _fillThumbFromStore(e)) || filled;
+    else want(e.thumbHash);
+  }
+  // Pass 2: full image bytes.
   for (const e of ordered) {
     if (!e.assetHash || e.blob) continue;
-    if (assetStore.has(e.assetHash)) {
-      filled = (await _fillEntryFromStore(e)) || filled;
-    } else if (now - (_assetReqAt.get(e.assetHash) || 0) >= ASSET_REQ_BACKOFF) {
-      _assetReqAt.set(e.assetHash, now);
-      window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash: e.assetHash } }));
-    }
+    if (assetStore.has(e.assetHash)) filled = (await _fillEntryFromStore(e)) || filled;
+    else want(e.assetHash);
   }
   if (filled) _updateLoadingStatus();
 }
@@ -4378,6 +4412,7 @@ window.addEventListener("collab:remote-asset", async ({ detail: { hash, jpegBase
   _assetReqAt.delete(hash); // satisfied -- allow an immediate re-request if it ever recurs
   let filled = false;
   for (const e of state.images) {
+    if (e.thumbHash === hash && !e.thumbUrl) filled = (await _fillThumbFromStore(e)) || filled;
     if (e.assetHash === hash && !e.blob) filled = (await _fillEntryFromStore(e)) || filled;
   }
   if (filled) _updateLoadingStatus();
