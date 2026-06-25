@@ -228,6 +228,65 @@ test.describe('real collab (live broker)', () => {
     }
   });
 
+  // Repro: a guest refresh makes it re-pull every image from the host. The host must
+  // stop serving once the guest has them again -- not keep pushing in a loop.
+  test('a guest refresh does not leave the host serving in a loop', async ({ browser }) => {
+    const N = 4;
+    const room = 'pw-' + Math.random().toString(36).slice(2, 9);
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    await routeVendor(ctxA);
+    await routeVendor(ctxB);
+    const a = await ctxA.newPage();
+    const b = await ctxB.newPage();
+    try {
+      await a.goto(PAGE);
+      await a.locator('#btn-collab').click();
+      await a.locator('#collab-room-inp').fill(room);
+      await a.locator('#btn-collab-join').click();
+      await expect(a.locator('#collab-status')).toHaveText(/Hosting/, { timeout: 25000 });
+      await b.goto(PAGE + '?room=' + room);
+      await expect(b.locator('#collab-status')).toHaveText(/Connected as guest/, { timeout: 25000 });
+
+      const dataUrls: string[] = await b.evaluate((n) => {
+        const urls: string[] = [];
+        for (let i = 0; i < n; i++) {
+          const c = document.createElement('canvas');
+          c.width = 240; c.height = 240;
+          const x = c.getContext('2d')!;
+          const img = x.createImageData(240, 240);
+          for (let j = 0; j < img.data.length; j++) img.data[j] = j % 4 === 3 ? 255 : ((j * (i + 7)) % 256);
+          x.putImageData(img, 0, 0);
+          x.fillStyle = '#fff'; x.font = '48px sans-serif'; x.fillText('R' + i, 8, 60);
+          urls.push(c.toDataURL('image/png'));
+        }
+        return urls;
+      }, N);
+      const files = dataUrls.map((u, i) => ({ name: `r${i}.png`, mimeType: 'image/png', buffer: Buffer.from(u.split(',')[1], 'base64') }));
+
+      await b.locator('#cfg-images').setInputFiles(files);
+      await expect(a.locator('#rank-list > li')).toHaveCount(N, { timeout: 30000 });
+      const hostHasAll = () => a.evaluate(() => (window as any).getSessionMeta().images.every((im: any) => (window as any).hasAsset(im.assetHash)));
+      await expect.poll(hostHasAll, { timeout: 30000 }).toBe(true);
+
+      // Guest refreshes -> re-joins -> re-pulls every image.
+      await b.goto(PAGE + '?room=' + room);
+      await expect(b.locator('#collab-status')).toHaveText(/Connected as guest/, { timeout: 25000 });
+      const guestHasAll = () => b.evaluate(() => { const m = (window as any).getSessionMeta(); return m.images.length > 0 && m.images.every((im: any) => (window as any).hasAsset(im.assetHash)); });
+      await expect.poll(guestHasAll, { timeout: 30000 }).toBe(true);
+
+      // The guest now holds everything again. Measure the host's outgoing traffic while idle.
+      await a.evaluate(() => { const s = (window as any)._sync; s.on = true; s.tx = { bytes: 0, msgs: {} }; s.rx = { bytes: 0, msgs: {} }; });
+      await a.waitForTimeout(5000);
+      const sa = await a.evaluate(() => ({ msgs: (window as any)._sync.tx.msgs, bytes: (window as any)._sync.tx.bytes }));
+      console.log('HOST tx 5s after guest refresh+resync:', JSON.stringify(sa));
+      expect(sa.bytes, 'host should not keep serving after guest re-synced').toBeLessThan(50 * 1024);
+    } finally {
+      await ctxA.close();
+      await ctxB.close();
+    }
+  });
+
   test('a room password gates guests', async ({ browser }) => {
     const room = 'pw-' + Math.random().toString(36).slice(2, 9);
     const ctxA = await browser.newContext();

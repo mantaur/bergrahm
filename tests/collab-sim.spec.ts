@@ -369,27 +369,28 @@ test('guest: a thumbnail fills the preview before the full image bytes', async (
   await expect(page.locator('#rank-list .im-rank-thumb')).not.toHaveClass(/im-rank-thumb-pending/);
 });
 
-// While bytes are actively arriving the reconcile must NOT fire new requests: the sender
-// serializes serves, so the rest of the batch is queued, not lost. Re-requesting queued
-// hashes on a slow uplink is what piled duplicate serves and kept the channel saturated
-// after everything had synced.
-test('guest: suppresses asset requests while a transfer is actively arriving', async ({ page }) => {
-  await page.evaluate(() => { (window as any).collabAssetFlowing = () => true; });
+// Bounded concurrency: the reconcile keeps only a few pulls in flight at once instead of
+// requesting every missing hash, so queued/stalled serves on a slow link can't be
+// re-requested into a duplicate pile-up (the post-sync channel-saturation bug).
+test('guest: pulls assets with bounded concurrency (no request stampede)', async ({ page }) => {
   await page.evaluate(() => {
-    (window as any).applyRemoteMembership({
-      images: { fl1: { id: 'fl1', name: 'f.png', w: 400, h: 400, assetHash: 'flhash', thumbHash: null, simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 } },
-      order: ['fl1'], polygons: {}, scales: {},
-    });
+    const mk = (id: string, h: string) => ({ id, name: id + '.png', w: 400, h: 400, assetHash: h, thumbHash: null, simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 });
+    const images: any = {};
+    const order: string[] = [];
+    for (let i = 0; i < 6; i++) { images['w' + i] = mk('w' + i, 'h' + i); order.push('w' + i); }
+    (window as any).applyRemoteMembership({ images, order, polygons: {}, scales: {} });
   });
-  await expect.poll(() => imageCount(page)).toBe(1);
-  await page.evaluate(() => (window as any).reconcileAssets());
-  await page.waitForTimeout(100);
-  expect((await collabOut(page, 'collab:asset-needed')).some((e: any) => e.detail.hash === 'flhash')).toBe(false); // gated
+  await expect.poll(() => imageCount(page)).toBe(6);
 
-  // Channel goes idle -> the missing asset is requested.
-  await page.evaluate(() => { (window as any).collabAssetFlowing = () => false; });
-  await page.evaluate(() => (window as any).reconcileAssets());
-  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e: any) => e.detail.hash === 'flhash')).toBe(true);
+  // The first reconcile (run by applyRemoteMembership) requests at most the window size.
+  await page.waitForTimeout(150);
+  const firstBatch = (await collabOut(page, 'collab:asset-needed')).map((e: any) => e.detail.hash);
+  expect(firstBatch.length).toBeGreaterThan(0);
+  expect(firstBatch.length).toBeLessThanOrEqual(4); // ASSET_CONCURRENCY
+
+  // Delivering the in-flight ones frees window slots -> the remaining hashes get requested.
+  for (const h of firstBatch) await emitRemote(page, 'collab:remote-asset', { hash: h, jpegBase64: TINY_IMG_DATAURL });
+  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).length).toBeGreaterThan(firstBatch.length);
 });
 
 // De-dup: repeated reconciles within the backoff window don't re-ask for the same hash,

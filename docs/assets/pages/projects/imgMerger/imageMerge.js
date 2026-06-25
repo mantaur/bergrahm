@@ -4360,68 +4360,63 @@ async function _fillThumbFromStore(entry) {
   return true;
 }
 
-// For each image lacking bytes: if we already hold them by hash (a shared/re-added
-// content, or a pull that landed), fill from the store; otherwise request them. The 4s
-// timer re-requests until satisfied (idempotent; host serves or relays). Filling from
-// the store is essential -- content addressing means the bytes may already be local, in
-// which case no request is ever made and the entry must be populated from the store.
-// De-dup: a hash requested within this window is not re-requested. Cleared the moment
-// bytes arrive, so a genuinely lost transfer is re-requested promptly on the next tick.
-const ASSET_REQ_BACKOFF = 12000;
-const _assetReqAt = new Map(); // assetHash -> last request time
+// Pull missing bytes by hash with BOUNDED CONCURRENCY. Requesting every missing hash at
+// once let the receiver re-ask for transfers that were merely queued on the sender (which
+// serializes serves) once they outlasted the retry window on a slow link -- piling up
+// duplicate serves that saturated the channel long after everything had synced (seen on a
+// phone refresh re-pulling all images). Instead we keep only ASSET_CONCURRENCY pulls in
+// flight; as each lands we top up. The sender transfers one at a time anyway, so this just
+// caps its queue and makes the stampede impossible regardless of link speed.
+const ASSET_CONCURRENCY = 4; // max pulls in flight at once
+const ASSET_STALL_MS = 15000; // a request unanswered this long is retried (resume offset)
+const _assetReqAt = new Map(); // hash -> last request time (proxy for "in flight")
 
 async function reconcileAssets() {
   let filled = false;
-  // Pull in carousel (rank) order -- nearest the top fills first -- matching the YOLO
-  // encode queue's priority. Requests fire in this order over the ordered channel, so the
-  // host serves them top-down. Any id not yet in rankOrder sorts last.
+  // Pull in carousel (rank) order -- nearest the top first -- matching the YOLO queue.
   const rankOf = (id) => {
     const r = state.rankOrder.indexOf(id);
     return r === -1 ? Infinity : r;
   };
   const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
   const now = Date.now();
-  // While a transfer is actively arriving, do NOT request more: the sender serializes
-  // serves, so the rest of the batch is queued (not lost). Re-requesting queued hashes
-  // (they outlast the de-dup window on a slow uplink) piles duplicate full re-serves onto
-  // the sender -- the bug where the channel stays saturated long after everything synced.
-  // Only after the channel stalls (no bytes for a few seconds) do we re-ask for what is
-  // still missing (the resume offset means that costs only the remainder).
-  const flowing = window.collabAssetFlowing ? window.collabAssetFlowing() : false;
+  const inFlight = (hash) => now - (_assetReqAt.get(hash) || 0) < ASSET_STALL_MS;
+
+  // Fill anything already local, and count how many pulls are currently in flight.
+  let active = 0;
+  for (const e of ordered) {
+    if (e.thumbHash && !e.thumbUrl) {
+      if (assetStore.has(e.thumbHash)) filled = (await _fillThumbFromStore(e)) || filled;
+      else if (inFlight(e.thumbHash)) active++;
+    }
+    if (e.assetHash && !e.blob) {
+      if (assetStore.has(e.assetHash)) filled = (await _fillEntryFromStore(e)) || filled;
+      else if (inFlight(e.assetHash)) active++;
+    }
+  }
+
+  // Request more, thumbnails first then full bytes, up to the concurrency window.
   const want = (hash) => {
-    if (flowing) return;
-    if (now - (_assetReqAt.get(hash) || 0) < ASSET_REQ_BACKOFF) return;
+    if (active >= ASSET_CONCURRENCY || inFlight(hash) || assetStore.has(hash)) return;
     _assetReqAt.set(hash, now);
+    active++;
     window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash } }));
   };
-  // Pass 1: tiny thumbnails first, so a preview shows fast before the heavy bytes.
-  for (const e of ordered) {
-    if (!e.thumbHash || e.thumbUrl) continue;
-    if (assetStore.has(e.thumbHash)) filled = (await _fillThumbFromStore(e)) || filled;
-    else want(e.thumbHash);
-  }
-  // Pass 2: full image bytes.
-  for (const e of ordered) {
-    if (!e.assetHash || e.blob) continue;
-    if (assetStore.has(e.assetHash)) filled = (await _fillEntryFromStore(e)) || filled;
-    else want(e.assetHash);
-  }
+  for (const e of ordered) if (e.thumbHash && !e.thumbUrl) want(e.thumbHash);
+  for (const e of ordered) if (e.assetHash && !e.blob) want(e.assetHash);
+
   if (filled) _updateLoadingStatus();
 }
 setInterval(reconcileAssets, 4000);
 
-// Bytes arrived for an asset: store and fill every image entry waiting on it.
+// Bytes arrived for an asset: store, free its window slot, then reconcile (fills the
+// matching entries from the store and pulls the next hash in the window).
 window.addEventListener("collab:remote-asset", async ({ detail: { hash, jpegBase64 } }) => {
   const blob = await (await fetch(jpegBase64)).blob();
   if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
   assetStore.set(hash, blob);
-  _assetReqAt.delete(hash); // satisfied -- allow an immediate re-request if it ever recurs
-  let filled = false;
-  for (const e of state.images) {
-    if (e.thumbHash === hash && !e.thumbUrl) filled = (await _fillThumbFromStore(e)) || filled;
-    if (e.assetHash === hash && !e.blob) filled = (await _fillEntryFromStore(e)) || filled;
-  }
-  if (filled) _updateLoadingStatus();
+  _assetReqAt.delete(hash); // arrived -> free its window slot
+  reconcileAssets(); // fill matching entries from the store + pull the next in the window
 });
 
 // ── Collaboration remote-event handlers ───────────────────────────────────────
