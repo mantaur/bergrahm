@@ -164,7 +164,7 @@ function _initSyncDebug() {
   const el = document.createElement("div");
   el.id = "sync-dbg";
   el.style.cssText =
-    "position:fixed;left:6px;bottom:6px;z-index:99999;max-width:64vw;font:11px/1.3 monospace;" +
+    "position:fixed;left:6px;top:6px;z-index:99999;max-width:64vw;font:11px/1.3 monospace;" +
     "background:rgba(0,0,0,.82);color:#3f8;padding:6px 8px;border-radius:6px;white-space:pre;" +
     "pointer-events:none;max-height:62vh;overflow:hidden";
   document.body.appendChild(el);

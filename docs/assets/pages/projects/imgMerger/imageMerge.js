@@ -754,36 +754,31 @@ function loadPainterImage(rankIdx) {
   _paintImgH = entry.h;
   _paintBScale = bScale;
 
-  // CSS size synchronously so click -> coordinate mapping is correct immediately. The
-  // backing store is resized + drawn only once the new image is decoded (below), so the
-  // previous frame stays visible instead of flashing blank while decoding.
+  paintCanvas.width = bw;
+  paintCanvas.height = bh;
+  maskCanvas.width = bw;
+  maskCanvas.height = bh;
+
   paintCanvas.style.width = dispW + "px";
   paintCanvas.style.height = dispH + "px";
   maskCanvas.style.width = dispW + "px";
   maskCanvas.style.height = dispH + "px";
 
-  currentPoly = entry.currentPoly; // point at this image's in-progress polygon
-  rubberBandPt = null;
-
-  // Decode straight to the display size (faster than full-res), then swap the canvases in
-  // one tick: prev/next navigation keeps showing the old image until the new one is ready.
-  decodeEntry(entry, { resizeWidth: bw, resizeHeight: bh, resizeQuality: "high" })
+  // Decode on demand and draw scaled into the capped store; release immediately.
+  decodeEntry(entry)
     .then((bm) => {
+      if (!bm) return;
       if (state.rankOrder[state.paintIdx] !== imgIdx) {
-        if (bm) bm.close();
+        bm.close();
         return;
       } // navigated away
-      paintCanvas.width = bw;
-      paintCanvas.height = bh;
-      maskCanvas.width = bw;
-      maskCanvas.height = bh;
-      if (bm) {
-        paintCtx.drawImage(bm, 0, 0, bw, bh);
-        bm.close();
-      }
-      redrawPolyOverlay(imgIdx);
+      paintCtx.drawImage(bm, 0, 0, bw, bh);
+      bm.close();
     })
     .catch(() => {});
+  currentPoly = entry.currentPoly; // point at this image's in-progress polygon
+  rubberBandPt = null;
+  redrawPolyOverlay(imgIdx);
 
   // Sync painter scale bar to this image's scale setting
   const isAuto = entry.scale === null;
