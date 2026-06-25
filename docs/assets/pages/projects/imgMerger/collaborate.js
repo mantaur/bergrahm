@@ -684,6 +684,7 @@ function setupConn(conn, isGuestSide) {
   conn.on("data", (data) => {
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
       const buf = ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
+      _lastAssetRxAt = Date.now(); // bulk is actively arriving -> gate asset re-requests
       _dbg("rx", "bin:" + (pendingImageMeta ? pendingImageMeta.kind : receiving ? "session" : "?"), buf.byteLength);
       if (pendingImageMeta !== null) {
         if (pendingImageMeta.kind === "skip") {
@@ -896,6 +897,12 @@ const _sendChains = new WeakMap(); // conn -> Promise (tail of its serialized ch
 // currently filling a partial, so a duplicate serve from another peer (relay) is dropped
 // rather than corrupting the buffer; it is cleared when that connection closes.
 const _assetPartials = new Map(); // hash -> { parts: [], got, bytes, owner }
+
+// When the last bulk binary slice arrived. The app's asset reconcile uses this (via
+// collabAssetFlowing) to avoid re-requesting hashes while a transfer is actively coming
+// in -- otherwise queued serves on a slow uplink get re-requested and pile up duplicates.
+let _lastAssetRxAt = 0;
+window.collabAssetFlowing = () => _lastAssetRxAt > 0 && Date.now() - _lastAssetRxAt < 6000;
 
 function _enqueueSend(conn, task) {
   const prev = _sendChains.get(conn) || Promise.resolve();

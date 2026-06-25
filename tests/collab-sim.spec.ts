@@ -369,6 +369,29 @@ test('guest: a thumbnail fills the preview before the full image bytes', async (
   await expect(page.locator('#rank-list .im-rank-thumb')).not.toHaveClass(/im-rank-thumb-pending/);
 });
 
+// While bytes are actively arriving the reconcile must NOT fire new requests: the sender
+// serializes serves, so the rest of the batch is queued, not lost. Re-requesting queued
+// hashes on a slow uplink is what piled duplicate serves and kept the channel saturated
+// after everything had synced.
+test('guest: suppresses asset requests while a transfer is actively arriving', async ({ page }) => {
+  await page.evaluate(() => { (window as any).collabAssetFlowing = () => true; });
+  await page.evaluate(() => {
+    (window as any).applyRemoteMembership({
+      images: { fl1: { id: 'fl1', name: 'f.png', w: 400, h: 400, assetHash: 'flhash', thumbHash: null, simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 } },
+      order: ['fl1'], polygons: {}, scales: {},
+    });
+  });
+  await expect.poll(() => imageCount(page)).toBe(1);
+  await page.evaluate(() => (window as any).reconcileAssets());
+  await page.waitForTimeout(100);
+  expect((await collabOut(page, 'collab:asset-needed')).some((e: any) => e.detail.hash === 'flhash')).toBe(false); // gated
+
+  // Channel goes idle -> the missing asset is requested.
+  await page.evaluate(() => { (window as any).collabAssetFlowing = () => false; });
+  await page.evaluate(() => (window as any).reconcileAssets());
+  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e: any) => e.detail.hash === 'flhash')).toBe(true);
+});
+
 // De-dup: repeated reconciles within the backoff window don't re-ask for the same hash,
 // so a transfer in flight isn't drowned in duplicate re-serves.
 test('guest: a missing asset is not re-requested within the backoff window', async ({ page }) => {

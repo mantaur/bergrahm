@@ -4365,10 +4365,8 @@ async function _fillThumbFromStore(entry) {
 // timer re-requests until satisfied (idempotent; host serves or relays). Filling from
 // the store is essential -- content addressing means the bytes may already be local, in
 // which case no request is ever made and the entry must be populated from the store.
-// De-dup: a hash requested within this window is not re-requested. The 4s reconcile
-// would otherwise re-ask for an asset that is still in flight (a transfer can take longer
-// than 4s), piling duplicate full re-serves onto the sender. Cleared the moment bytes
-// arrive, so a genuinely lost transfer is re-requested promptly on the next tick.
+// De-dup: a hash requested within this window is not re-requested. Cleared the moment
+// bytes arrive, so a genuinely lost transfer is re-requested promptly on the next tick.
 const ASSET_REQ_BACKOFF = 12000;
 const _assetReqAt = new Map(); // assetHash -> last request time
 
@@ -4383,7 +4381,15 @@ async function reconcileAssets() {
   };
   const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
   const now = Date.now();
+  // While a transfer is actively arriving, do NOT request more: the sender serializes
+  // serves, so the rest of the batch is queued (not lost). Re-requesting queued hashes
+  // (they outlast the de-dup window on a slow uplink) piles duplicate full re-serves onto
+  // the sender -- the bug where the channel stays saturated long after everything synced.
+  // Only after the channel stalls (no bytes for a few seconds) do we re-ask for what is
+  // still missing (the resume offset means that costs only the remainder).
+  const flowing = window.collabAssetFlowing ? window.collabAssetFlowing() : false;
   const want = (hash) => {
+    if (flowing) return;
     if (now - (_assetReqAt.get(hash) || 0) < ASSET_REQ_BACKOFF) return;
     _assetReqAt.set(hash, now);
     window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash } }));
