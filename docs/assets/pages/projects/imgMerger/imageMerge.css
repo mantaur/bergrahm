@@ -830,6 +830,13 @@ body.im-panel-open #btn-panel-toggle svg {
   cursor: not-allowed;
 }
 
+/* Applied to a <label> button (which can't use :disabled) to make it inert. */
+.im-btn-disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .im-btn-sm {
   font-size: 0.76em;
   padding: 0.38em 0.85em;

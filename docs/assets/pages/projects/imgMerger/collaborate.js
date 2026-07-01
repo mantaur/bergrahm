@@ -304,6 +304,13 @@ function setStatus(text, connected) {
 
 // Show the local user's role (Host / Guest) clearly in the modal header.
 function _setRole() {
+  // Guests may not import a session -- it would clobber the host's shared session. Only a
+  // host or a solo (not-connected) user can import.
+  const isGuest = !!localPeerId && !isHost;
+  const importInp = document.getElementById("inp-import-session");
+  if (importInp) importInp.disabled = isGuest;
+  document.querySelectorAll('label[for="inp-import-session"]').forEach((el) => el.classList.toggle("im-btn-disabled", isGuest));
+
   if (!roleEl) return;
   if (!localPeerId) {
     roleEl.classList.add("im-hidden");
@@ -904,6 +911,12 @@ const _assetPartials = new Map(); // hash -> { parts: [], got, bytes, owner }
 // would duplicate it). Pruned when the transfer completes.
 const _assetSliceAt = new Map(); // hash -> timestamp of last received slice
 window.collabAssetSliceAt = (hash) => _assetSliceAt.get(hash) || 0;
+
+// Fraction (0..1) of a hash's bytes received so far, for the painter's "Loading X%".
+window.collabAssetProgress = (hash) => {
+  const p = _assetPartials.get(hash);
+  return p && p.bytes ? Math.min(1, p.got / p.bytes) : 0;
+};
 
 function _enqueueSend(conn, task) {
   const prev = _sendChains.get(conn) || Promise.resolve();

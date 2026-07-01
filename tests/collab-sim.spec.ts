@@ -4,7 +4,7 @@
 // No WebRTC/broker needed. The live-transport path is covered by collab-real.spec.ts.
 
 import {
-  test, expect, addImage, paintPolygon, closePanel,
+  test, expect, addImage, paintPolygon, closePanel, openPaintStep,
   emitRemote, imageCount, polyCount, simPos, collabOut, imgIdAt, groupClientPos,
   TINY_IMG_DATAURL, FIXTURE_IMG,
 } from './fixtures';
@@ -351,6 +351,21 @@ test('guest: reconcile requests a missing asset by hash', async ({ page }) => {
   // Force a reconcile rather than waiting on the 4s timer.
   await page.evaluate(() => (window as any).reconcileAssets());
   await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e) => e.detail.hash === 'cafe1234')).toBe(true);
+});
+
+// Navigating to an image whose bytes have not arrived must still advance the painter
+// (which shows a "Loading X%" placeholder), not silently stay on the previous image.
+test('navigating to an unloaded image still advances the painter', async ({ page }) => {
+  await addImage(page); // index 0, loaded locally
+  await emitRemote(page, 'collab:remote-image-skeleton', {
+    id: 'unl', assetHash: 'unlhash', name: 'u.png', w: 400, h: 400,
+    polygons: [], simPos: { x: 200, y: 200 }, simAngle: 0,
+  });
+  await expect.poll(() => imageCount(page)).toBe(2);
+  await openPaintStep(page);
+  await expect(page.locator('#paint-index-label')).toHaveText('1 / 2');
+  await page.locator('#btn-next-img').click();
+  await expect(page.locator('#paint-index-label')).toHaveText('2 / 2'); // advanced despite no bytes
 });
 
 // The tiny thumbnail is content-addressed and pulled first, so a preview appears before

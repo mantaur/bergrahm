@@ -534,6 +534,18 @@ function buildRankList() {
     rankList.appendChild(item);
   });
   btnExportSession.disabled = state.images.length === 0;
+  _refreshPainterNav();
+}
+
+// Keep the painter's index label + prev/next enabled state in sync with the image list,
+// so an image that arrives (or leaves) while the painter is open updates the controls
+// even without a full loadPainterImage.
+function _refreshPainterNav() {
+  if (state.images.length === 0) return;
+  const rankIdx = Math.min(state.paintIdx, state.images.length - 1);
+  paintIndexLbl.textContent = rankIdx + 1 + " / " + state.images.length;
+  btnPrev.disabled = rankIdx === 0;
+  btnNext.disabled = rankIdx === state.images.length - 1;
 }
 
 // opts.broadcast === false when applying a removal received from a peer, so the
@@ -728,41 +740,85 @@ let _paintImgW = 0,
   _paintImgH = 0,
   _paintBScale = 1;
 
-function loadPainterImage(rankIdx) {
-  state.paintIdx = rankIdx;
-  const imgIdx = state.rankOrder[rankIdx];
-  const entry = imgById(imgIdx);
-  if (!entry || !entry.blob) return; // pixels not yet received (streaming import / collab join)
-
-  paintName.textContent = entry.name;
-  paintIndexLbl.textContent = rankIdx + 1 + " / " + state.images.length;
-
-  // Size the canvases to a display-friendly scale
+// Display + capped-backing-store dimensions for an image in the painter. The backing
+// store is capped to the on-screen size (x capped DPR) so a 12MP phone photo doesn't
+// allocate a canvas the browser blanks under memory pressure.
+function _painterDims(entry) {
   const availW = canvasWrap.parentElement.clientWidth - parseFloat(getComputedStyle(canvasWrap.parentElement).paddingLeft || "0") - parseFloat(getComputedStyle(canvasWrap.parentElement).paddingRight || "0");
   const effectiveMaxW = Math.min(DISPLAY_MAX_W, availW > 0 ? availW : DISPLAY_MAX_W);
   const scale = Math.min(1, effectiveMaxW / entry.w);
   const dispW = Math.round(entry.w * scale);
   const dispH = Math.round(entry.h * scale);
-
-  // Cap the backing store to the on-screen size (x capped DPR) so a 12MP phone photo
-  // doesn't allocate a canvas the browser blanks under memory pressure.
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const bScale = Math.min(1, Math.max(1, Math.round(dispW * dpr)) / entry.w);
-  const bw = Math.max(1, Math.round(entry.w * bScale));
-  const bh = Math.max(1, Math.round(entry.h * bScale));
+  return { dispW, dispH, bScale, bw: Math.max(1, Math.round(entry.w * bScale)), bh: Math.max(1, Math.round(entry.h * bScale)) };
+}
+
+// Placeholder shown when an image's pixels haven't arrived yet: a plain panel with
+// "Loading X%" (X from the transfer progress) instead of the stale previous image.
+function _drawPainterLoading(entry, dims) {
+  if (paintCanvas.width !== dims.bw || paintCanvas.height !== dims.bh) {
+    paintCanvas.width = dims.bw;
+    paintCanvas.height = dims.bh;
+    maskCanvas.width = dims.bw;
+    maskCanvas.height = dims.bh;
+  }
+  paintCanvas.style.width = dims.dispW + "px";
+  paintCanvas.style.height = dims.dispH + "px";
+  maskCanvas.style.width = dims.dispW + "px";
+  maskCanvas.style.height = dims.dispH + "px";
+  maskCtx.setTransform(1, 0, 0, 1, 0, 0);
+  maskCtx.clearRect(0, 0, dims.bw, dims.bh); // no stale mask over the placeholder
+  paintCtx.setTransform(1, 0, 0, 1, 0, 0);
+  paintCtx.fillStyle = "#e5e7eb";
+  paintCtx.fillRect(0, 0, dims.bw, dims.bh);
+  const frac = window.collabAssetProgress ? window.collabAssetProgress(entry.assetHash) : 0;
+  const pct = Math.round(frac * 100);
+  paintCtx.fillStyle = "#6b7280";
+  paintCtx.textAlign = "center";
+  paintCtx.textBaseline = "middle";
+  paintCtx.font = Math.max(13, Math.round(dims.bw * 0.045)) + "px sans-serif";
+  paintCtx.fillText(pct > 0 ? "Loading " + pct + "%" : "Loading...", dims.bw / 2, dims.bh / 2);
+}
+
+function loadPainterImage(rankIdx) {
+  state.paintIdx = rankIdx;
+  const imgIdx = state.rankOrder[rankIdx];
+  const entry = imgById(imgIdx);
+  if (!entry) return;
+
+  // These apply whether or not the pixels have arrived.
+  paintName.textContent = entry.name;
+  paintIndexLbl.textContent = rankIdx + 1 + " / " + state.images.length;
+  currentPoly = entry.currentPoly; // point at this image's in-progress polygon
+  rubberBandPt = null;
+  Array.from(rankList.children).forEach((li, i) => li.classList.toggle("active-paint", i === rankIdx));
+  updateUndoBtn(imgIdx);
+  btnPrev.disabled = rankIdx === 0;
+  btnNext.disabled = rankIdx === state.images.length - 1;
+
+  const dims = _painterDims(entry);
   _paintImgW = entry.w;
   _paintImgH = entry.h;
-  _paintBScale = bScale;
+  _paintBScale = dims.bScale;
 
-  paintCanvas.width = bw;
-  paintCanvas.height = bh;
-  maskCanvas.width = bw;
-  maskCanvas.height = bh;
+  // Pixels not here yet: show a loading placeholder for THIS image (not the previous one)
+  // and prioritize pulling it. It renders for real once its blob lands (_fillEntryFromStore
+  // re-invokes this); the loading tick keeps the % current meanwhile.
+  if (!entry.blob) {
+    _drawPainterLoading(entry, dims);
+    reconcileAssets();
+    return;
+  }
 
-  paintCanvas.style.width = dispW + "px";
-  paintCanvas.style.height = dispH + "px";
-  maskCanvas.style.width = dispW + "px";
-  maskCanvas.style.height = dispH + "px";
+  paintCanvas.width = dims.bw;
+  paintCanvas.height = dims.bh;
+  maskCanvas.width = dims.bw;
+  maskCanvas.height = dims.bh;
+  paintCanvas.style.width = dims.dispW + "px";
+  paintCanvas.style.height = dims.dispH + "px";
+  maskCanvas.style.width = dims.dispW + "px";
+  maskCanvas.style.height = dims.dispH + "px";
 
   // Decode on demand and draw scaled into the capped store; release immediately.
   decodeEntry(entry)
@@ -772,12 +828,10 @@ function loadPainterImage(rankIdx) {
         bm.close();
         return;
       } // navigated away
-      paintCtx.drawImage(bm, 0, 0, bw, bh);
+      paintCtx.drawImage(bm, 0, 0, dims.bw, dims.bh);
       bm.close();
     })
     .catch(() => {});
-  currentPoly = entry.currentPoly; // point at this image's in-progress polygon
-  rubberBandPt = null;
   redrawPolyOverlay(imgIdx);
 
   // Sync painter scale bar to this image's scale setting
@@ -790,21 +844,17 @@ function loadPainterImage(rankIdx) {
   // (scale-preview canvas is sized inside updateScalePreview -> updatePainterZoom)
   updatePainterZoom(imgIdx);
 
-  // Update active-paint on rank list items
-  Array.from(rankList.children).forEach((li, i) => {
-    li.classList.toggle("active-paint", i === rankIdx);
-  });
-
-  updateUndoBtn(imgIdx);
-  btnPrev.disabled = rankIdx === 0;
-  btnNext.disabled = rankIdx === state.images.length - 1;
-
-  // On navigation, discard any stale pending decode and update the status text.
-  // The encode queue is left untouched — it runs in filename order regardless.
   if (state.useYolo && yoloPool.readyCount > 0) {
     updateYoloStatus(yoloPool.embeddingCache.has(imgIdx) ? (yoloPool.yoloMode ? "Click a subject to segment" : "YOLO ready") : "Encoding...");
   }
 }
+
+// Keep the "Loading X%" placeholder's percentage current while the viewed image streams in.
+setInterval(() => {
+  if (state.images.length === 0 || paintArea.classList.contains("im-hidden")) return;
+  const entry = imgById(state.rankOrder[state.paintIdx]);
+  if (entry && !entry.blob) _drawPainterLoading(entry, _painterDims(entry));
+}, 500);
 
 // ── Lasso / polygon overlay ───────────────────────────────────────────────────
 const SNAP_RADIUS_PX = 15; // snap-to-close distance in display pixels
@@ -4336,6 +4386,8 @@ async function _fillEntryFromStore(entry) {
   _updateFilmstripThumb(entry.id);
   simRefreshGroup(entry.id);
   _simViewDirty = true;
+  // If the painter is showing this image's loading placeholder, render it now.
+  if (state.rankOrder[state.paintIdx] === entry.id) loadPainterImage(state.paintIdx);
   return true;
 }
 
@@ -4395,12 +4447,18 @@ async function reconcileAssets() {
 
 async function _reconcileOnce() {
   let filled = false;
-  // Pull in carousel (rank) order -- nearest the top first -- matching the YOLO queue.
+  // Pull the currently-viewed image first, then carousel (rank) order -- so navigating to
+  // an image fetches it next and its "Loading X%" advances promptly.
   const rankOf = (id) => {
     const r = state.rankOrder.indexOf(id);
     return r === -1 ? Infinity : r;
   };
-  const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
+  const viewedId = state.images.length ? state.rankOrder[state.paintIdx] : null;
+  const ordered = [...state.images].sort((a, b) => {
+    if (a.id === viewedId) return -1;
+    if (b.id === viewedId) return 1;
+    return rankOf(a.id) - rankOf(b.id);
+  });
   const now = Date.now();
   // A pull counts as in flight while it shows progress: a request OR a received slice
   // within the stall window. A slow-but-arriving transfer keeps its slice time fresh, so

@@ -37,6 +37,10 @@ test.describe('real collab (live broker)', () => {
       await expect(a.locator('#collab-peer-badge')).toBeVisible();
       await expect(b.locator('#collab-peer-badge')).toBeVisible();
 
+      // Session import is host-only: the guest's import is disabled, the host's is not.
+      await expect(b.locator('#inp-import-session')).toBeDisabled();
+      await expect(a.locator('#inp-import-session')).toBeEnabled();
+
       // Settings sync through the Yjs CRDT over the data channel: a host edit converges
       // to the guest's UI.
       await a.evaluate(() => {
