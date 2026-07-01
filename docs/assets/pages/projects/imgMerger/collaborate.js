@@ -130,7 +130,7 @@ const PING_TIMEOUT = 20000; // ms without a pong before host drops the guest. Ge
 
 const COLORS = ["#e05252", "#4a9eed", "#52c97a", "#e0a033", "#9b6be0", "#30b5be", "#e0709a", "#8fbe4a"];
 const STORAGE_NAME_KEY = "collab-name";
-const CHUNK_SIZE = 64 * 1024;
+const CHUNK_SIZE = 256 * 1024;
 const SIM_UNDO_MAX = 50;
 const HOST_PREFIX = "im-mrg-"; // prefix for deterministic host peer IDs
 
@@ -697,11 +697,13 @@ function setupConn(conn, isGuestSide) {
         const store = pendingImageMeta.ref || pendingImageMeta;
         store.parts.push(buf);
         store.got += buf.byteLength;
+        if (pendingImageMeta.kind === "asset") _assetSliceAt.set(pendingImageMeta.hash, Date.now());
         if (pendingImageMeta.bytes != null && store.got < pendingImageMeta.bytes) return;
         const meta = pendingImageMeta;
         pendingImageMeta = null;
         if (meta.kind === "asset") {
           _assetPartials.delete(meta.hash);
+          _assetSliceAt.delete(meta.hash);
           finalizeBinary({ kind: "asset", hash: meta.hash, parts: meta.ref.parts });
         } else {
           finalizeBinary(meta);
@@ -896,6 +898,12 @@ const _sendChains = new WeakMap(); // conn -> Promise (tail of its serialized ch
 // currently filling a partial, so a duplicate serve from another peer (relay) is dropped
 // rather than corrupting the buffer; it is cleared when that connection closes.
 const _assetPartials = new Map(); // hash -> { parts: [], got, bytes, owner }
+
+// Last time a slice for a hash arrived. The app's reconcile reads this (collabAssetSliceAt)
+// so a slow-but-progressing transfer is not mistaken for stalled and re-requested (which
+// would duplicate it). Pruned when the transfer completes.
+const _assetSliceAt = new Map(); // hash -> timestamp of last received slice
+window.collabAssetSliceAt = (hash) => _assetSliceAt.get(hash) || 0;
 
 function _enqueueSend(conn, task) {
   const prev = _sendChains.get(conn) || Promise.resolve();

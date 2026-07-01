@@ -4368,10 +4368,32 @@ async function _fillThumbFromStore(entry) {
 // flight; as each lands we top up. The sender transfers one at a time anyway, so this just
 // caps its queue and makes the stampede impossible regardless of link speed.
 const ASSET_CONCURRENCY = 4; // max pulls in flight at once
-const ASSET_STALL_MS = 15000; // a request unanswered this long is retried (resume offset)
-const _assetReqAt = new Map(); // hash -> last request time (proxy for "in flight")
+const ASSET_STALL_MS = 15000; // no progress (request or slice) this long -> retry (resume)
+const _assetReqAt = new Map(); // hash -> last request time
 
+// Serialize reconciles. This function awaits (image decode) and is called from the 4s
+// timer, membership updates, AND every asset arrival -- so overlapping runs would each
+// compute their own `active` and dispatch a full window, blowing past the concurrency cap
+// (the "18-30 at once" over-request). Run one at a time; if triggered mid-run, run again.
+let _reconcileBusy = false;
+let _reconcileAgain = false;
 async function reconcileAssets() {
+  if (_reconcileBusy) {
+    _reconcileAgain = true;
+    return;
+  }
+  _reconcileBusy = true;
+  try {
+    do {
+      _reconcileAgain = false;
+      await _reconcileOnce();
+    } while (_reconcileAgain);
+  } finally {
+    _reconcileBusy = false;
+  }
+}
+
+async function _reconcileOnce() {
   let filled = false;
   // Pull in carousel (rank) order -- nearest the top first -- matching the YOLO queue.
   const rankOf = (id) => {
@@ -4380,7 +4402,11 @@ async function reconcileAssets() {
   };
   const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
   const now = Date.now();
-  const inFlight = (hash) => now - (_assetReqAt.get(hash) || 0) < ASSET_STALL_MS;
+  // A pull counts as in flight while it shows progress: a request OR a received slice
+  // within the stall window. A slow-but-arriving transfer keeps its slice time fresh, so
+  // it is NOT re-requested (which would re-send it); only a truly stalled one is retried.
+  const sliceAt = (hash) => (window.collabAssetSliceAt ? window.collabAssetSliceAt(hash) : 0);
+  const inFlight = (hash) => now - Math.max(_assetReqAt.get(hash) || 0, sliceAt(hash)) < ASSET_STALL_MS;
 
   // Fill anything already local, and count how many pulls are currently in flight.
   let active = 0;
