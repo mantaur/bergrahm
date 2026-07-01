@@ -535,6 +535,7 @@ function buildRankList() {
   });
   btnExportSession.disabled = state.images.length === 0;
   _refreshPainterNav();
+  _showMergeBtn(); // an image arriving/leaving can change merge readiness (all transferred?)
 }
 
 // Keep the painter's index label + prev/next enabled state in sync with the image list,
@@ -1730,6 +1731,9 @@ function resetMergeUI() {
 // readiness rather than offering a merge that can't run yet.
 function mergeReady() {
   if (simRafId === null) return false;
+  // Every image must have finished transferring -- not just the placed/masked ones -- so a
+  // merge can't run against a session that is still syncing in.
+  if (state.images.length === 0 || !state.images.every((e) => e.blob)) return false;
   const placed = state.rankOrder.filter((id) => {
     const e = imgById(id);
     return e && !e.simHidden && e.polygons && e.polygons.length > 0;
@@ -4386,6 +4390,7 @@ async function _fillEntryFromStore(entry) {
   _updateFilmstripThumb(entry.id);
   simRefreshGroup(entry.id);
   _simViewDirty = true;
+  _showMergeBtn(); // this image's bytes landed -> may complete "all transferred"
   // If the painter is showing this image's loading placeholder, render it now.
   if (state.rankOrder[state.paintIdx] === entry.id) loadPainterImage(state.paintIdx);
   return true;

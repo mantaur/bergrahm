@@ -353,6 +353,26 @@ test('guest: reconcile requests a missing asset by hash', async ({ page }) => {
   await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e) => e.detail.hash === 'cafe1234')).toBe(true);
 });
 
+// Merge must not be offered while any image is still transferring -- a merge would run
+// against a session that isn't fully synced in.
+test('merge button hides until every image is transferred', async ({ page }) => {
+  await addImage(page);
+  await paintPolygon(page);
+  await expect(page.locator('#btn-merge')).toBeVisible(); // one image, masked, loaded
+
+  // A second image arrives but its bytes are not here yet -> merge hides.
+  await emitRemote(page, 'collab:remote-image-skeleton', {
+    id: 'gm2', assetHash: 'gm2hash', name: 'g2.png', w: 400, h: 400,
+    polygons: [], simPos: { x: 200, y: 200 }, simAngle: 0,
+  });
+  await expect.poll(() => imageCount(page)).toBe(2);
+  await expect(page.locator('#btn-merge')).toBeHidden();
+
+  // Its bytes arrive -> all transferred -> merge available again.
+  await emitRemote(page, 'collab:remote-asset', { hash: 'gm2hash', jpegBase64: TINY_IMG_DATAURL });
+  await expect(page.locator('#btn-merge')).toBeVisible();
+});
+
 // Navigating to an image whose bytes have not arrived must still advance the painter
 // (which shows a "Loading X%" placeholder), not silently stay on the previous image.
 test('navigating to an unloaded image still advances the painter', async ({ page }) => {
