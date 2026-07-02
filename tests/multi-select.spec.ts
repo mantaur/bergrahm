@@ -134,12 +134,9 @@ test('mobile select mode: tap toggles a mask (chromium)', async ({ page, browser
   const c = await groupClientPos(page, 0);
   await page.evaluate(({ x, y }) => {
     const cv = document.getElementById('sim-canvas') as HTMLCanvasElement;
-    const t  = new Touch({ identifier: 1, target: cv, clientX: x, clientY: y });
-    const ev = (type: string, touches: Touch[]) => new TouchEvent(type, {
-      touches, targetTouches: touches, changedTouches: [t], bubbles: true, cancelable: true,
-    });
-    cv.dispatchEvent(ev('touchstart', [t]));
-    cv.dispatchEvent(ev('touchend', []));
+    const fire = (window as any).__fireTouch;
+    fire(cv, 'touchstart', x, y);
+    fire(cv, 'touchend', x, y);
   }, c);
   expect((await selectedIds(page)).length).toBe(1);
 

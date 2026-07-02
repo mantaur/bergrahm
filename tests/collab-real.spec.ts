@@ -3,11 +3,7 @@
 //   REAL_COLLAB=1 bunx playwright test tests/collab-real.spec.ts --project=chromium
 
 import { test, expect } from '@playwright/test';
-import { routeVendor, PAGE, FIXTURE_IMG } from './fixtures';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const SESSION_ZIP = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'session.zip');
+import { routeVendor, PAGE, FIXTURE_IMG, SESSION_ZIP } from './fixtures';
 
 test.describe('real collab (live broker)', () => {
   test.skip(!process.env.REAL_COLLAB, 'set REAL_COLLAB=1 to run the live two-context smoke');

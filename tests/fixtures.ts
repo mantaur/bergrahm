@@ -19,6 +19,7 @@ export const FIXTURE_IMG2 = 'tests/fixtures/image2.png';
 
 const _dir = path.dirname(fileURLToPath(import.meta.url));
 const VENDOR = path.join(_dir, 'vendor');
+export const SESSION_ZIP = path.join(_dir, 'fixtures', 'session.zip');
 
 // Outgoing collab event types imageMerge.js dispatches on window.
 const COLLAB_OUT_TYPES = [
@@ -42,6 +43,8 @@ export async function routeVendor(context: BrowserContext) {
 }
 
 // Init script (string form so it can be reused for manually-created pages).
+// __fireTouch: synthetic single-finger touch dispatch (chromium only; firefox's
+// Touch constructor is unreliable on desktop -- skip those tests there).
 const COLLAB_SPY_INIT = `
   window.__collabOut = [];
   for (const t of ${JSON.stringify(COLLAB_OUT_TYPES)}) {
@@ -51,6 +54,14 @@ const COLLAB_SPY_INIT = `
       window.__collabOut.push({ type: t, detail });
     });
   }
+  window.__fireTouch = (el, type, x, y) => {
+    const t = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+    const up = type === 'touchend' || type === 'touchcancel';
+    el.dispatchEvent(new TouchEvent(type, {
+      touches: up ? [] : [t], targetTouches: up ? [] : [t], changedTouches: [t],
+      bubbles: true, cancelable: true,
+    }));
+  };
 `;
 
 export const test = base.extend<{}>({

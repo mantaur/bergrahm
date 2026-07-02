@@ -118,6 +118,22 @@ function _membershipSnapshot() {
 }
 yImages.observe((event, transaction) => {
   if (transaction.origin !== "remote") return;
+  // A meta-only update (e.g. the hide toggle) applies narrowly; the full membership
+  // reconcile (skeleton builds, group rebuilds, rank-list DOM) is reserved for
+  // add/remove/position rewrites. Compare by content: values arrive as fresh objects.
+  const changes = [...event.changes.keys.entries()];
+  const metaOnly = changes.every(([id, ch]) => {
+    if (ch.action !== "update") return false;
+    const now = yImages.get(id) || {};
+    const old = ch.oldValue || {};
+    return Object.keys({ ...now, ...old }).every((k) => k === "simHidden" || JSON.stringify(now[k]) === JSON.stringify(old[k]));
+  });
+  if (metaOnly) {
+    for (const [id] of changes) {
+      window.dispatchEvent(new CustomEvent("collab:remote-image-meta", { detail: { imgIdx: id, meta: { simHidden: !!(yImages.get(id) || {}).simHidden } } }));
+    }
+    return;
+  }
   if (window.applyRemoteMembership) window.applyRemoteMembership(_membershipSnapshot());
 });
 
@@ -1315,7 +1331,8 @@ window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
 // A session import populates state.images directly (NOT via collab:images-added), so it
 // never reached the shared doc -> peers never learned of the images (a later joiner got
 // nothing; only add-path images synced). Publish the whole current session into the doc
-// (settings + membership + rank + polygons + scales), dropping any entries the doc still holds that
+// (membership + rank + polygons + scales; settings ride the collab:settings-changed the
+// import dispatches alongside), dropping any entries the doc still holds that
 // the import replaced. Peers then reconcile via the observer (connected guests) and
 // _sendDocState (future joiners); getImageMembership also registers each image's bytes so
 // this peer can serve them. Skipped on a guest (guests don't import; the host is source).
@@ -1330,9 +1347,7 @@ window.addEventListener("collab:session-loaded", async () => {
     const m = await window.getImageMembership?.(im.id);
     if (m) rows.push({ m, polygons: im.polygons || [], scale: im.scale });
   }
-  const settingKeys = ["outW", "outH", "slides", "fillColor", "blendMode", "seed", "ditherExp", "simX1", "simY1", "simX2", "simY2"];
   ydoc.transact(() => {
-    for (const k of settingKeys) if (meta[k] !== undefined) ySettings.set(k, meta[k]);
     for (const id of [...yImages.keys()]) {
       if (!ids.includes(id)) {
         yImages.delete(id);

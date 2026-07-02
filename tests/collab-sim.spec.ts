@@ -6,12 +6,8 @@
 import {
   test, expect, addImage, paintPolygon, closePanel, openPaintStep,
   emitRemote, imageCount, polyCount, simPos, collabOut, imgIdAt, groupClientPos,
-  TINY_IMG_DATAURL, FIXTURE_IMG,
+  TINY_IMG_DATAURL, FIXTURE_IMG, SESSION_ZIP,
 } from './fixtures';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const SESSION_ZIP = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'session.zip');
 
 // ── Host side: what the app exposes for a joining peer ──────────────────────────
 
@@ -106,21 +102,18 @@ test('a touch drag-reorder writes into the shared Y.Doc (chromium)', async ({ pa
   const ids = await page.evaluate(() => (window as any).getSessionMeta().rankOrder);
   await page.evaluate(async () => {
     const items = () => Array.from(document.querySelectorAll('#rank-list .im-rank-item')) as HTMLElement[];
-    const li = items()[1];
     const at = (el: HTMLElement) => {
       const r = el.getBoundingClientRect();
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     };
-    const fire = (el: HTMLElement, type: string, x: number, y: number, up = false) => {
-      const t = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
-      el.dispatchEvent(new TouchEvent(type, { touches: up ? [] : [t], targetTouches: up ? [] : [t], changedTouches: [t], bubbles: true, cancelable: true }));
-    };
+    const fire = (window as any).__fireTouch;
+    const li = items()[1];
     const p = at(li);
     fire(li, 'touchstart', p.x, p.y);
     await new Promise((res) => setTimeout(res, 450)); // past the long-press lift
     const dest = at(items()[0]);
     fire(li, 'touchmove', dest.x, dest.y);
-    fire(li, 'touchend', dest.x, dest.y, true);
+    fire(li, 'touchend', dest.x, dest.y);
   });
   await expect.poll(() => page.evaluate(() => (window as any).ydoc.getArray('rankOrder').toArray())).toEqual([ids[1], ids[0]]);
 });

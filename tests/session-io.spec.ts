@@ -1,12 +1,7 @@
 // Session export + import. Consumes tests/fixtures/session.zip (2 imgs, img0 has
 // 1 polygon) produced by session.setup.ts.
 
-import { test, expect, addImage, paintPolygon, imageCount, polyCount, collabOut, FIXTURE_IMG } from './fixtures';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const _dir = path.dirname(fileURLToPath(import.meta.url));
-const SESSION_ZIP = path.join(_dir, 'fixtures', 'session.zip');
+import { test, expect, addImage, paintPolygon, imageCount, polyCount, collabOut, FIXTURE_IMG, SESSION_ZIP } from './fixtures';
 
 test.describe('Session export', () => {
   test('exports a zip and reports Exported', async ({ page }) => {

@@ -295,8 +295,8 @@ function setScales(scales, opts = {}) {
     const entry = imgById(id);
     if (!entry) continue;
     entry.scale = scale;
-    entry.scaleFixed = opts.scaleFixed !== undefined ? opts.scaleFixed : scale !== null;
-    simRefreshGroup(id, opts.keepPreview === true);
+    entry.scaleFixed = scale !== null;
+    if (opts.refresh !== false) simRefreshGroup(id, opts.keepPreview === true);
   }
   if (opts.broadcast !== false) {
     window.dispatchEvent(new CustomEvent("collab:scales-changed", { detail: { scales } }));
@@ -537,11 +537,11 @@ function registerImages(entries, opts = {}) {
     if (!entry || imgById(entry.id)) continue;
     state.images.push(entry);
     state.undoStack.set(entry.id, []);
-    if (opts.rank !== false && !state.rankOrder.includes(entry.id)) state.rankOrder.push(entry.id);
+    if (!state.rankOrder.includes(entry.id)) state.rankOrder.push(entry.id);
     ids.push(entry.id);
   }
   if (!ids.length) return ids;
-  if (opts.rebuild !== false) buildRankList();
+  buildRankList();
   if (opts.broadcast !== false) {
     window.dispatchEvent(new CustomEvent("collab:images-added", { detail: { ids } }));
   }
@@ -558,6 +558,11 @@ function setSimHidden(imgIdx, hidden, opts = {}) {
   if (g && simRafId !== null) {
     g.inWorld = !hidden;
     _simViewDirty = true;
+  }
+  const eye = rankList.querySelector('li[data-img-idx="' + imgIdx + '"] .im-film-hide');
+  if (eye) {
+    eye.innerHTML = hidden ? EYE_CLOSED : EYE_OPEN;
+    eye.title = hidden ? "Show in sim" : "Hide in sim";
   }
   if (opts.broadcast !== false) {
     window.dispatchEvent(new CustomEvent("collab:image-meta-changed", { detail: { imgIdx, meta: { simHidden: hidden } } }));
@@ -681,8 +686,6 @@ function createRankItem(imgIdx, rank) {
   hideBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     setSimHidden(imgIdx, !entry.simHidden);
-    hideBtn.innerHTML = entry.simHidden ? EYE_CLOSED : EYE_OPEN;
-    hideBtn.title = entry.simHidden ? "Show in sim" : "Hide in sim";
   });
 
   const removeBtn = document.createElement("button");
@@ -1130,7 +1133,7 @@ function setPolygons(imgIdx, polygons, opts = {}) {
     redrawPolyOverlay(imgIdx);
     updateUndoBtn(imgIdx);
   }
-  simRefreshGroup(imgIdx, opts.keepPreview === true);
+  if (opts.refresh !== false) simRefreshGroup(imgIdx, opts.keepPreview === true);
   if (opts.broadcast !== false) {
     window.dispatchEvent(new CustomEvent("collab:polygon-changed", { detail: { imgIdx, polygons } }));
   }
@@ -2708,7 +2711,7 @@ btnScaleAll.addEventListener("click", () => {
   }
   cfgScaleAll.value = "1";
   cfgScaleAllVal.textContent = "1.00x";
-  setScales(next);
+  setScales(next, { refresh: false }); // refreshAllSimGroups below rebuilds once
   buildRankList();
   if (simRafId !== null) {
     // Re-scale each mask in place. Do NOT initSim here: it resets the output rect
@@ -4224,6 +4227,9 @@ async function _runImport(file, makeMeta) {
       if (!ctx.painted) loadPainterImage(state.paintIdx);
       ensureYoloEncoding();
     }
+    // Publish the imported settings through the same event the live edits use
+    // (_settingsPayload stays the single source of the synced key set).
+    window.dispatchEvent(new CustomEvent("collab:settings-changed", { detail: _settingsPayload() }));
     window.dispatchEvent(new CustomEvent("collab:session-loaded"));
     _sessionStatus(total ? "Imported" : "");
     if (total) setTimeout(() => _sessionStatus(""), 1500);
@@ -4628,6 +4634,10 @@ window.addEventListener("collab:remote-image-removed", ({ detail: { imgIdx } }) 
   removeImage(imgIdx, { broadcast: false });
 });
 
+window.addEventListener("collab:remote-image-meta", ({ detail: { imgIdx, meta } }) => {
+  if (meta.simHidden !== undefined) setSimHidden(imgIdx, !!meta.simHidden, { broadcast: false });
+});
+
 window.addEventListener("collab:remote-positions", (e) => {
   if (simRafId === null) return;
   const { positions, simX1: rx1, simY1: ry1, simX2: rx2, simY2: ry2 } = e.detail;
@@ -4693,7 +4703,7 @@ function applySimSnapshot(snap) {
   if (Object.keys(scales).length) setScales(scales); // broadcast: keeps yScales converged after an undo
   for (const s of snap.groups || []) {
     const g = simGroups.get(s.imgIdx);
-    if (g && imgById(s.imgIdx)) {
+    if (g) {
       g.x = s.x;
       g.y = s.y;
       g.angle = s.angle;
@@ -4833,20 +4843,23 @@ window.applyRemoteMembership = function (snap) {
     const m = images[id];
     fresh.push(_sessionEntry({ ...m, polygons: polygons[id] || [], scale: scales[id] ?? null, scaleFixed: scales[id] != null }, id));
   }
-  registerImages(fresh, { broadcast: false, rank: false, rebuild: false });
+  registerImages(fresh, { broadcast: false });
 
   // Re-apply masks + scale for every doc image (covers an edit to one we already held,
   // and re-applies a mask that landed before its image).
+  // refresh:false -- the placement loop below rebuilds each group once.
   for (const id of Object.keys(images)) {
     if (!imgById(id)) continue;
-    if (polygons[id]) setPolygons(id, polygons[id], { broadcast: false, keepPreview: true });
-    if (scales[id] !== undefined) setScale(id, scales[id], { broadcast: false, keepPreview: true });
+    if (polygons[id]) setPolygons(id, polygons[id], { broadcast: false, refresh: false });
+    if (scales[id] !== undefined) setScale(id, scales[id], { broadcast: false, refresh: false });
     if (images[id].simHidden !== undefined) setSimHidden(id, !!images[id].simHidden, { broadcast: false });
   }
 
+  // registerImages already appended any missing ids; a complete doc order replaces
+  // wholesale. Direct assign, not setRankOrder: its keep-the-viewed-image tracking
+  // would latch onto whatever id transiently sits at paintIdx mid-reconcile.
   const valid = (order || []).filter((id) => imgById(id));
   if (valid.length === state.images.length) state.rankOrder = valid;
-  else for (const id of Object.keys(images)) if (!state.rankOrder.includes(id)) state.rankOrder.push(id);
 
   const n = state.images.length;
   buildRankList();
@@ -4950,7 +4963,7 @@ window.addEventListener("collab:remote-image-thumb", ({ detail: { imgIdx, thumb 
 // the live-add binary fill. Idempotent: an entry that already has a blob is left alone
 // (a re-stream after reconnect must not clobber newer local edits).
 async function _populateImageEntry(detail) {
-  const { imgIdx, w, h, jpegBase64, assetHash, polygons, currentPoly, scale, scaleFixed, simHidden } = detail;
+  const { imgIdx, w, h, jpegBase64, assetHash, polygons, currentPoly, scale, simHidden } = detail;
   const entry = imgById(imgIdx);
   if (!entry || entry.blob) {
     if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
@@ -4964,11 +4977,10 @@ async function _populateImageEntry(detail) {
   bm.close();
   if (assetHash) entry.assetHash = assetHash;
   ensureAssetHash(entry); // register bytes so this peer can serve them on request
-  if (polygons) setPolygons(imgIdx, polygons, { broadcast: false });
+  if (polygons) setPolygons(imgIdx, polygons, { broadcast: false, refresh: false });
   if (currentPoly) entry.currentPoly = currentPoly;
-  if (scale != null) setScale(imgIdx, scale, { broadcast: false });
-  if (scaleFixed != null) entry.scaleFixed = scaleFixed;
-  if (simHidden != null) entry.simHidden = simHidden;
+  if (scale != null) setScale(imgIdx, scale, { broadcast: false, refresh: false });
+  if (simHidden != null) setSimHidden(imgIdx, !!simHidden, { broadcast: false });
   _updateFilmstripThumb(imgIdx);
   simRefreshGroup(imgIdx); // re-checks merge readiness (via _showMergeBtn)
   _simViewDirty = true;
