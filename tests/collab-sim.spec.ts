@@ -95,6 +95,32 @@ test('a rank-order change writes into the shared Y.Doc', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => (window as any).ydoc.getArray('rankOrder').toArray())).toEqual(reversed);
 });
 
+test('a touch drag-reorder writes into the shared Y.Doc (chromium)', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', 'synthetic TouchEvent constructor is unreliable on Firefox desktop');
+  await addImage(page, [FIXTURE_IMG, FIXTURE_IMG]);
+  await expect.poll(() => imageCount(page)).toBe(2);
+  const ids = await page.evaluate(() => (window as any).getSessionMeta().rankOrder);
+  await page.evaluate(async () => {
+    const items = () => Array.from(document.querySelectorAll('#rank-list .im-rank-item')) as HTMLElement[];
+    const li = items()[1];
+    const at = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    };
+    const fire = (el: HTMLElement, type: string, x: number, y: number, up = false) => {
+      const t = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+      el.dispatchEvent(new TouchEvent(type, { touches: up ? [] : [t], targetTouches: up ? [] : [t], changedTouches: [t], bubbles: true, cancelable: true }));
+    };
+    const p = at(li);
+    fire(li, 'touchstart', p.x, p.y);
+    await new Promise((res) => setTimeout(res, 450)); // past the long-press lift
+    const dest = at(items()[0]);
+    fire(li, 'touchmove', dest.x, dest.y);
+    fire(li, 'touchend', dest.x, dest.y, true);
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).ydoc.getArray('rankOrder').toArray())).toEqual([ids[1], ids[0]]);
+});
+
 test('a remote Y.Doc rank-order update applies locally', async ({ page }) => {
   await addImage(page, [FIXTURE_IMG, FIXTURE_IMG]);
   await expect.poll(() => imageCount(page)).toBe(2);

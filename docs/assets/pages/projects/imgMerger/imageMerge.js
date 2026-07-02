@@ -471,21 +471,19 @@ cfgImages.addEventListener("change", () => {
   cfgImages.value = "";
 
   const firstLoad = state.images.length === 0;
-  const baseIdx = state.images.length;
+  const entries = new Array(files.length); // buffered so a mid-decode remote add can't collide
   let loaded = 0;
 
   files.forEach((file, i) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
-      const idx = baseIdx + i;
       const w = img.naturalWidth,
         h = img.naturalHeight;
-
       const thumbUrl = buildThumb(img, w, h);
       URL.revokeObjectURL(url);
 
-      state.images[idx] = {
+      const entry = {
         id: newImgId(),
         file,
         blob: file,
@@ -500,30 +498,17 @@ cfgImages.addEventListener("change", () => {
         scale: null,
         simHidden: false,
       };
-      ensureAssetHash(state.images[idx]); // content-address the bytes for on-demand serving
-      ensureThumbHash(state.images[idx]); // content-address the tiny preview too
+      ensureAssetHash(entry); // content-address the bytes for on-demand serving
+      ensureThumbHash(entry); // content-address the tiny preview too
+      entries[i] = entry;
       loaded++;
       if (loaded === files.length) {
-        // Append the new images' ids to rankOrder and seed their undo stacks.
-        const newIds = [];
-        for (let j = baseIdx; j < baseIdx + files.length; j++) {
-          const id = state.images[j].id;
-          newIds.push(id);
-          state.rankOrder.push(id);
-          state.undoStack.set(id, []);
-        }
+        registerImages(entries);
         paintArea.classList.remove("im-hidden");
-        buildRankList();
-        window.dispatchEvent(
-          new CustomEvent("collab:images-added", {
-            detail: { ids: newIds },
-          }),
-        );
         loadPainterImage(firstLoad ? 0 : Math.min(state.paintIdx, state.images.length - 1));
         unlockStep("step-paint");
         panelSetOpen(true);
-        const n = state.images.length;
-        updateStepMeta("step-images", imageCountLabel(n), true);
+        updateStepMeta("step-images", imageCountLabel(state.images.length), true);
         ensureYoloEncoding(); // start the model / queue the new images for segmentation
       }
     };
@@ -542,6 +527,38 @@ function buildRankList() {
   btnExportSession.disabled = state.images.length === 0;
   _refreshPainterNav();
   _showMergeBtn(); // an image arriving/leaving can change merge readiness (all transferred?)
+}
+
+// The only door for adding images: state, undo stacks, rank order, and the shared
+// doc (via collab:images-added) stay in step no matter which path adds.
+function registerImages(entries, opts = {}) {
+  const ids = [];
+  for (const entry of entries) {
+    if (!entry || imgById(entry.id)) continue;
+    state.images.push(entry);
+    state.undoStack.set(entry.id, []);
+    if (opts.rank !== false && !state.rankOrder.includes(entry.id)) state.rankOrder.push(entry.id);
+    ids.push(entry.id);
+  }
+  if (!ids.length) return ids;
+  if (opts.rebuild !== false) buildRankList();
+  if (opts.broadcast !== false) {
+    window.dispatchEvent(new CustomEvent("collab:images-added", { detail: { ids } }));
+  }
+  return ids;
+}
+
+// The only door for reordering: keeps paintIdx on the same image and syncs the doc.
+function setRankOrder(order, opts = {}) {
+  const curImgIdx = state.rankOrder[state.paintIdx];
+  state.rankOrder = order;
+  const cur = state.rankOrder.indexOf(curImgIdx);
+  if (cur !== -1) state.paintIdx = cur;
+  buildRankList();
+  _resortEncodeQueue();
+  if (opts.broadcast !== false) {
+    window.dispatchEvent(new CustomEvent("collab:rank-order-changed", { detail: { order: state.rankOrder.slice() } }));
+  }
 }
 
 // Keep the painter's index label + prev/next enabled state in sync with the image list,
@@ -718,14 +735,10 @@ function onDrop(e) {
   e.currentTarget.classList.remove("drag-over");
   const destIdx = Array.from(rankList.children).indexOf(e.currentTarget);
   if (dragSrcIdx === null || dragSrcIdx === destIdx) return;
-  const moved = state.rankOrder.splice(dragSrcIdx, 1)[0];
-  state.rankOrder.splice(destIdx, 0, moved);
-  // keep paintIdx tracking the same image
-  const currentImgIdx = state.rankOrder[state.paintIdx];
-  buildRankList();
-  state.paintIdx = state.rankOrder.indexOf(currentImgIdx);
-  _resortEncodeQueue();
-  window.dispatchEvent(new CustomEvent("collab:rank-order-changed", { detail: { order: state.rankOrder.slice() } }));
+  const order = state.rankOrder.slice();
+  const moved = order.splice(dragSrcIdx, 1)[0];
+  order.splice(destIdx, 0, moved);
+  setRankOrder(order);
 }
 
 function onDragEnd(e) {
@@ -4086,14 +4099,10 @@ window.addEventListener("blur", _exitSpacePan);
     drag.li.classList.remove("dragging");
 
     if (commit) {
-      const newOrder = Array.from(rankList.children).map((li) => li.dataset.imgIdx);
-      const curImgIdx = state.rankOrder[state.paintIdx];
-      state.rankOrder = newOrder;
-      state.paintIdx = newOrder.indexOf(curImgIdx);
+      setRankOrder(Array.from(rankList.children).map((li) => li.dataset.imgIdx));
     } else {
-      state.rankOrder = savedOrder;
+      setRankOrder(savedOrder, { broadcast: false });
     }
-    buildRankList();
     drag = null;
     savedOrder = null;
   }
@@ -4590,14 +4599,11 @@ window.addEventListener("collab:remote-image", async (e) => {
   const newId = id || newImgId();
   if (imgById(newId)) return; // already have this image (duplicate / echo)
   const newEntry = { id: newId, file: null, blob, assetHash: null, name, thumbUrl, w, h, polygons: polygons || [], currentPoly: [], scale: null, simHidden: false };
-  state.images.push(newEntry);
   ensureAssetHash(newEntry); // register bytes so this peer can serve them on request
-  state.undoStack.set(newId, []);
-  state.rankOrder.push(newId);
+  registerImages([newEntry], { broadcast: false });
 
   if (encoding) _restoreEncodings([encoding], [newId]);
 
-  buildRankList();
   simRefreshGroup(newId);
   if (simPos && simGroups.get(newId)) placeGroup(simGroups.get(newId), simPos.x, simPos.y, simAngle || 0);
   const n = state.images.length;
@@ -4765,14 +4771,12 @@ function _updateFilmstripThumb(imgIdx) {
 // the remote-image-full handler so a re-stream can't clobber local edits.
 function _mergeRemoteSessionMeta(meta) {
   const have = new Set(state.images.map((e) => e.id));
+  const entries = [];
   const added = [];
   meta.images.forEach((si) => {
     const id = si.id || newImgId();
     if (have.has(id)) return;
-    const entry = _sessionEntry(si, id);
-    state.images.push(entry);
-    state.undoStack.set(id, []);
-    if (!state.rankOrder.includes(id)) state.rankOrder.push(id);
+    entries.push(_sessionEntry(si, id));
     added.push({ id, simPos: si.simPos, simAngle: si.simAngle || 0 });
   });
 
@@ -4781,7 +4785,7 @@ function _mergeRemoteSessionMeta(meta) {
   // assetHash. No "resend missing images" hack -- that caused a re-stream storm.)
   if (added.length === 0) return; // host's session is a subset of ours -- nothing new to render
 
-  buildRankList();
+  registerImages(entries, { broadcast: false });
   updateStepMeta("step-images", imageCountLabel(state.images.length), true);
   paintArea.classList.remove("im-hidden");
   unlockStep("step-paint");
@@ -4811,13 +4815,13 @@ window.applyRemoteMembership = function (snap) {
     if (!incoming.has(e.id)) removeImage(e.id, { broadcast: false });
   }
 
+  const fresh = [];
   for (const id of Object.keys(images)) {
     if (imgById(id)) continue;
     const m = images[id];
-    const si = { ...m, polygons: polygons[id] || [], scale: scales[id] ?? null, scaleFixed: scales[id] != null };
-    state.images.push(_sessionEntry(si, id));
-    state.undoStack.set(id, []);
+    fresh.push(_sessionEntry({ ...m, polygons: polygons[id] || [], scale: scales[id] ?? null, scaleFixed: scales[id] != null }, id));
   }
+  registerImages(fresh, { broadcast: false, rank: false, rebuild: false });
 
   // Re-apply masks + scale for every doc image (covers an edit to one we already held,
   // and re-applies a mask that landed before its image).
@@ -4963,10 +4967,7 @@ async function _populateImageEntry(detail) {
 window.addEventListener("collab:remote-image-skeleton", ({ detail }) => {
   const { id, simPos, simAngle } = detail;
   if (!id || imgById(id)) return; // dedup: already have this image (skeleton or full)
-  state.images.push(_sessionEntry(detail, id));
-  state.undoStack.set(id, []);
-  if (!state.rankOrder.includes(id)) state.rankOrder.push(id);
-  buildRankList();
+  registerImages([_sessionEntry(detail, id)], { broadcast: false });
   updateStepMeta("step-images", imageCountLabel(state.images.length), true);
   paintArea.classList.remove("im-hidden");
   unlockStep("step-paint");

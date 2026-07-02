@@ -585,8 +585,7 @@
           return imgById(id);
         });
         if (valid.length !== state.images.length) return;
-        state.rankOrder = valid;
-        buildRankList();
+        setRankOrder(valid, { broadcast: false });
       };
     </script>
     <script type="module" src="collaborate.js?v=43"></script>
