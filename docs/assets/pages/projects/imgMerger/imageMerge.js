@@ -1008,14 +1008,7 @@ canvasWrap.addEventListener("click", (e) => {
     const dx = pos.x - currentPoly[0].x;
     const dy = pos.y - currentPoly[0].y;
     if (dx * dx + dy * dy <= snap * snap) {
-      pushPolyUndo(imgIdx);
-      entry.polygons.push(currentPoly.slice());
-      currentPoly.length = 0; // clear in-place; entry.currentPoly clears too
-      rubberBandPt = null;
-      redrawPolyOverlay(imgIdx);
-      updateUndoBtn(imgIdx);
-      simRefreshGroup(imgIdx);
-      window.dispatchEvent(new CustomEvent("collab:polygon-changed", { detail: { imgIdx, polygons: entry.polygons } }));
+      setPolygons(imgIdx, [...entry.polygons, currentPoly.slice()], { undo: true, clearCurrent: true });
       return;
     }
   }
@@ -1091,35 +1084,45 @@ function updateUndoBtn(imgIdx) {
   btnUndo.disabled = !stack || stack.length === 0;
 }
 
+// The only door for polygon writes: local state, painter UI, sim group, and the
+// shared doc (via collab:polygon-changed) stay in step no matter which path edits.
+function setPolygons(imgIdx, polygons, opts = {}) {
+  const entry = imgById(imgIdx);
+  if (!entry) return;
+  if (opts.undo) pushPolyUndo(imgIdx);
+  entry.polygons = polygons;
+  if (opts.clearCurrent) {
+    currentPoly.length = 0;
+    rubberBandPt = null;
+  }
+  if (imgIdx === state.rankOrder[state.paintIdx]) {
+    redrawPolyOverlay(imgIdx);
+    updateUndoBtn(imgIdx);
+  }
+  simRefreshGroup(imgIdx, opts.keepPreview === true);
+  if (opts.broadcast !== false) {
+    window.dispatchEvent(new CustomEvent("collab:polygon-changed", { detail: { imgIdx, polygons } }));
+  }
+}
+
 btnUndo.addEventListener("click", () => {
   const imgIdx = state.rankOrder[state.paintIdx];
   const entry = imgById(imgIdx);
   const stack = state.undoStack.get(imgIdx);
   if (!stack || !stack.length) return;
   const snap = stack.pop();
-  entry.polygons = snap.polygons;
   // Restore currentPoly in-place so the entry.currentPoly reference stays valid
   currentPoly.length = 0;
   snap.currentPoly.forEach((v) => currentPoly.push(v));
   rubberBandPt = currentPoly.length > 0 ? rubberBandPt : null;
-  redrawPolyOverlay(imgIdx);
-  updateUndoBtn(imgIdx);
-  simRefreshGroup(imgIdx);
-  window.dispatchEvent(new CustomEvent("collab:polygon-changed", { detail: { imgIdx, polygons: entry.polygons } }));
+  setPolygons(imgIdx, snap.polygons);
 });
 
 btnClearMask.addEventListener("click", () => {
   const imgIdx = state.rankOrder[state.paintIdx];
   const entry = imgById(imgIdx);
   if (entry.polygons.length === 0 && currentPoly.length === 0) return;
-  pushPolyUndo(imgIdx);
-  entry.polygons = [];
-  currentPoly.length = 0;
-  rubberBandPt = null;
-  redrawPolyOverlay(imgIdx);
-  updateUndoBtn(imgIdx);
-  simRefreshGroup(imgIdx);
-  window.dispatchEvent(new CustomEvent("collab:polygon-changed", { detail: { imgIdx, polygons: [] } }));
+  setPolygons(imgIdx, [], { undo: true, clearCurrent: true });
 });
 
 btnPrev.addEventListener("click", () => {
@@ -1491,12 +1494,11 @@ function requestDecode(x, y) {
   // Deselect: remove the first polygon that contains the click point.
   for (let i = 0; i < entry.polygons.length; i++) {
     if (pointInPoly(entry.polygons[i], x, y)) {
-      pushPolyUndo(imgIdx);
-      entry.polygons.splice(i, 1);
-      redrawPolyOverlay(imgIdx);
-      updateUndoBtn(imgIdx);
-      simRefreshGroup(imgIdx);
-      window.dispatchEvent(new CustomEvent("collab:polygon-changed", { detail: { imgIdx, polygons: entry.polygons } }));
+      setPolygons(
+        imgIdx,
+        entry.polygons.filter((_, j) => j !== i),
+        { undo: true },
+      );
       updateYoloStatus("Segment removed. Click to add or click an object to segment.");
       return;
     }
@@ -1538,12 +1540,7 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   const scaleY = entry.h / height;
   const scaledPoly = scaleX === 1 && scaleY === 1 ? poly : poly.map((pt) => ({ x: pt.x * scaleX, y: pt.y * scaleY }));
 
-  pushPolyUndo(forImgIdx);
-  entry.polygons.push(scaledPoly);
-  redrawPolyOverlay(forImgIdx);
-  updateUndoBtn(forImgIdx);
-  simRefreshGroup(forImgIdx);
-  window.dispatchEvent(new CustomEvent("collab:polygon-changed", { detail: { imgIdx: forImgIdx, polygons: entry.polygons } }));
+  setPolygons(forImgIdx, [...entry.polygons, scaledPoly], { undo: true });
   updateYoloStatus("Segment added. Click for another or switch to manual mode.");
 }
 
@@ -4722,11 +4719,7 @@ window.addEventListener("collab:remote-release", ({ detail: { imgIdx } }) => {
 });
 
 window.addEventListener("collab:remote-polygon", ({ detail: { imgIdx, polygons } }) => {
-  const entry = imgById(imgIdx);
-  if (!entry) return;
-  entry.polygons = polygons;
-  if (imgIdx === state.rankOrder[state.paintIdx]) redrawPolyOverlay(imgIdx);
-  simRefreshGroup(imgIdx, true); // remote edit -> keep the merged preview
+  setPolygons(imgIdx, polygons, { broadcast: false, keepPreview: true });
 });
 
 // A presenter's viewport — smoothly track it until the user interacts (any manual
@@ -4837,7 +4830,7 @@ window.applyRemoteMembership = function (snap) {
   for (const id of Object.keys(images)) {
     const e = imgById(id);
     if (!e) continue;
-    if (polygons[id]) e.polygons = polygons[id];
+    if (polygons[id]) setPolygons(id, polygons[id], { broadcast: false, keepPreview: true });
     if (scales[id] !== undefined) {
       e.scale = scales[id];
       e.scaleFixed = scales[id] != null;
@@ -4964,7 +4957,7 @@ async function _populateImageEntry(detail) {
   bm.close();
   if (assetHash) entry.assetHash = assetHash;
   ensureAssetHash(entry); // register bytes so this peer can serve them on request
-  if (polygons) entry.polygons = polygons;
+  if (polygons) setPolygons(imgIdx, polygons, { broadcast: false });
   if (currentPoly) entry.currentPoly = currentPoly;
   if (scale != null) entry.scale = scale;
   if (scaleFixed != null) entry.scaleFixed = scaleFixed;
