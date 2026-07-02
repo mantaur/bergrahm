@@ -926,6 +926,12 @@ window.collabAssetProgress = (hash) => {
   return p && p.bytes ? Math.min(1, p.got / p.bytes) : 0;
 };
 
+// Absolute bytes received so far for a hash (for a per-image download-speed readout).
+window.collabAssetGot = (hash) => {
+  const p = _assetPartials.get(hash);
+  return p ? p.got : 0;
+};
+
 function _enqueueSend(conn, task) {
   const prev = _sendChains.get(conn) || Promise.resolve();
   const next = prev.then(task).catch((e) => console.warn("[collab] queued send failed:", e));

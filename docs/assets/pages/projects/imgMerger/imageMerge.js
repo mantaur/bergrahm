@@ -755,6 +755,32 @@ function _painterDims(entry) {
   return { dispW, dispH, bScale, bw: Math.max(1, Math.round(entry.w * bScale)), bh: Math.max(1, Math.round(entry.h * bScale)) };
 }
 
+function _fmtRate(bps) {
+  if (bps >= 1048576) return (bps / 1048576).toFixed(1) + " MB/s";
+  if (bps >= 1024) return Math.round(bps / 1024) + " KB/s";
+  return Math.round(bps) + " B/s";
+}
+
+// Per-image download speed, sampled from the bytes received for this hash between calls
+// (the loading tick calls this ~2x/s). Resets when the viewed hash changes.
+let _loadSpeed = { hash: null, t: 0, got: 0, rate: 0 };
+function _painterLoadSpeed(hash) {
+  if (!hash || !window.collabAssetGot) return 0;
+  const got = window.collabAssetGot(hash);
+  const now = performance.now();
+  if (_loadSpeed.hash !== hash) {
+    _loadSpeed = { hash, t: now, got, rate: 0 };
+    return 0;
+  }
+  const dt = (now - _loadSpeed.t) / 1000;
+  if (dt >= 0.25) {
+    _loadSpeed.rate = Math.max(0, (got - _loadSpeed.got) / dt);
+    _loadSpeed.t = now;
+    _loadSpeed.got = got;
+  }
+  return _loadSpeed.rate;
+}
+
 // Placeholder shown when an image's pixels haven't arrived yet: a plain panel with
 // "Loading X%" (X from the transfer progress) instead of the stale previous image.
 function _drawPainterLoading(entry, dims) {
@@ -780,6 +806,13 @@ function _drawPainterLoading(entry, dims) {
   paintCtx.textBaseline = "middle";
   paintCtx.font = Math.max(13, Math.round(dims.bw * 0.045)) + "px sans-serif";
   paintCtx.fillText(pct > 0 ? "Loading " + pct + "%" : "Loading...", dims.bw / 2, dims.bh / 2);
+  // With the sync debug HUD on, show THIS image's download speed -- so a discrepancy vs
+  // the overall HUD rate (e.g. this image stalled while others transfer) is visible.
+  if (window._sync && window._sync.on) {
+    paintCtx.fillStyle = "#9ca3af";
+    paintCtx.font = Math.max(11, Math.round(dims.bw * 0.03)) + "px sans-serif";
+    paintCtx.fillText(_fmtRate(_painterLoadSpeed(entry.assetHash)), dims.bw / 2, dims.bh / 2 + Math.max(22, Math.round(dims.bh * 0.07)));
+  }
 }
 
 function loadPainterImage(rankIdx) {
