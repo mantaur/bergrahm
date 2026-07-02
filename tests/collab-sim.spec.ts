@@ -353,6 +353,21 @@ test('guest: reconcile requests a missing asset by hash', async ({ page }) => {
   await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).some((e) => e.detail.hash === 'cafe1234')).toBe(true);
 });
 
+// Removing the last polygon must clear the sim group AND trigger a repaint. Previously
+// simRefreshGroup deleted the group but returned without marking the view dirty, so the
+// mask lingered on the canvas until a pan. _clearMergedImage (dirty flag + merge-button
+// refresh) is the observable consequence: with a lone masked image, merge un-readies.
+test('removing the last polygon refreshes the canvas (group gone, merge un-ready)', async ({ page }) => {
+  await addImage(page);
+  await paintPolygon(page);
+  await expect(page.locator('#btn-merge')).toBeVisible();
+
+  const id = await imgIdAt(page, 0);
+  await emitRemote(page, 'collab:remote-polygon', { imgIdx: id, polygons: [] });
+  expect(await polyCount(page, 0)).toBe(0);
+  await expect(page.locator('#btn-merge')).toBeHidden(); // repaint/cleanup ran
+});
+
 // Merge must not be offered while any image is still transferring -- a merge would run
 // against a session that isn't fully synced in.
 test('merge button hides until every image is transferred', async ({ page }) => {

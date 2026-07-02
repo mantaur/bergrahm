@@ -2717,7 +2717,13 @@ function simRefreshGroup(imgIdx, keepMerged = false) {
   const old = simGroups.get(imgIdx) || null;
   simGroups.delete(imgIdx);
 
-  if (!hasPolys) return;
+  if (!hasPolys) {
+    // Last polygon removed -> the group is gone. Repaint the sim without it (and drop any
+    // stale baked composite); _clearMergedImage sets _simViewDirty + refreshes the merge
+    // button. Without this the canvas keeps showing the mask until the next pan/zoom.
+    if (old) _clearMergedImage();
+    return;
+  }
 
   // Local edits drop the preview to re-enter editing; a peer's edit keeps it so
   // the rescaled/reshaped mask just re-renders live over the baked composite.
