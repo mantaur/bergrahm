@@ -704,7 +704,10 @@ function setupConn(conn, isGuestSide) {
         const store = pendingImageMeta.ref || pendingImageMeta;
         store.parts.push(buf);
         store.got += buf.byteLength;
-        if (pendingImageMeta.kind === "asset") _assetSliceAt.set(pendingImageMeta.hash, Date.now());
+        if (pendingImageMeta.kind === "asset") {
+          _lastAnyAssetSliceAt = Date.now();
+          _assetSliceAt.set(pendingImageMeta.hash, _lastAnyAssetSliceAt);
+        }
         if (pendingImageMeta.bytes != null && store.got < pendingImageMeta.bytes) return;
         const meta = pendingImageMeta;
         pendingImageMeta = null;
@@ -911,6 +914,11 @@ const _assetPartials = new Map(); // hash -> { parts: [], got, bytes, owner }
 // would duplicate it). Pruned when the transfer completes.
 const _assetSliceAt = new Map(); // hash -> timestamp of last received slice
 window.collabAssetSliceAt = (hash) => _assetSliceAt.get(hash) || 0;
+
+// True while asset bytes are actively arriving (the serial sender is busy) -- the app's
+// reconcile uses this to avoid re-requesting queued transfers (they're not lost).
+let _lastAnyAssetSliceAt = 0;
+window.collabAssetActive = () => _lastAnyAssetSliceAt > 0 && Date.now() - _lastAnyAssetSliceAt < 5000;
 
 // Fraction (0..1) of a hash's bytes received so far, for the painter's "Loading X%".
 window.collabAssetProgress = (hash) => {

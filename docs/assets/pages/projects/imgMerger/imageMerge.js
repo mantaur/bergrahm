@@ -4430,8 +4430,9 @@ async function _fillThumbFromStore(entry) {
 // phone refresh re-pulling all images). Instead we keep only ASSET_CONCURRENCY pulls in
 // flight; as each lands we top up. The sender transfers one at a time anyway, so this just
 // caps its queue and makes the stampede impossible regardless of link speed.
-const ASSET_CONCURRENCY = 4; // max pulls in flight at once
-const ASSET_STALL_MS = 15000; // no progress (request or slice) this long -> retry (resume)
+const ASSET_CONCURRENCY = 2; // max pulls in flight; the sender serializes anyway, so a
+// shallow queue (no gap) lets a newly-viewed image be served within ~1 transfer
+const ASSET_STALL_MS = 15000; // request quiet AND channel idle this long -> retry (resume)
 const _assetReqAt = new Map(); // hash -> last request time
 
 // Serialize reconciles. This function awaits (image decode) and is called from the 4s
@@ -4458,24 +4459,27 @@ async function reconcileAssets() {
 
 async function _reconcileOnce() {
   let filled = false;
-  // Pull the currently-viewed image first, then carousel (rank) order -- so navigating to
-  // an image fetches it next and its "Loading X%" advances promptly.
   const rankOf = (id) => {
     const r = state.rankOrder.indexOf(id);
     return r === -1 ? Infinity : r;
   };
-  const viewedId = state.images.length ? state.rankOrder[state.paintIdx] : null;
-  const ordered = [...state.images].sort((a, b) => {
-    if (a.id === viewedId) return -1;
-    if (b.id === viewedId) return 1;
-    return rankOf(a.id) - rankOf(b.id);
-  });
+  const ordered = [...state.images].sort((a, b) => rankOf(a.id) - rankOf(b.id));
   const now = Date.now();
-  // A pull counts as in flight while it shows progress: a request OR a received slice
-  // within the stall window. A slow-but-arriving transfer keeps its slice time fresh, so
-  // it is NOT re-requested (which would re-send it); only a truly stalled one is retried.
+  // A requested pull stays "in flight" (counted toward the window, not re-requested) while
+  // its own bytes are arriving OR the channel is busy serving anything -- in that case it's
+  // just queued on the (serial) sender, not lost. Only a request that has gone quiet while
+  // the WHOLE channel is idle for the stall window is retried (resume offset). This is what
+  // stops queued/slow transfers from being re-requested into duplicate serves.
   const sliceAt = (hash) => (window.collabAssetSliceAt ? window.collabAssetSliceAt(hash) : 0);
-  const inFlight = (hash) => now - Math.max(_assetReqAt.get(hash) || 0, sliceAt(hash)) < ASSET_STALL_MS;
+  const channelActive = window.collabAssetActive ? window.collabAssetActive() : false;
+  const inFlight = (hash) => {
+    const req = _assetReqAt.get(hash) || 0;
+    if (!req) return false;
+    if (channelActive) return true;
+    return now - Math.max(req, sliceAt(hash)) < ASSET_STALL_MS;
+  };
+
+  const viewedId = state.images.length ? state.rankOrder[state.paintIdx] : null;
 
   // Fill anything already local, and count how many pulls are currently in flight.
   let active = 0;
@@ -4490,15 +4494,21 @@ async function _reconcileOnce() {
     }
   }
 
-  // Request more, thumbnails first then full bytes, up to the concurrency window.
   const want = (hash) => {
     if (active >= ASSET_CONCURRENCY || inFlight(hash) || assetStore.has(hash)) return;
     _assetReqAt.set(hash, now);
     active++;
     window.dispatchEvent(new CustomEvent("collab:asset-needed", { detail: { hash } }));
   };
-  for (const e of ordered) if (e.thumbHash && !e.thumbUrl) want(e.thumbHash);
-  for (const e of ordered) if (e.assetHash && !e.blob) want(e.assetHash);
+  // Priority: the viewed image's thumb then its full (so navigating to an image fetches IT
+  // next, ahead of other images), then everyone else's thumbnails, then their full bytes.
+  const viewed = viewedId ? imgById(viewedId) : null;
+  if (viewed) {
+    if (viewed.thumbHash && !viewed.thumbUrl) want(viewed.thumbHash);
+    if (viewed.assetHash && !viewed.blob) want(viewed.assetHash);
+  }
+  for (const e of ordered) if (e.id !== viewedId && e.thumbHash && !e.thumbUrl) want(e.thumbHash);
+  for (const e of ordered) if (e.id !== viewedId && e.assetHash && !e.blob) want(e.assetHash);
 
   if (filled) _updateLoadingStatus();
 }

@@ -458,6 +458,7 @@ test('guest: a missing asset is not re-requested within the backoff window', asy
 
 // Pull order follows the carousel (rank) order, like the YOLO encode queue: the image
 // nearest the top of the list requests its bytes first, regardless of insertion order.
+// Pulls are windowed (bounded concurrency), so deliver each as it's asked to advance it.
 test('guest: reconcile requests assets in carousel (rank) order', async ({ page }) => {
   await page.evaluate(() => {
     const mk = (id: string, hash: string) => ({ id, name: id + '.png', w: 400, h: 400, assetHash: hash, simHidden: false, scaleFixed: false, simPos: null, simAngle: 0 });
@@ -470,12 +471,16 @@ test('guest: reconcile requests assets in carousel (rank) order', async ({ page 
   });
   await expect.poll(() => imageCount(page)).toBe(3);
 
-  // applyRemoteMembership runs a reconcile that requests the three missing hashes; the
-  // request de-dup means each hash is asked for once, so these first three events are the
-  // pull order.
-  await expect.poll(async () => (await collabOut(page, 'collab:asset-needed')).length).toBeGreaterThanOrEqual(3);
+  // Deliver each requested hash (idempotent) so the bounded window advances until all three
+  // have been asked for; the request order is the pull order.
+  await expect.poll(async () => {
+    for (const e of await collabOut(page, 'collab:asset-needed')) {
+      await emitRemote(page, 'collab:remote-asset', { hash: e.detail.hash, jpegBase64: TINY_IMG_DATAURL });
+    }
+    return (await collabOut(page, 'collab:asset-needed')).length;
+  }, { timeout: 5000 }).toBeGreaterThanOrEqual(3);
   const hashes = (await collabOut(page, 'collab:asset-needed')).slice(0, 3).map((e: any) => e.detail.hash);
-  expect(hashes).toEqual(['hc', 'ha', 'hb']); // rank order, not insertion order
+  expect(hashes).toEqual(['hc', 'ha', 'hb']); // rank order (viewed 'c' first), not insertion order
 });
 
 // A locally added image is content-addressed and registered so this peer can serve it.
