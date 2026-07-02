@@ -136,6 +136,26 @@ test('a scale edit writes into the Y.Doc', async ({ page }) => {
   await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('scales').get(id), id)).toBe(0.5);
 });
 
+test('the painter scale bar writes into the Y.Doc', async ({ page }) => {
+  await addImage(page);
+  const id = await imgIdAt(page, 0);
+  await openPaintStep(page);
+  await page.evaluate(() => {
+    const inp = document.getElementById('painter-scale-inp') as HTMLInputElement;
+    inp.value = '0.42';
+    inp.dispatchEvent(new Event('change'));
+  });
+  await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('scales').get(id), id)).toBe(0.42);
+});
+
+test('a sim-undo snapshot restoring a scale writes into the Y.Doc', async ({ page }) => {
+  await addImage(page);
+  await paintPolygon(page);
+  const id = await imgIdAt(page, 0);
+  await page.evaluate((id) => (window as any).applySimSnapshot({ groups: [{ imgIdx: id, x: 100, y: 100, angle: 0, scale: 0.7 }] }), id);
+  await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('scales').get(id), id)).toBe(0.7);
+});
+
 // ── Per-image membership via Yjs ──────────────────────────────────────────────────
 // The image LIST lives in ydoc.getMap("images"); bytes are pulled by assetHash. A local
 // add announces membership in the doc (with its content hash registered); a remote

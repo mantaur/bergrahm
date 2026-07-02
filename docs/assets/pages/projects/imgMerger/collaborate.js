@@ -1494,7 +1494,7 @@ function _applySimSnapshot(entry) {
     const positions = {};
     for (const g of entry.groups) if (all[g.imgIdx]) positions[g.imgIdx] = all[g.imgIdx];
     broadcast({ type: "positions", positions });
-    if (window.getScales) broadcast({ type: "scales", scales: window.getScales() });
+    // Scales restored by the snapshot sync via setScales -> yScales; no raw blast needed.
   }
 }
 

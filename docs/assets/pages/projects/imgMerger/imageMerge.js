@@ -288,13 +288,23 @@ function _broadcastSettingsNow() {
   );
 }
 
-// Broadcast per-image scales to peers (so they rebuild groups at the right size).
-function _broadcastScales() {
-  window.dispatchEvent(
-    new CustomEvent("collab:scales-changed", {
-      detail: { scales: Object.fromEntries(state.images.map((e) => [e.id, e.scale])) },
-    }),
-  );
+// The only door for scale writes: local state, sim group, and the shared doc
+// (via collab:scales-changed, which accepts partial maps) stay in step.
+function setScales(scales, opts = {}) {
+  for (const [id, scale] of Object.entries(scales)) {
+    const entry = imgById(id);
+    if (!entry) continue;
+    entry.scale = scale;
+    entry.scaleFixed = opts.scaleFixed !== undefined ? opts.scaleFixed : scale !== null;
+    simRefreshGroup(id, opts.keepPreview === true);
+  }
+  if (opts.broadcast !== false) {
+    window.dispatchEvent(new CustomEvent("collab:scales-changed", { detail: { scales } }));
+  }
+}
+
+function setScale(imgIdx, scale, opts = {}) {
+  setScales({ [imgIdx]: scale }, opts);
 }
 
 cfgUseYolo.addEventListener("change", () => {
@@ -321,24 +331,20 @@ if (btnYoloMobile)
 // ── Painter scale bar ─────────────────────────────────────────────────────────
 painterScaleAuto.addEventListener("change", () => {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry = imgById(imgIdx);
   painterScaleInp.disabled = painterScaleAuto.checked;
-  entry.scale = painterScaleAuto.checked ? null : parseFloat(painterScaleInp.value);
+  setScale(imgIdx, painterScaleAuto.checked ? null : parseFloat(painterScaleInp.value));
   if (painterScaleAuto.checked) painterScaleInp.value = computeAutoScales()[imgIdx].scale.toFixed(2);
   updatePainterZoom(imgIdx);
-  simRefreshGroup(imgIdx);
 });
 
 painterScaleInp.addEventListener("change", () => {
   const imgIdx = state.rankOrder[state.paintIdx];
-  const entry = imgById(imgIdx);
   let v = parseFloat(painterScaleInp.value);
   if (isNaN(v)) v = 1.0;
   v = Math.max(0.05, Math.min(20, v));
   painterScaleInp.value = v.toFixed(2);
-  entry.scale = v;
+  setScale(imgIdx, v);
   updatePainterZoom(imgIdx);
-  simRefreshGroup(imgIdx);
 });
 
 function updatePainterZoom(imgIdx) {
@@ -2669,17 +2675,16 @@ btnScaleAll.addEventListener("click", () => {
   const factor = parseFloat(cfgScaleAll.value);
   if (!factor || factor === 1) return;
   const autoScales = computeAutoScales();
-  state.images.forEach((entry, i) => {
-    if (entry.simHidden) return;
+  const next = {};
+  for (const entry of state.images) {
+    if (entry.simHidden) continue;
     const base = entry.scale !== null ? entry.scale : autoScales[entry.id].scale;
-    entry.scale = Math.max(0.05, base * factor);
-    entry.scaleFixed = true;
-  });
+    next[entry.id] = Math.max(0.05, base * factor);
+  }
   cfgScaleAll.value = "1";
   cfgScaleAllVal.textContent = "1.00x";
+  setScales(next);
   buildRankList();
-  // Broadcast the new scales so peers rebuild their groups in place (remote-scales).
-  _broadcastScales();
   if (simRafId !== null) {
     // Re-scale each mask in place. Do NOT initSim here: it resets the output rect
     // to the origin and re-fits the viewport, which teleports the masks out of an
@@ -3494,19 +3499,19 @@ window.addEventListener("resize", () => {
     if (!_ctrlDrag) return;
     const g = _ctrlDrag.group;
     if (pinchPreview && pinchPreview.imgIdx === g.imgIdx) {
-      const entry = imgById(g.imgIdx);
-      entry.scale = pinchPreview.scale;
+      // Commit the scale (and sync it) before the final position goes out.
+      setScale(g.imgIdx, pinchPreview.scale);
       pinchPreview = null;
       const ri = state.rankOrder.indexOf(g.imgIdx);
       if (ri === state.paintIdx) {
         painterScaleAuto.checked = false;
         painterScaleInp.disabled = false;
-        painterScaleInp.value = entry.scale.toFixed(2);
+        painterScaleInp.value = imgById(g.imgIdx).scale.toFixed(2);
         updatePainterZoom(g.imgIdx);
       }
+    } else {
+      simRefreshGroup(g.imgIdx);
     }
-    simRefreshGroup(g.imgIdx);
-    _broadcastScales(); // scale changed -> sync to peers before the final position
     simBodyDragging = false;
     _activeDragIdx = null;
     simCanvas.style.cursor = "";
@@ -3689,14 +3694,12 @@ window.addEventListener("resize", () => {
     // fix an auto-scaled image and broadcast a scales message that wipes peers'
     // merged previews (simRefreshGroup -> _clearMergedImage).
     if (!liftedGroup || !pinchPreview || !grpStart) return;
-    const entry = imgById(liftedGroup.imgIdx);
-    entry.scale = pinchPreview.scale;
-    _broadcastScales(); // sync the pinched scale to peers
+    setScale(liftedGroup.imgIdx, pinchPreview.scale);
     const ri = state.rankOrder.indexOf(liftedGroup.imgIdx);
     if (ri === state.paintIdx) {
       painterScaleAuto.checked = false;
       painterScaleInp.disabled = false;
-      painterScaleInp.value = entry.scale.toFixed(2);
+      painterScaleInp.value = imgById(liftedGroup.imgIdx).scale.toFixed(2);
       updatePainterZoom(liftedGroup.imgIdx);
     }
   }
@@ -4625,14 +4628,8 @@ window.addEventListener("collab:remote-positions", (e) => {
 });
 
 window.addEventListener("collab:remote-scales", ({ detail: { scales } }) => {
-  for (const [id, scale] of Object.entries(scales)) {
-    const entry = imgById(id);
-    if (!entry) continue;
-    entry.scale = scale;
-    entry.scaleFixed = scale !== null;
-    simRefreshGroup(id, true); // remote edit -> keep the merged preview
-    _remoteScalePreview.delete(id); // committed -> drop the live preview
-  }
+  setScales(scales, { broadcast: false, keepPreview: true });
+  for (const id of Object.keys(scales)) _remoteScalePreview.delete(id); // committed -> drop the live preview
   buildRankList();
 });
 
@@ -4673,14 +4670,12 @@ function applySimSnapshot(snap) {
     _simOutExplicit = true; // keep these exact bounds; resizeSim refreshes groups
     resizeSim();
   }
+  const scales = {};
+  for (const s of snap.groups || []) if (imgById(s.imgIdx)) scales[s.imgIdx] = s.scale;
+  if (Object.keys(scales).length) setScales(scales); // broadcast: keeps yScales converged after an undo
   for (const s of snap.groups || []) {
-    const entry = imgById(s.imgIdx);
-    if (!entry) continue;
-    entry.scale = s.scale;
-    entry.scaleFixed = s.scale !== null;
-    simRefreshGroup(s.imgIdx);
     const g = simGroups.get(s.imgIdx);
-    if (g) {
+    if (g && imgById(s.imgIdx)) {
       g.x = s.x;
       g.y = s.y;
       g.angle = s.angle;
@@ -4693,7 +4688,6 @@ function applySimSnapshot(snap) {
 
 window.captureSimSnapshot = captureSimSnapshot;
 window.applySimSnapshot = applySimSnapshot;
-window.getScales = () => Object.fromEntries(state.images.map((im) => [im.id, im.scale]));
 // Live remote scale preview for an image (read-only; for diagnostics / tests).
 window.getRemoteScalePreview = (id) => (_remoteScalePreview.has(id) ? _remoteScalePreview.get(id) : null);
 
@@ -4828,13 +4822,9 @@ window.applyRemoteMembership = function (snap) {
   // Re-apply masks + scale for every doc image (covers an edit to one we already held,
   // and re-applies a mask that landed before its image).
   for (const id of Object.keys(images)) {
-    const e = imgById(id);
-    if (!e) continue;
+    if (!imgById(id)) continue;
     if (polygons[id]) setPolygons(id, polygons[id], { broadcast: false, keepPreview: true });
-    if (scales[id] !== undefined) {
-      e.scale = scales[id];
-      e.scaleFixed = scales[id] != null;
-    }
+    if (scales[id] !== undefined) setScale(id, scales[id], { broadcast: false, keepPreview: true });
   }
 
   const valid = (order || []).filter((id) => imgById(id));
@@ -4959,7 +4949,7 @@ async function _populateImageEntry(detail) {
   ensureAssetHash(entry); // register bytes so this peer can serve them on request
   if (polygons) setPolygons(imgIdx, polygons, { broadcast: false });
   if (currentPoly) entry.currentPoly = currentPoly;
-  if (scale != null) entry.scale = scale;
+  if (scale != null) setScale(imgIdx, scale, { broadcast: false });
   if (scaleFixed != null) entry.scaleFixed = scaleFixed;
   if (simHidden != null) entry.simHidden = simHidden;
   _updateFilmstripThumb(imgIdx);
