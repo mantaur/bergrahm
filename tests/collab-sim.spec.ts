@@ -198,6 +198,23 @@ test('a local add registers per-image membership in the Y.Doc', async ({ page })
   expect(m.assetHash).toBeTruthy(); // bytes are content-addressed for pull
 });
 
+test('the sim hide toggle round-trips through the Y.Doc', async ({ page }) => {
+  await addImage(page);
+  const id = await imgIdAt(page, 0);
+  await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('images').get(id) || null, id)).not.toBeNull();
+
+  await page.locator('.im-film-hide').first().click();
+  await expect.poll(() => page.evaluate((id) => (window as any).ydoc.getMap('images').get(id)?.simHidden, id)).toBe(true);
+
+  // A remote meta update applies to the local entry (unhides).
+  await page.evaluate((id) => {
+    const yd = (window as any).ydoc;
+    const cur = yd.getMap('images').get(id);
+    yd.transact(() => yd.getMap('images').set(id, { ...cur, simHidden: false }), 'remote');
+  }, id);
+  await expect.poll(() => page.evaluate(() => (window as any).getSessionMeta().images[0].simHidden)).toBe(false);
+});
+
 test('a remote membership snapshot builds an image with its mask from the doc', async ({ page }) => {
   // Mask present in the doc; image announced via membership. The mask must apply even
   // though it is delivered alongside (not after) the image -- the old drop-on-missing bug.

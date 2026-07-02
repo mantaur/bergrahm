@@ -548,6 +548,22 @@ function registerImages(entries, opts = {}) {
   return ids;
 }
 
+// The only door for visibility writes: sim group and shared doc (via
+// collab:image-meta-changed) stay in step with the eye toggle.
+function setSimHidden(imgIdx, hidden, opts = {}) {
+  const entry = imgById(imgIdx);
+  if (!entry || entry.simHidden === hidden) return;
+  entry.simHidden = hidden;
+  const g = simGroups.get(imgIdx);
+  if (g && simRafId !== null) {
+    g.inWorld = !hidden;
+    _simViewDirty = true;
+  }
+  if (opts.broadcast !== false) {
+    window.dispatchEvent(new CustomEvent("collab:image-meta-changed", { detail: { imgIdx, meta: { simHidden: hidden } } }));
+  }
+}
+
 // The only door for reordering: keeps paintIdx on the same image and syncs the doc.
 function setRankOrder(order, opts = {}) {
   const curImgIdx = state.rankOrder[state.paintIdx];
@@ -664,13 +680,9 @@ function createRankItem(imgIdx, rank) {
   hideBtn.title = entry.simHidden ? "Show in sim" : "Hide in sim";
   hideBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    entry.simHidden = !entry.simHidden;
+    setSimHidden(imgIdx, !entry.simHidden);
     hideBtn.innerHTML = entry.simHidden ? EYE_CLOSED : EYE_OPEN;
     hideBtn.title = entry.simHidden ? "Show in sim" : "Hide in sim";
-    const g = simGroups.get(imgIdx);
-    if (!g || simRafId === null) return;
-    g.inWorld = !entry.simHidden;
-    _simViewDirty = true; // repaint either way (hide previously skipped this)
   });
 
   const removeBtn = document.createElement("button");
@@ -4829,6 +4841,7 @@ window.applyRemoteMembership = function (snap) {
     if (!imgById(id)) continue;
     if (polygons[id]) setPolygons(id, polygons[id], { broadcast: false, keepPreview: true });
     if (scales[id] !== undefined) setScale(id, scales[id], { broadcast: false, keepPreview: true });
+    if (images[id].simHidden !== undefined) setSimHidden(id, !!images[id].simHidden, { broadcast: false });
   }
 
   const valid = (order || []).filter((id) => imgById(id));

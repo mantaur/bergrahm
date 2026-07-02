@@ -1350,6 +1350,13 @@ window.addEventListener("collab:session-loaded", async () => {
   }, "local");
 });
 
+// Per-image meta (e.g. the hide toggle) merges into the membership doc.
+window.addEventListener("collab:image-meta-changed", ({ detail: { imgIdx, meta } }) => {
+  const cur = yImages.get(imgIdx);
+  if (!cur) return;
+  ydoc.transact(() => yImages.set(imgIdx, { ...cur, ...meta }), "local");
+});
+
 // Removal deletes the image from the doc (membership) plus its per-image metadata;
 // peers reconcile via the yImages observer. Written even when solo.
 window.addEventListener("collab:image-removed", ({ detail: { imgIdx } }) => {
