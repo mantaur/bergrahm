@@ -1315,7 +1315,7 @@ window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
 // A session import populates state.images directly (NOT via collab:images-added), so it
 // never reached the shared doc -> peers never learned of the images (a later joiner got
 // nothing; only add-path images synced). Publish the whole current session into the doc
-// (membership + rank + polygons + scales), dropping any entries the doc still holds that
+// (settings + membership + rank + polygons + scales), dropping any entries the doc still holds that
 // the import replaced. Peers then reconcile via the observer (connected guests) and
 // _sendDocState (future joiners); getImageMembership also registers each image's bytes so
 // this peer can serve them. Skipped on a guest (guests don't import; the host is source).
@@ -1330,7 +1330,9 @@ window.addEventListener("collab:session-loaded", async () => {
     const m = await window.getImageMembership?.(im.id);
     if (m) rows.push({ m, polygons: im.polygons || [], scale: im.scale });
   }
+  const settingKeys = ["outW", "outH", "slides", "fillColor", "blendMode", "seed", "ditherExp", "simX1", "simY1", "simX2", "simY2"];
   ydoc.transact(() => {
+    for (const k of settingKeys) if (meta[k] !== undefined) ySettings.set(k, meta[k]);
     for (const id of [...yImages.keys()]) {
       if (!ids.includes(id)) {
         yImages.delete(id);

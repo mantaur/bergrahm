@@ -8,6 +8,10 @@ import {
   emitRemote, imageCount, polyCount, simPos, collabOut, imgIdAt, groupClientPos,
   TINY_IMG_DATAURL, FIXTURE_IMG,
 } from './fixtures';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const SESSION_ZIP = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'session.zip');
 
 // ── Host side: what the app exposes for a joining peer ──────────────────────────
 
@@ -196,6 +200,17 @@ test('a local add registers per-image membership in the Y.Doc', async ({ page })
     .then(() => page.evaluate((id) => (window as any).ydoc.getMap('images').get(id), id));
   expect(m.id).toBe(id);
   expect(m.assetHash).toBeTruthy(); // bytes are content-addressed for pull
+});
+
+test('an imported session publishes its settings into the Y.Doc', async ({ page }) => {
+  await page.locator('#inp-import-session').setInputFiles(SESSION_ZIP);
+  await expect.poll(() => imageCount(page)).toBe(2);
+  const expected = await page.evaluate(() => {
+    const m = (window as any).getSessionMeta();
+    return { outW: m.outW, outH: m.outH };
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).ydoc.getMap('settings').get('outW'))).toBe(expected.outW);
+  expect(await page.evaluate(() => (window as any).ydoc.getMap('settings').get('outH'))).toBe(expected.outH);
 });
 
 test('the sim hide toggle round-trips through the Y.Doc', async ({ page }) => {
