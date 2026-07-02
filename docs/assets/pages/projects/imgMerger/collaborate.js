@@ -1312,14 +1312,42 @@ window.addEventListener("collab:images-added", async ({ detail: { ids } }) => {
   }, "local");
 });
 
-// A local session import: the host re-streams the whole session to every guest
-// (so they refresh as if newly joined); on a guest it just dismisses any prompt.
-window.addEventListener("collab:session-loaded", () => {
+// A session import populates state.images directly (NOT via collab:images-added), so it
+// never reached the shared doc -> peers never learned of the images (a later joiner got
+// nothing; only add-path images synced). Publish the whole current session into the doc
+// (membership + rank + polygons + scales), dropping any entries the doc still holds that
+// the import replaced. Peers then reconcile via the observer (connected guests) and
+// _sendDocState (future joiners); getImageMembership also registers each image's bytes so
+// this peer can serve them. Skipped on a guest (guests don't import; the host is source).
+window.addEventListener("collab:session-loaded", async () => {
   hideGuestPrompt();
-  if (isHost)
-    for (const conn of guestConns.values()) {
-      if (conn.open) sendSessionTo(conn, { replace: true });
+  if (!isHost && localPeerId) return;
+  const meta = window.getSessionMeta ? window.getSessionMeta() : null;
+  if (!meta) return;
+  const ids = meta.images.map((im) => im.id);
+  const rows = [];
+  for (const im of meta.images) {
+    const m = await window.getImageMembership?.(im.id);
+    if (m) rows.push({ m, polygons: im.polygons || [], scale: im.scale });
+  }
+  ydoc.transact(() => {
+    for (const id of [...yImages.keys()]) {
+      if (!ids.includes(id)) {
+        yImages.delete(id);
+        yPoly.delete(id);
+        yScales.delete(id);
+      }
     }
+    yRank.delete(0, yRank.length);
+    if (ids.length) yRank.push(ids);
+    for (const { m, polygons, scale } of rows) {
+      yImages.set(m.id, m);
+      if (polygons.length) yPoly.set(m.id, polygons);
+      else yPoly.delete(m.id);
+      if (scale != null) yScales.set(m.id, scale);
+      else yScales.delete(m.id);
+    }
+  }, "local");
 });
 
 // Removal deletes the image from the doc (membership) plus its per-image metadata;

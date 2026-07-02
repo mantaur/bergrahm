@@ -4,6 +4,10 @@
 
 import { test, expect } from '@playwright/test';
 import { routeVendor, PAGE, FIXTURE_IMG } from './fixtures';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const SESSION_ZIP = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'session.zip');
 
 test.describe('real collab (live broker)', () => {
   test.skip(!process.env.REAL_COLLAB, 'set REAL_COLLAB=1 to run the live two-context smoke');
@@ -285,6 +289,44 @@ test.describe('real collab (live broker)', () => {
       const sa = await a.evaluate(() => ({ msgs: (window as any)._sync.tx.msgs, bytes: (window as any)._sync.tx.bytes }));
       console.log('HOST tx 5s after guest refresh+resync:', JSON.stringify(sa));
       expect(sa.bytes, 'host should not keep serving after guest re-synced').toBeLessThan(50 * 1024);
+    } finally {
+      await ctxA.close();
+      await ctxB.close();
+    }
+  });
+
+  // Regression: a session imported BEFORE hosting must reach a guest that joins later --
+  // import populates state directly, so it has to be published into the shared doc too.
+  test('an imported session syncs to a guest that joins afterward', async ({ browser }) => {
+    const room = 'pw-' + Math.random().toString(36).slice(2, 9);
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    await routeVendor(ctxA);
+    await routeVendor(ctxB);
+    const a = await ctxA.newPage();
+    const b = await ctxB.newPage();
+    try {
+      // A imports a session while solo (not yet hosting)...
+      await a.goto(PAGE);
+      await a.locator('#inp-import-session').setInputFiles(SESSION_ZIP);
+      await expect(a.locator('#rank-list > li')).toHaveCount(2, { timeout: 30000 });
+      // ...and also adds an image the normal way. Unless the import is published into the
+      // doc, the add-path doc update (which knows only the added image) would wipe the
+      // imported images on the joiner via membership reconcile.
+      await a.locator('#cfg-images').setInputFiles(FIXTURE_IMG);
+      await expect(a.locator('#rank-list > li')).toHaveCount(3, { timeout: 30000 });
+
+      // Then A hosts, and B joins afterward.
+      await a.locator('#btn-collab').click();
+      await a.locator('#collab-room-inp').fill(room);
+      await a.locator('#btn-collab-join').click();
+      await expect(a.locator('#collab-status')).toHaveText(/Hosting/, { timeout: 25000 });
+      await b.goto(PAGE + '?room=' + room);
+      await expect(b.locator('#collab-status')).toHaveText(/Connected as guest/, { timeout: 25000 });
+
+      // B receives ALL images -- imported + added (membership synced) -- and pulls bytes.
+      await expect(b.locator('#rank-list > li')).toHaveCount(3, { timeout: 30000 });
+      await expect(b.locator('#rank-list .im-rank-thumb-pending')).toHaveCount(0, { timeout: 30000 });
     } finally {
       await ctxA.close();
       await ctxB.close();
