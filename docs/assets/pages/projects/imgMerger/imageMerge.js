@@ -1441,7 +1441,10 @@ async function sendEncode(wIdx, imgIdx) {
     dot.title = "Encoding...";
   }
   const entry = imgById(imgIdx);
-  const bm = await decodeEntry(entry);
+  // The model letterboxes to 640px; decoding a photo any larger only triples
+  // full-res copies (bitmap + canvas + getImageData) on the main thread.
+  const cap = entry ? Math.min(1, 640 / Math.max(entry.w, entry.h)) : 1;
+  const bm = await decodeEntry(entry, cap < 1 ? { resizeWidth: Math.max(1, Math.round(entry.w * cap)), resizeHeight: Math.max(1, Math.round(entry.h * cap)), resizeQuality: "high" } : undefined);
   // Image may have been removed while decoding -> free the worker slot and re-drain.
   if (!bm || !imgById(imgIdx)) {
     if (bm) bm.close();
@@ -1451,13 +1454,13 @@ async function sendEncode(wIdx, imgIdx) {
     return;
   }
   const tmp = document.createElement("canvas");
-  tmp.width = entry.w;
-  tmp.height = entry.h;
+  tmp.width = bm.width;
+  tmp.height = bm.height;
   const tmpCtx = tmp.getContext("2d");
   tmpCtx.drawImage(bm, 0, 0);
   bm.close();
-  const id = tmpCtx.getImageData(0, 0, entry.w, entry.h);
-  yoloPool.workers[wIdx].postMessage({ type: "encode", imgIdx, pixels: id.data.buffer, width: entry.w, height: entry.h }, [id.data.buffer]);
+  const id = tmpCtx.getImageData(0, 0, tmp.width, tmp.height);
+  yoloPool.workers[wIdx].postMessage({ type: "encode", imgIdx, pixels: id.data.buffer, width: tmp.width, height: tmp.height }, [id.data.buffer]);
 }
 
 // Build the encode queue sorted by rank order, so highest-priority images encode first.
@@ -1503,7 +1506,7 @@ function _resortEncodeQueue() {
 
 // Return the YOLO segment whose bbox contains (x,y) and whose mask pixel is 1,
 // preferring the segment with the smallest bbox area (most specific).
-// x,y are in original image coordinates.
+// x,y are in encode-space coordinates (origW x origH, which may be capped).
 function findBestSegmentAt(segments, x, y, origW, origH) {
   const DECODE_SIZE = 512;
   const capScale = Math.min(1, DECODE_SIZE / Math.max(origH, origW));
@@ -1573,7 +1576,9 @@ function requestDecode(x, y) {
     return;
   }
   const { segments, origW, origH } = yoloPool.embeddingCache.get(imgIdx);
-  const seg = findBestSegmentAt(segments, x, y, origW, origH);
+  // Encodings are computed at a capped resolution (origW x origH <= entry size);
+  // the click arrives in image space, so map it into encode space.
+  const seg = findBestSegmentAt(segments, (x * origW) / entry.w, (y * origH) / entry.h, origW, origH);
   if (!seg) {
     updateYoloStatus("No segment found  -  try clicking on a recognized object.", true);
     return;
@@ -4502,10 +4507,7 @@ async function _fillEntryFromStore(entry) {
   const blob = assetStore.get(entry.assetHash);
   if (!blob || entry.blob) return false;
   entry.blob = blob;
-  const bm = await createImageBitmap(blob);
-  entry.thumbUrl = buildThumb(bm, entry.w, entry.h);
-  bm.close();
-  _updateFilmstripThumb(entry.id);
+  await _thumbFallback(entry); // thumb-size decode (never full-res); retries under pressure
   simRefreshGroup(entry.id);
   _simViewDirty = true;
   _showMergeBtn(); // this image's bytes landed -> may complete "all transferred"
@@ -5023,10 +5025,10 @@ async function _populateImageEntry(detail) {
   }
   const blob = await (await fetch(jpegBase64)).blob();
   if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
-  const bm = await createImageBitmap(blob);
   entry.blob = blob; // kept compressed; decoded on demand
-  entry.thumbUrl = buildThumb(bm, w, h);
-  bm.close();
+  if (!entry.w && w) entry.w = w;
+  if (!entry.h && h) entry.h = h;
+  await _thumbFallback(entry); // thumb-size decode (never full-res); retries under pressure
   if (assetHash) entry.assetHash = assetHash;
   ensureAssetHash(entry); // register bytes so this peer can serve them on request
   if (polygons) setPolygons(imgIdx, polygons, { broadcast: false, refresh: false });
