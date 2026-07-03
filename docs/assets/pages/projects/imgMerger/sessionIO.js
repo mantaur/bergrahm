@@ -76,12 +76,39 @@ function _sessionWorkerBody() {
     self.postMessage({ type: "done", buffer: buf }, [buf]);
   }
 
+  // Decode a buffer to an exact target size. ImageDecoder (WebCodecs) consumes
+  // the ArrayBuffer directly -- no Blob, so the browser's blob storage (whose
+  // backing can go unreadable on Android) never enters the path. Falls back to
+  // a transient Blob + createImageBitmap where ImageDecoder is unavailable.
+  async function decodeScaled(buf, tW, tH) {
+    const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+    const type = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff ? "image/jpeg" : b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 ? "image/png" : null;
+    if (type && typeof ImageDecoder !== "undefined") {
+      try {
+        const dec = new ImageDecoder({ data: buf, type, desiredWidth: tW, desiredHeight: tH });
+        try {
+          const { image } = await dec.decode();
+          try {
+            return await createImageBitmap(image, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+          } finally {
+            image.close();
+          }
+        } finally {
+          dec.close();
+        }
+      } catch (err) {
+        /* fall through to the blob path */
+      }
+    }
+    return createImageBitmap(new Blob([buf], { type: "image/jpeg" }), { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+  }
+
   // Thumbnail decoded straight to target size (no full-res bitmap kept).
-  async function thumbFromBlob(blob, w, h) {
+  async function thumbFromBuf(buf, w, h) {
     const ts = Math.min(1, 256 / Math.max(w, h));
     const tW = Math.max(1, Math.round(w * ts)),
       tH = Math.max(1, Math.round(h * ts));
-    const tbm = await createImageBitmap(blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+    const tbm = await decodeScaled(buf, tW, tH);
     const oc = new OffscreenCanvas(tW, tH);
     oc.getContext("2d").drawImage(tbm, 0, 0);
     tbm.close();
@@ -122,14 +149,13 @@ function _sessionWorkerBody() {
         // mobile memory pressure) must not abort the import: the compressed bytes
         // are still good, so ship them without a thumb and retry after the stream.
         try {
-          const blob = new Blob([jpegBuf], { type: "image/jpeg" });
           if (!w || !h) {
-            const full = await createImageBitmap(blob);
+            const full = await createImageBitmap(new Blob([jpegBuf], { type: "image/jpeg" }));
             w = full.width;
             h = full.height;
             full.close();
           }
-          thumbBuf = await thumbFromBlob(blob, w, h);
+          thumbBuf = await thumbFromBuf(jpegBuf, w, h);
         } catch (err) {
           thumbBuf = null;
           retryThumbs.push(i);
@@ -163,14 +189,13 @@ function _sessionWorkerBody() {
           h = si.h,
           thumbBuf = null;
         try {
-          const blob = new Blob([jpegBuf], { type: "image/jpeg" });
           if (!w || !h) {
-            const full = await createImageBitmap(blob);
+            const full = await createImageBitmap(new Blob([jpegBuf], { type: "image/jpeg" }));
             w = full.width;
             h = full.height;
             full.close();
           }
-          thumbBuf = await thumbFromBlob(blob, w, h);
+          thumbBuf = await thumbFromBuf(jpegBuf, w, h);
         } catch (err) {
           thumbBuf = null; // bytes still land; the app thumbs later
         }
@@ -184,15 +209,14 @@ function _sessionWorkerBody() {
     for (const i of retryThumbs) {
       try {
         const buf = await zip.file("images/" + i + ".jpg").async("arraybuffer");
-        const blob = new Blob([buf], { type: "image/jpeg" });
         let { w, h } = session.images[i] || {};
         if (!w || !h) {
-          const full = await createImageBitmap(blob);
+          const full = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
           w = full.width;
           h = full.height;
           full.close();
         }
-        const thumbBuf = await thumbFromBlob(blob, w, h);
+        const thumbBuf = await thumbFromBuf(buf, w, h);
         self.postMessage({ type: "thumb", i, thumbBuf, w, h }, [thumbBuf]);
       } catch (err) {
         self.postMessage({ type: "log", msg: "retry-thumb " + i + ": " + err.message }); // _thumbFallback keeps trying

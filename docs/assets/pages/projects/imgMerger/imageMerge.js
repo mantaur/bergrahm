@@ -3,7 +3,7 @@ const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || w
 
 // Keep in sync with the ?v= cache-buster in index.html. Shown by the import
 // debug overlay so on-device tests can prove which build they are running.
-const BUILD = "99";
+const BUILD = "100";
 
 // Import/decode debug log. Always captured (bounded, strings only); the on-screen
 // overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
@@ -448,8 +448,7 @@ function updateScalePreview(imgIdx) {
 // images (dimension caps, not memory). An <img> element decodes through the
 // browser's subsampling path instead; rasterize at the target size and hand
 // back a real ImageBitmap so callers (incl. worker transfer) are unaffected.
-function _imgElementBitmap(blob, opts) {
-  const url = URL.createObjectURL(blob);
+function _imgElementBitmap(url, revoke, opts) {
   const img = new Image();
   const loaded = new Promise((res, rej) => {
     img.onload = res;
@@ -466,7 +465,9 @@ function _imgElementBitmap(blob, opts) {
       cv.getContext("2d").drawImage(img, 0, 0, w, h);
       return createImageBitmap(cv);
     })
-    .finally(() => URL.revokeObjectURL(url));
+    .finally(() => {
+      if (revoke) URL.revokeObjectURL(url);
+    });
 }
 
 // Read the blob's actual backing bytes: size + first/last two bytes (a JPEG
@@ -483,29 +484,75 @@ async function _blobProbe(blob) {
   }
 }
 
+// Sniff the container from magic bytes; ImageDecoder needs the true type.
+function _sniffImageType(bytes) {
+  const b = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  return null;
+}
+
+// WebCodecs decode straight from the ArrayBuffer -- no Blob at any point, so
+// the browser's blob storage (whose backing can go unreadable on Android) is
+// out of the hot path entirely. desiredWidth/Height let JPEG decode subsample;
+// the createImageBitmap resize off the frame guarantees the exact target.
+function _imageDecoderBitmap(bytes, type, opts) {
+  const init = { data: bytes, type };
+  if (opts && opts.resizeWidth) {
+    init.desiredWidth = opts.resizeWidth;
+    init.desiredHeight = opts.resizeHeight;
+  }
+  const dec = new ImageDecoder(init);
+  return dec
+    .decode()
+    .then(({ image }) => createImageBitmap(image, opts || undefined).finally(() => image.close()))
+    .finally(() => dec.close());
+}
+
 // opts can carry { resizeWidth, resizeHeight, resizeQuality } to decode straight
 // to a target size without ever materialising the full-res bitmap.
-// Entries carrying entry.bytes (imported/collab images) decode from a transient
-// Blob minted per call: the resident bytes never live in the browser's blob
-// storage, whose backing can go unreadable on Android (NotReadableError).
+// Preference order for entries carrying entry.bytes (imported/collab/file-added):
+// 1. ImageDecoder on the raw bytes (no blob storage involvement at all)
+// 2. createImageBitmap on a transient Blob minted per call
+// 3. img element decode of the same transient Blob
 function decodeEntry(entry, opts) {
   if (!entry || (!entry.blob && !entry.bytes)) return Promise.resolve(null);
   const name = entry.name || entry.id;
   const tgt = opts ? opts.resizeWidth + "x" + opts.resizeHeight : "full";
-  const src = entry.bytes ? new Blob([entry.bytes], { type: "image/jpeg" }) : entry.blob;
-  return createImageBitmap(src, opts || undefined).catch(async (err) => {
-    implog("cib fail " + name + " " + tgt + (entry.bytes ? " (bytes)" : "") + ": " + (err && err.message));
-    implog("probe " + name + " " + (await _blobProbe(src)));
-    return _imgElementBitmap(src, opts).then(
-      (bm) => {
-        implog("img-fallback ok " + name);
-        return bm;
-      },
-      (err2) => {
-        implog("img-fallback fail " + name + ": " + (err2 && err2.message));
-        throw err2;
-      },
-    );
+
+  let first = null;
+  const type = entry.bytes && entry.bytes.byteLength > 0 ? _sniffImageType(entry.bytes) : null;
+  if (type && typeof ImageDecoder !== "undefined") {
+    first = _imageDecoderBitmap(entry.bytes, type, opts).catch((err) => {
+      implog("idec fail " + name + " " + tgt + ": " + (err && err.message));
+      return null; // fall through to the blob chain
+    });
+  } else {
+    first = Promise.resolve(null);
+  }
+
+  return first.then((bm) => {
+    if (bm) return bm;
+    const haveBytes = entry.bytes && entry.bytes.byteLength > 0;
+    const src = haveBytes ? new Blob([entry.bytes], { type: "image/jpeg" }) : entry.blob;
+    return createImageBitmap(src, opts || undefined).catch(async (err) => {
+      implog("cib fail " + name + " " + tgt + (haveBytes ? " (bytes)" : "") + ": " + (err && err.message));
+      implog("probe " + name + " " + (await _blobProbe(src)));
+      // With bytes at hand, feed the img element a data: URL -- inline bytes,
+      // no blob storage, works on insecure (plain-http LAN) contexts where
+      // ImageDecoder does not exist. Otherwise fall back to an object URL.
+      const url = haveBytes ? _bufToDataUrl(entry.bytes, type || "image/jpeg") : URL.createObjectURL(src);
+      return _imgElementBitmap(url, !haveBytes, opts).then(
+        (bm2) => {
+          implog("img-fallback ok " + name + (haveBytes ? " (data-url)" : ""));
+          return bm2;
+        },
+        (err2) => {
+          implog("img-fallback fail " + name + ": " + (err2 && err2.message));
+          throw err2;
+        },
+      );
+    });
   });
 }
 
