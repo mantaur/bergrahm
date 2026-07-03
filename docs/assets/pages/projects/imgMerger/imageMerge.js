@@ -3,7 +3,7 @@ const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || w
 
 // Keep in sync with the ?v= cache-buster in index.html. Shown by the import
 // debug overlay so on-device tests can prove which build they are running.
-const BUILD = "94";
+const BUILD = "96";
 
 // Import/decode debug log. Always captured (bounded, strings only); the on-screen
 // overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
