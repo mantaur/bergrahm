@@ -899,10 +899,10 @@ function loadPainterImage(rankIdx) {
   maskCanvas.style.width = dims.dispW + "px";
   maskCanvas.style.height = dims.dispH + "px";
 
-  // Decode on demand and draw scaled into the capped store; release immediately.
-  // A failed decode (allocation pressure on big photos) retries with backoff while
-  // this image is still the one being viewed.
-  decodeEntry(entry)
+  // Decode on demand straight to the canvas backing size (full-res of a 32MP
+  // photo is a ~130MB allocation; the canvas only holds bw x bh). A failed
+  // decode (allocation pressure) retries with backoff while still viewed.
+  decodeEntry(entry, dims.bScale < 1 ? { resizeWidth: dims.bw, resizeHeight: dims.bh, resizeQuality: "high" } : undefined)
     .then((bm) => {
       if (!bm) return;
       entry._painterRetry = 0;
@@ -4246,7 +4246,7 @@ async function _runImport(file, makeMeta) {
       },
       onImage: (i, msg) => {
         _importImage(i, msg, ctx);
-        _sessionStatus("Loading " + ++done + "/" + total);
+        if (!msg.retry) _sessionStatus("Loading " + ++done + "/" + total);
       },
       onThumb: (i, msg) => {
         const entry = imgById(ctx.ids[i]);

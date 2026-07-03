@@ -98,6 +98,7 @@ function _sessionWorkerBody() {
     self.postMessage({ type: "meta", session });
 
     const retryThumbs = [];
+    const retryBytes = [];
     for (let i = 0; i < n; i++) {
       const si = session.images[i] || {};
       let jpegBuf = null,
@@ -111,7 +112,8 @@ function _sessionWorkerBody() {
         try {
           jpegBuf = await imgFile.async("arraybuffer"); // kept compressed; decoded on demand
         } catch (err) {
-          jpegBuf = null; // corrupt entry (e.g. truncated download); salvage the rest
+          jpegBuf = null; // OOM inflate or corrupt entry; retried after the stream
+          retryBytes.push(i);
         }
       }
       if (jpegBuf) {
@@ -149,8 +151,34 @@ function _sessionWorkerBody() {
       self.postMessage({ type: "progress", pct: Math.round(((i + 1) / n) * 100) });
     }
 
-    // Second pass over mid-stream decode failures: the per-image transients are
-    // gone now, so an allocation-starved decode usually succeeds on retry.
+    // Second pass over mid-stream failures: the per-image transients are gone
+    // now, so an allocation-starved inflate/decode usually succeeds on retry.
+    for (const i of retryBytes) {
+      try {
+        const jpegBuf = await zip.file("images/" + i + ".jpg").async("arraybuffer");
+        const si = session.images[i] || {};
+        let w = si.w,
+          h = si.h,
+          thumbBuf = null;
+        try {
+          const blob = new Blob([jpegBuf], { type: "image/jpeg" });
+          if (!w || !h) {
+            const full = await createImageBitmap(blob);
+            w = full.width;
+            h = full.height;
+            full.close();
+          }
+          thumbBuf = await thumbFromBlob(blob, w, h);
+        } catch (err) {
+          thumbBuf = null; // bytes still land; the app thumbs later
+        }
+        const transfer = [jpegBuf];
+        if (thumbBuf) transfer.push(thumbBuf);
+        self.postMessage({ type: "image", i, jpegBuf, thumbBuf, encoding: null, w, h, retry: true }, transfer);
+      } catch (err) {
+        /* genuinely unreadable (corrupt zip entry) */
+      }
+    }
     for (const i of retryThumbs) {
       try {
         const buf = await zip.file("images/" + i + ".jpg").async("arraybuffer");
