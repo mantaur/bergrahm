@@ -114,6 +114,7 @@ function _sessionWorkerBody() {
         } catch (err) {
           jpegBuf = null; // OOM inflate or corrupt entry; retried after the stream
           retryBytes.push(i);
+          self.postMessage({ type: "log", msg: "inflate " + i + ": " + err.message });
         }
       }
       if (jpegBuf) {
@@ -132,6 +133,7 @@ function _sessionWorkerBody() {
         } catch (err) {
           thumbBuf = null;
           retryThumbs.push(i);
+          self.postMessage({ type: "log", msg: "thumb " + i + ": " + err.message });
         }
       }
 
@@ -176,7 +178,7 @@ function _sessionWorkerBody() {
         if (thumbBuf) transfer.push(thumbBuf);
         self.postMessage({ type: "image", i, jpegBuf, thumbBuf, encoding: null, w, h, retry: true }, transfer);
       } catch (err) {
-        /* genuinely unreadable (corrupt zip entry) */
+        self.postMessage({ type: "log", msg: "retry-bytes " + i + ": " + err.message }); // genuinely unreadable
       }
     }
     for (const i of retryThumbs) {
@@ -193,7 +195,7 @@ function _sessionWorkerBody() {
         const thumbBuf = await thumbFromBlob(blob, w, h);
         self.postMessage({ type: "thumb", i, thumbBuf, w, h }, [thumbBuf]);
       } catch (err) {
-        /* main thread keeps retrying via _thumbFallback */
+        self.postMessage({ type: "log", msg: "retry-thumb " + i + ": " + err.message }); // _thumbFallback keeps trying
       }
     }
 
@@ -319,7 +321,7 @@ const SessionIO = {
   // Streaming import. Fires onMeta(session) once (config + masks + positions),
   // then onImage(i, { bitmap, thumbBuf, encoding }) per image as each is decoded
   // off-thread, then resolves on done. onProgress(pct) is the per-image count.
-  importStream(file, { onMeta, onImage, onThumb, onProgress } = {}) {
+  importStream(file, { onMeta, onImage, onThumb, onLog, onProgress } = {}) {
     return file.arrayBuffer().then(
       (buffer) =>
         new Promise((resolve, reject) => {
@@ -331,6 +333,8 @@ const SessionIO = {
               if (onImage) onImage(msg.i, msg);
             } else if (msg.type === "thumb") {
               if (onThumb) onThumb(msg.i, msg);
+            } else if (msg.type === "log") {
+              if (onLog) onLog(msg.msg);
             } else if (msg.type === "progress") {
               if (onProgress) onProgress(msg.pct);
             } else if (msg.type === "done") {

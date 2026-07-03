@@ -1,6 +1,35 @@
 // ── Image Merger ──────────────────────────────────────────────────────────────
 const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia("(pointer: coarse)").matches;
 
+// Keep in sync with the ?v= cache-buster in index.html. Shown by the import
+// debug overlay so on-device tests can prove which build they are running.
+const BUILD = "94";
+
+// Import/decode debug log. Always captured (bounded, strings only); the on-screen
+// overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
+const _implog = [];
+window._implog = _implog;
+function implog(msg) {
+  if (_implog.length > 300) _implog.splice(0, 100);
+  _implog.push(msg);
+  const el = document.getElementById("imp-dbg");
+  if (el) el.textContent = "BUILD " + BUILD + "\n" + _implog.slice(-28).join("\n");
+}
+(function () {
+  const p = new URLSearchParams(location.search);
+  if (!p.has("impdbg") && localStorage.getItem("impdbg") !== "1") return;
+  const el = document.createElement("div");
+  el.id = "imp-dbg";
+  el.style.cssText =
+    "position:fixed;right:6px;bottom:6px;z-index:99999;max-width:70vw;font:10px/1.3 monospace;" +
+    "background:rgba(0,0,0,.85);color:#fc6;padding:6px 8px;border-radius:6px;white-space:pre-wrap;" +
+    "pointer-events:none;max-height:50vh;overflow:hidden";
+  el.textContent = "BUILD " + BUILD;
+  document.body.appendChild(el);
+  window.addEventListener("error", (e) => implog("ERR " + e.message));
+  window.addEventListener("unhandledrejection", (e) => implog("REJ " + ((e.reason && e.reason.message) || e.reason)));
+})();
+
 const state = {
   // config
   outW: 1080,
@@ -443,7 +472,19 @@ function _imgElementBitmap(blob, opts) {
 // to a target size without ever materialising the full-res bitmap.
 function decodeEntry(entry, opts) {
   if (!entry || !entry.blob) return Promise.resolve(null);
-  return createImageBitmap(entry.blob, opts || undefined).catch(() => _imgElementBitmap(entry.blob, opts));
+  return createImageBitmap(entry.blob, opts || undefined).catch((err) => {
+    implog("cib fail " + (entry.name || entry.id) + " " + (opts ? opts.resizeWidth + "x" + opts.resizeHeight : "full") + ": " + (err && err.message));
+    return _imgElementBitmap(entry.blob, opts).then(
+      (bm) => {
+        implog("img-fallback ok " + (entry.name || entry.id));
+        return bm;
+      },
+      (err2) => {
+        implog("img-fallback FAIL " + (entry.name || entry.id) + ": " + (err2 && err2.message));
+        throw err2;
+      },
+    );
+  });
 }
 
 // Base64 data URL from raw bytes -- portable across peers (a blob: URL is only
@@ -938,9 +979,10 @@ function loadPainterImage(rankIdx) {
       paintCtx.drawImage(bm, 0, 0, dims.bw, dims.bh);
       bm.close();
     })
-    .catch(() => {
+    .catch((err) => {
       const tries = (entry._painterRetry || 0) + 1;
       entry._painterRetry = tries;
+      implog("paint fail " + (entry.name || entry.id) + " t" + tries + ": " + (err && err.message));
       if (tries > 4) return;
       setTimeout(() => {
         if (state.rankOrder[state.paintIdx] === imgIdx) loadPainterImage(state.paintIdx);
@@ -4270,9 +4312,11 @@ async function _runImport(file, makeMeta) {
         _sessionStatus(total ? "Loading 0/" + total : "Imported");
       },
       onImage: (i, msg) => {
+        implog("imp " + i + (msg.retry ? " retry" : "") + " bytes:" + (msg.jpegBuf ? "ok" : "MISSING") + " thumb:" + (msg.thumbBuf ? "ok" : "none") + " enc:" + (msg.encoding ? "y" : "n"));
         _importImage(i, msg, ctx);
         if (!msg.retry) _sessionStatus("Loading " + ++done + "/" + total);
       },
+      onLog: (m) => implog("wk " + m),
       onThumb: (i, msg) => {
         const entry = imgById(ctx.ids[i]);
         if (!entry) return;
@@ -4295,6 +4339,7 @@ async function _runImport(file, makeMeta) {
     _sessionStatus(total ? "Imported" : "");
     if (total) setTimeout(() => _sessionStatus(""), 1500);
   } catch (e) {
+    implog("import FATAL: " + e.message);
     _sessionStatus("Import failed: " + e.message);
   }
 }
@@ -4489,6 +4534,7 @@ async function _thumbFallback(entry, attempt = 0) {
     bm.close();
     _updateFilmstripThumb(entry.id);
   } catch (err) {
+    implog("thumb fail " + (entry.name || entry.id) + " a" + attempt + ": " + (err && err.message));
     if (attempt < 4) setTimeout(() => _thumbFallback(entry, attempt + 1), 2000 << attempt);
   }
 }
