@@ -3,7 +3,7 @@ const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || w
 
 // Keep in sync with the ?v= cache-buster in index.html. Shown by the import
 // debug overlay so on-device tests can prove which build they are running.
-const BUILD = "94";
+const BUILD = "95";
 
 // Import/decode debug log. Always captured (bounded, strings only); the on-screen
 // overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
@@ -1424,23 +1424,19 @@ function drainEncodeQueue() {
     if (yoloPool.embeddingCache.has(imgIdx)) continue; // already cached
     sendEncode(wIdx, imgIdx);
   }
-  // Once the queue is empty and no worker is busy, release surplus workers —
-  // only one alive worker is kept for decoding. Guard against premature teardown
-  // before any images have been queued (e.g. pool initialised before upload).
+  // Once the queue is empty and no worker is busy, release ALL workers -- the
+  // ORT WASM heap is the app's largest resident and keeping one alive starved
+  // image decodes on phones. On-demand encodes respawn a worker (requestDecode).
+  // Guard against premature teardown before any images have been queued.
   if (yoloPool.encodeQueueBuilt && yoloPool.encodeQueue.length === 0 && !yoloPool.busy.some(Boolean)) {
-    let keptOne = false;
     for (let i = 0; i < YOLO_WORKER_COUNT; i++) {
       if (!yoloPool.ready[i]) continue; // already terminated
-      if (!keptOne) {
-        keptOne = true;
-        yoloPool.decodeWorkerIdx = i;
-        continue;
-      }
       yoloPool.workers[i].terminate();
       yoloPool.ready[i] = false;
       yoloPool.encoding[i] = null;
       yoloPool.readyCount = Math.max(0, yoloPool.readyCount - 1);
     }
+    yoloPool.decodeWorkerIdx = -1;
     updateYoloWorkerCount();
   }
 }
@@ -1536,6 +1532,13 @@ async function sendEncode(wIdx, imgIdx) {
 // model) if needed, otherwise (re)queues any un-encoded images.
 function ensureYoloEncoding() {
   if (!state.useYolo || state.images.length === 0) return;
+  // Everything cached (e.g. a session imported with its encodings): seg clicks
+  // are pure main-thread lookups, so never pay for a live ORT worker -- its
+  // WASM heap is the app's single largest memory resident.
+  if (state.images.every((e) => yoloPool.embeddingCache.has(e.id))) {
+    updateYoloStatus(yoloPool.yoloMode ? "Click a subject to segment" : "YOLO ready");
+    return;
+  }
   if (yoloPool.workers.length === 0) {
     initYoloPool();
     return;
@@ -1630,13 +1633,17 @@ function requestDecode(x, y) {
   }
 
   if (!yoloPool.embeddingCache.has(imgIdx)) {
-    if (!yoloPool.encoding.includes(imgIdx)) {
+    if (!yoloPool.encoding.includes(imgIdx) && !yoloPool.encodeQueue.includes(imgIdx)) {
       const wIdx = freeDecodeWorkerIdx();
       if (wIdx !== -1) {
         sendEncode(wIdx, imgIdx);
       } else {
+        // No live worker (pool torn down after the last batch, or never started
+        // because everything was cached): queue and spin one up.
         yoloPool.encodeQueue.unshift(imgIdx);
-        drainEncodeQueue();
+        yoloPool.encodeQueueBuilt = true;
+        if (yoloPool.workers.length === 0) initYoloPool();
+        else _respawnWorkersForEncoding();
       }
     }
     updateYoloStatus("Encoding - click the subject again when the thumbnail stops pulsing", true);
