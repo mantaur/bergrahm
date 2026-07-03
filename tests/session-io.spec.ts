@@ -1,7 +1,7 @@
 // Session export + import. Consumes tests/fixtures/session.zip (2 imgs, img0 has
 // 1 polygon) produced by session.setup.ts.
 
-import { test, expect, addImage, paintPolygon, imageCount, polyCount, collabOut, FIXTURE_IMG, SESSION_ZIP } from './fixtures';
+import { test, expect, addImage, paintPolygon, openPaintStep, imageCount, polyCount, collabOut, FIXTURE_IMG, FIXTURE_IMG2, SESSION_ZIP } from './fixtures';
 
 test.describe('Session export', () => {
   test('exports a zip and reports Exported', async ({ page }) => {
@@ -102,6 +102,22 @@ test.describe('Session import', () => {
     // The bad image's bytes were still shipped for later use/export.
     const badLen = await page.evaluate(async () => (await (window as any).getImageBuffer('bad'))?.buffer.byteLength ?? 0);
     expect(badLen).toBe(8);
+  });
+
+  // Stepping onto an image re-arms its decode retries, so a thumb whose decodes
+  // all failed during a heavy import recovers when the image is viewed.
+  test('viewing an image rebuilds its missing thumbnail', async ({ page }) => {
+    await addImage(page, [FIXTURE_IMG, FIXTURE_IMG2]);
+    await openPaintStep(page);
+    const id1 = await page.evaluate(() => {
+      const id = (window as any).getSessionMeta().images[1].id;
+      (window as any).imgById(id).thumbUrl = null; // as if every import-time decode failed
+      return id;
+    });
+    expect(await page.evaluate((id) => (window as any).getImageThumb(id), id1)).toBeNull();
+
+    await page.locator('#btn-next-img').click(); // step onto image 1
+    await expect.poll(() => page.evaluate((id) => (window as any).getImageThumb(id), id1)).toMatch(/^data:/);
   });
 
   // The host streams imported images to a collab guest via these window getters:

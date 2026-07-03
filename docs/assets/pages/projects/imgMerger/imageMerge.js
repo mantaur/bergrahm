@@ -849,11 +849,22 @@ function _drawPainterLoading(entry, dims) {
   }
 }
 
+let _lastPainterViewId = null;
+
 function loadPainterImage(rankIdx) {
   state.paintIdx = rankIdx;
   const imgIdx = state.rankOrder[rankIdx];
   const entry = imgById(imgIdx);
   if (!entry) return;
+
+  // Stepping onto an image is an explicit "retry now": reset the exhausted
+  // decode backoffs so images whose decodes kept failing (memory pressure
+  // during a large import) recover the moment they are viewed.
+  if (_lastPainterViewId !== imgIdx) {
+    _lastPainterViewId = imgIdx;
+    entry._painterRetry = 0;
+    if (entry.blob && !entry.thumbUrl) _thumbFallback(entry);
+  }
 
   // These apply whether or not the pixels have arrived.
   paintName.textContent = entry.name;
