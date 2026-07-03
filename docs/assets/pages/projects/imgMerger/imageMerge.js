@@ -3,7 +3,7 @@ const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || w
 
 // Keep in sync with the ?v= cache-buster in index.html. Shown by the import
 // debug overlay so on-device tests can prove which build they are running.
-const BUILD = "96";
+const BUILD = "97";
 
 // Import/decode debug log. Always captured (bounded, strings only); the on-screen
 // overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
@@ -26,6 +26,7 @@ function implog(msg) {
     "pointer-events:none;max-height:50vh;overflow:hidden";
   el.textContent = "BUILD " + BUILD;
   document.body.appendChild(el);
+  implog("UA " + navigator.userAgent);
   window.addEventListener("error", (e) => implog("ERR " + e.message));
   window.addEventListener("unhandledrejection", (e) => implog("REJ " + ((e.reason && e.reason.message) || e.reason)));
 })();
@@ -468,22 +469,55 @@ function _imgElementBitmap(blob, opts) {
     .finally(() => URL.revokeObjectURL(url));
 }
 
+// Read the blob's actual backing bytes: size + first/last two bytes (a JPEG
+// must show head=ffd8 tail=ffd9). A READ-FAIL or wrong markers means the
+// browser's blob storage is broken/truncated -- the decoder never had a chance.
+async function _blobProbe(blob) {
+  try {
+    const hx = (a) => Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+    const head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+    const tail = new Uint8Array(await blob.slice(Math.max(0, blob.size - 2)).arrayBuffer());
+    return "size=" + blob.size + " head=" + hx(head) + " tail=" + hx(tail);
+  } catch (err) {
+    return "READ-FAIL: " + (err && err.message);
+  }
+}
+
 // opts can carry { resizeWidth, resizeHeight, resizeQuality } to decode straight
 // to a target size without ever materialising the full-res bitmap.
 function decodeEntry(entry, opts) {
   if (!entry || !entry.blob) return Promise.resolve(null);
-  return createImageBitmap(entry.blob, opts || undefined).catch((err) => {
-    implog("cib fail " + (entry.name || entry.id) + " " + (opts ? opts.resizeWidth + "x" + opts.resizeHeight : "full") + ": " + (err && err.message));
-    return _imgElementBitmap(entry.blob, opts).then(
-      (bm) => {
-        implog("img-fallback ok " + (entry.name || entry.id));
-        return bm;
-      },
-      (err2) => {
-        implog("img-fallback FAIL " + (entry.name || entry.id) + ": " + (err2 && err2.message));
-        throw err2;
-      },
-    );
+  const name = entry.name || entry.id;
+  const tgt = opts ? opts.resizeWidth + "x" + opts.resizeHeight : "full";
+  return createImageBitmap(entry.blob, opts || undefined).catch(async (err) => {
+    implog("cib fail " + name + " " + tgt + ": " + (err && err.message));
+    implog("probe " + name + " " + (await _blobProbe(entry.blob)));
+    try {
+      const bm = await _imgElementBitmap(entry.blob, opts);
+      implog("img-fallback ok " + name);
+      return bm;
+    } catch (err2) {
+      implog("img-fallback fail " + name + ": " + (err2 && err2.message));
+    }
+    // Last resort: pull the bytes out of blob storage and decode from a fresh
+    // in-memory Blob. If the original blob's backing went bad, this both
+    // proves it (probe above) and heals it (the fresh blob replaces it).
+    const buf = await entry.blob.arrayBuffer();
+    const fresh = new Blob([buf], { type: entry.blob.type || "image/jpeg" });
+    return createImageBitmap(fresh, opts || undefined)
+      .catch(() => _imgElementBitmap(fresh, opts))
+      .then(
+        (bm) => {
+          implog("re-blob ok " + name);
+          if (entry.assetHash && assetStore.get(entry.assetHash) === entry.blob) assetStore.set(entry.assetHash, fresh);
+          entry.blob = fresh;
+          return bm;
+        },
+        (err3) => {
+          implog("re-blob FAIL " + name + ": " + (err3 && err3.message));
+          throw err3;
+        },
+      );
   });
 }
 
