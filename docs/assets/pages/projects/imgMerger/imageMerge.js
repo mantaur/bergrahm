@@ -889,9 +889,12 @@ function loadPainterImage(rankIdx) {
   maskCanvas.style.height = dims.dispH + "px";
 
   // Decode on demand and draw scaled into the capped store; release immediately.
+  // A failed decode (allocation pressure on big photos) retries with backoff while
+  // this image is still the one being viewed.
   decodeEntry(entry)
     .then((bm) => {
       if (!bm) return;
+      entry._painterRetry = 0;
       if (state.rankOrder[state.paintIdx] !== imgIdx) {
         bm.close();
         return;
@@ -899,7 +902,14 @@ function loadPainterImage(rankIdx) {
       paintCtx.drawImage(bm, 0, 0, dims.bw, dims.bh);
       bm.close();
     })
-    .catch(() => {});
+    .catch(() => {
+      const tries = (entry._painterRetry || 0) + 1;
+      entry._painterRetry = tries;
+      if (tries > 4) return;
+      setTimeout(() => {
+        if (state.rankOrder[state.paintIdx] === imgIdx) loadPainterImage(state.paintIdx);
+      }, 1500 * tries);
+    });
   redrawPolyOverlay(imgIdx);
 
   // Sync painter scale bar to this image's scale setting
@@ -4222,6 +4232,16 @@ async function _runImport(file, makeMeta) {
         _importImage(i, msg, ctx);
         _sessionStatus("Loading " + ++done + "/" + total);
       },
+      onThumb: (i, msg) => {
+        const entry = imgById(ctx.ids[i]);
+        if (!entry) return;
+        if (!entry.w && msg.w) entry.w = msg.w;
+        if (!entry.h && msg.h) entry.h = msg.h;
+        if (!entry.thumbUrl) {
+          entry.thumbUrl = _bufToDataUrl(msg.thumbBuf, "image/jpeg");
+          _updateFilmstripThumb(entry.id);
+        }
+      },
     });
     if (ctx) {
       if (!ctx.painted) loadPainterImage(state.paintIdx);
@@ -4415,9 +4435,10 @@ function _importImage(i, msg, ctx) {
 }
 
 // Build a filmstrip thumb on the main thread from an entry's compressed bytes.
-// Decodes straight to thumb size; if even that fails, the placeholder stays.
-async function _thumbFallback(entry) {
-  if (!entry.blob || entry.thumbUrl || !entry.w || !entry.h) return;
+// Decodes straight to thumb size; failures back off and retry (memory-pressure
+// decodes recover once transient allocations are released).
+async function _thumbFallback(entry, attempt = 0) {
+  if (!entry.blob || entry.thumbUrl || !entry.w || !entry.h || imgById(entry.id) !== entry) return;
   try {
     const ts = Math.min(1, 256 / Math.max(entry.w, entry.h));
     const tW = Math.max(1, Math.round(entry.w * ts));
@@ -4427,7 +4448,7 @@ async function _thumbFallback(entry) {
     bm.close();
     _updateFilmstripThumb(entry.id);
   } catch (err) {
-    /* placeholder stays */
+    if (attempt < 4) setTimeout(() => _thumbFallback(entry, attempt + 1), 2000 << attempt);
   }
 }
 

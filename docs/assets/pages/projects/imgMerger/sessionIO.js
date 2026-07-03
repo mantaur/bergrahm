@@ -76,6 +76,18 @@ function _sessionWorkerBody() {
     self.postMessage({ type: "done", buffer: buf }, [buf]);
   }
 
+  // Thumbnail decoded straight to target size (no full-res bitmap kept).
+  async function thumbFromBlob(blob, w, h) {
+    const ts = Math.min(1, 256 / Math.max(w, h));
+    const tW = Math.max(1, Math.round(w * ts)),
+      tH = Math.max(1, Math.round(h * ts));
+    const tbm = await createImageBitmap(blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+    const oc = new OffscreenCanvas(tW, tH);
+    oc.getContext("2d").drawImage(tbm, 0, 0);
+    tbm.close();
+    return (await oc.convertToBlob({ type: "image/jpeg", quality: 0.82 })).arrayBuffer();
+  }
+
   // Stream the session: emit `meta` (config + masks + positions) first so the app
   // can render masks and the filmstrip immediately, then decode + thumbnail each
   // image off the main thread and post them one at a time (`image`), then `done`.
@@ -85,6 +97,7 @@ function _sessionWorkerBody() {
     const n = session.images.length;
     self.postMessage({ type: "meta", session });
 
+    const retryThumbs = [];
     for (let i = 0; i < n; i++) {
       const si = session.images[i] || {};
       let jpegBuf = null,
@@ -95,10 +108,16 @@ function _sessionWorkerBody() {
 
       const imgFile = zip.file("images/" + i + ".jpg");
       if (imgFile) {
-        jpegBuf = await imgFile.async("arraybuffer"); // kept compressed; decoded on demand
+        try {
+          jpegBuf = await imgFile.async("arraybuffer"); // kept compressed; decoded on demand
+        } catch (err) {
+          jpegBuf = null; // corrupt entry (e.g. truncated download); salvage the rest
+        }
+      }
+      if (jpegBuf) {
         // A failed decode (bad bytes, or allocation failure on a big photo under
         // mobile memory pressure) must not abort the import: the compressed bytes
-        // are still good, so ship them without a thumb and keep going.
+        // are still good, so ship them without a thumb and retry after the stream.
         try {
           const blob = new Blob([jpegBuf], { type: "image/jpeg" });
           if (!w || !h) {
@@ -107,17 +126,10 @@ function _sessionWorkerBody() {
             h = full.height;
             full.close();
           }
-          // Thumbnail decoded straight to target size off-thread (no full-res bitmap kept).
-          const ts = Math.min(1, 256 / Math.max(w, h));
-          const tW = Math.max(1, Math.round(w * ts)),
-            tH = Math.max(1, Math.round(h * ts));
-          const tbm = await createImageBitmap(blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
-          const oc = new OffscreenCanvas(tW, tH);
-          oc.getContext("2d").drawImage(tbm, 0, 0);
-          tbm.close();
-          thumbBuf = await (await oc.convertToBlob({ type: "image/jpeg", quality: 0.82 })).arrayBuffer();
+          thumbBuf = await thumbFromBlob(blob, w, h);
         } catch (err) {
           thumbBuf = null;
+          retryThumbs.push(i);
         }
       }
 
@@ -135,6 +147,26 @@ function _sessionWorkerBody() {
       if (thumbBuf) transfer.push(thumbBuf);
       self.postMessage({ type: "image", i, jpegBuf, thumbBuf, encoding, w, h }, transfer);
       self.postMessage({ type: "progress", pct: Math.round(((i + 1) / n) * 100) });
+    }
+
+    // Second pass over mid-stream decode failures: the per-image transients are
+    // gone now, so an allocation-starved decode usually succeeds on retry.
+    for (const i of retryThumbs) {
+      try {
+        const buf = await zip.file("images/" + i + ".jpg").async("arraybuffer");
+        const blob = new Blob([buf], { type: "image/jpeg" });
+        let { w, h } = session.images[i] || {};
+        if (!w || !h) {
+          const full = await createImageBitmap(blob);
+          w = full.width;
+          h = full.height;
+          full.close();
+        }
+        const thumbBuf = await thumbFromBlob(blob, w, h);
+        self.postMessage({ type: "thumb", i, thumbBuf, w, h }, [thumbBuf]);
+      } catch (err) {
+        /* main thread keeps retrying via _thumbFallback */
+      }
     }
 
     self.postMessage({ type: "done" });
@@ -259,7 +291,7 @@ const SessionIO = {
   // Streaming import. Fires onMeta(session) once (config + masks + positions),
   // then onImage(i, { bitmap, thumbBuf, encoding }) per image as each is decoded
   // off-thread, then resolves on done. onProgress(pct) is the per-image count.
-  importStream(file, { onMeta, onImage, onProgress } = {}) {
+  importStream(file, { onMeta, onImage, onThumb, onProgress } = {}) {
     return file.arrayBuffer().then(
       (buffer) =>
         new Promise((resolve, reject) => {
@@ -269,6 +301,8 @@ const SessionIO = {
               if (onMeta) onMeta(msg.session);
             } else if (msg.type === "image") {
               if (onImage) onImage(msg.i, msg);
+            } else if (msg.type === "thumb") {
+              if (onThumb) onThumb(msg.i, msg);
             } else if (msg.type === "progress") {
               if (onProgress) onProgress(msg.pct);
             } else if (msg.type === "done") {
