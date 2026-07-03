@@ -355,7 +355,7 @@
     <script src="gpuCheck.js?v=1"></script>
     <script src="sessionIO.js?v=14"></script>
     <script src="viewport.js?v=6"></script>
-    <script src="imageMerge.js?v=103"></script>
+    <script src="imageMerge.js?v=104"></script>
     <script>
       // Bridge: expose imageMerge.js locals (let/const/closure-scoped) to ES module scope.
 
@@ -412,8 +412,8 @@
         var entry = imgById(imgIdx);
         if (!entry || (!entry.blob && !entry.bytes)) return null;
         await ensureAssetHash(entry); // content key travels with the bytes
-        // Prefer the JS-memory bytes (blob backing can go unreadable on Android);
-        // copy them so downstream chunking can never detach the resident buffer.
+        // bytes preferred (blob backing can go unreadable on Android); copied so
+        // downstream chunking can't detach the resident buffer.
         var buf = entry.bytes ? entry.bytes.slice(0) : await entry.blob.arrayBuffer();
         var g = simGroups.get(imgIdx);
         return {

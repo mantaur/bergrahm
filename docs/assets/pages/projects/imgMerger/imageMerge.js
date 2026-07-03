@@ -1,12 +1,10 @@
 // ── Image Merger ──────────────────────────────────────────────────────────────
 const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia("(pointer: coarse)").matches;
 
-// Keep in sync with the ?v= cache-buster in index.html. Shown by the import
-// debug overlay so on-device tests can prove which build they are running.
-const BUILD = "103";
+// Keep in sync with the ?v= cache-buster in index.html.
+const BUILD = "104";
 
-// Import/decode debug log. Always captured (bounded, strings only); the on-screen
-// overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
+// Always-on bounded debug log; overlay opt-in via ?impdbg=1 / localStorage impdbg=1.
 const _implog = [];
 window._implog = _implog;
 function implog(msg) {
@@ -441,13 +439,8 @@ function updateScalePreview(imgIdx) {
   ctx.strokeRect(1.5, 1.5, Math.round(imgW * fit), Math.round(imgH * fit));
 }
 
-// Decode-on-demand: images are kept only as compressed bytes (entry.blob); the
-// full-res bitmap is decoded transiently when needed (painter, merge, encode,
-// export) and released, so memory stays ~zip-sized even with 100+ large images.
-// Some mobile browsers hard-reject createImageBitmap on very large encoded
-// images (dimension caps, not memory). An <img> element decodes through the
-// browser's subsampling path instead; rasterize at the target size and hand
-// back a real ImageBitmap so callers (incl. worker transfer) are unaffected.
+// Decode via <img> (the browser's most tolerant path) and rasterize to a real
+// ImageBitmap so callers, including worker transfers, are unaffected.
 function _imgElementBitmap(url, revoke, opts) {
   const img = new Image();
   const loaded = new Promise((res, rej) => {
@@ -470,9 +463,8 @@ function _imgElementBitmap(url, revoke, opts) {
     });
 }
 
-// Read the blob's actual backing bytes: size + first/last two bytes (a JPEG
-// must show head=ffd8 tail=ffd9). A READ-FAIL or wrong markers means the
-// browser's blob storage is broken/truncated -- the decoder never had a chance.
+// Diagnostic: a JPEG must show head=ffd8 tail=ffd9; READ-FAIL means the blob's
+// backing store is broken and no decoder ever saw the bytes.
 async function _blobProbe(blob) {
   try {
     const hx = (a) => Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -484,7 +476,7 @@ async function _blobProbe(blob) {
   }
 }
 
-// Sniff the container from magic bytes; ImageDecoder needs the true type.
+// ImageDecoder needs the true container type.
 function _sniffImageType(bytes) {
   const b = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
   if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
@@ -492,10 +484,8 @@ function _sniffImageType(bytes) {
   return null;
 }
 
-// WebCodecs decode straight from the ArrayBuffer -- no Blob at any point, so
-// the browser's blob storage (whose backing can go unreadable on Android) is
-// out of the hot path entirely. desiredWidth/Height let JPEG decode subsample;
-// the createImageBitmap resize off the frame guarantees the exact target.
+// WebCodecs decode straight off the ArrayBuffer -- no Blob, so Android's
+// unreliable blob storage never enters the path. SecureContext-only.
 function _imageDecoderBitmap(bytes, type, opts) {
   const init = { data: bytes, type };
   if (opts && opts.resizeWidth) {
@@ -509,12 +499,9 @@ function _imageDecoderBitmap(bytes, type, opts) {
     .finally(() => dec.close());
 }
 
-// opts can carry { resizeWidth, resizeHeight, resizeQuality } to decode straight
-// to a target size without ever materialising the full-res bitmap.
-// Preference order for entries carrying entry.bytes (imported/collab/file-added):
-// 1. ImageDecoder on the raw bytes (no blob storage involvement at all)
-// 2. createImageBitmap on a transient Blob minted per call
-// 3. img element decode of the same transient Blob
+// Decode an entry straight to opts' target size (never the full-res bitmap).
+// Preference: ImageDecoder on entry.bytes, then createImageBitmap on a
+// transient Blob, then <img> -- each step dodges a real-world decode failure.
 function decodeEntry(entry, opts) {
   if (!entry || (!entry.blob && !entry.bytes)) return Promise.resolve(null);
   const name = entry.name || entry.id;
@@ -538,9 +525,8 @@ function decodeEntry(entry, opts) {
     return createImageBitmap(src, opts || undefined).catch(async (err) => {
       implog("cib fail " + name + " " + tgt + (haveBytes ? " (bytes)" : "") + ": " + (err && err.message));
       implog("probe " + name + " " + (await _blobProbe(src)));
-      // With bytes at hand, feed the img element a data: URL -- inline bytes,
-      // no blob storage, works on insecure (plain-http LAN) contexts where
-      // ImageDecoder does not exist. Otherwise fall back to an object URL.
+      // data: URL when bytes exist: inline, no blob storage, works on the
+      // insecure LAN contexts where ImageDecoder is unavailable.
       const url = haveBytes ? _bufToDataUrl(entry.bytes, type || "image/jpeg") : URL.createObjectURL(src);
       return _imgElementBitmap(url, !haveBytes, opts).then(
         (bm2) => {
@@ -633,9 +619,8 @@ cfgImages.addEventListener("change", () => {
         scale: null,
         simHidden: false,
       };
-      // Rescue the bytes into JS memory while the File reference is fresh: on
-      // Android the picker's grant can lapse, after which every read of the File
-      // throws NotReadableError ("permission problems after a reference...").
+      // Rescue bytes while the File reference is fresh: on Android the picker's
+      // grant can lapse, after which every read throws NotReadableError.
       file.arrayBuffer().then(
         (buf) => {
           entry.bytes = buf;
@@ -1001,9 +986,7 @@ function loadPainterImage(rankIdx) {
   const entry = imgById(imgIdx);
   if (!entry) return;
 
-  // Stepping onto an image is an explicit "retry now": reset the exhausted
-  // decode backoffs so images whose decodes kept failing (memory pressure
-  // during a large import) recover the moment they are viewed.
+  // A fresh view re-arms exhausted decode backoffs (recover on look).
   if (_lastPainterViewId !== imgIdx) {
     _lastPainterViewId = imgIdx;
     entry._painterRetry = 0;
@@ -1043,9 +1026,8 @@ function loadPainterImage(rankIdx) {
   maskCanvas.style.width = dims.dispW + "px";
   maskCanvas.style.height = dims.dispH + "px";
 
-  // Decode on demand straight to the canvas backing size (full-res of a 32MP
-  // photo is a ~130MB allocation; the canvas only holds bw x bh). A failed
-  // decode (allocation pressure) retries with backoff while still viewed.
+  // Decode straight to the canvas backing size (full-res of a 32MP photo is a
+  // ~130MB allocation); failures retry with backoff while still viewed.
   decodeEntry(entry, dims.bScale < 1 ? { resizeWidth: dims.bw, resizeHeight: dims.bh, resizeQuality: "high" } : undefined)
     .then((bm) => {
       if (!bm) return;
@@ -1379,7 +1361,7 @@ function initYoloPool() {
   YOLO_WORKER_COUNT = state.yoloWorkerCount;
   yoloPool.encodeQueueBuilt = false;
   if (location.protocol === "file:") {
-    updateYoloStatus("Seg requires HTTP  -  open a terminal in docs/ and run: python3 -m http.server 8080, " + "then visit http://localhost:8080/assets/pages/projects/imageMerge.html", true);
+    updateYoloStatus("Seg needs HTTP: python3 -m http.server 8080 in docs/", true);
     return;
   }
   for (let i = 0; i < YOLO_WORKER_COUNT; i++) {
@@ -1449,7 +1431,7 @@ function onWorkerReady(wIdx) {
   }
 
   const all = yoloPool.readyCount === YOLO_WORKER_COUNT;
-  updateYoloStatus(all ? (yoloPool.yoloMode ? "Click a subject to segment" : "YOLO ready  -  toggle on then click a subject") : "YOLO loading (" + yoloPool.readyCount + "/" + YOLO_WORKER_COUNT + ")...");
+  updateYoloStatus(all ? (yoloPool.yoloMode ? "Click a subject to segment" : "YOLO ready") : "YOLO loading (" + yoloPool.readyCount + "/" + YOLO_WORKER_COUNT + ")...");
   drainEncodeQueue();
 }
 
@@ -1549,7 +1531,7 @@ function onEncodeError(wIdx, message) {
     if (attempts <= 2) {
       // Re-queue at the front so it's picked up by the next free worker.
       yoloPool.encodeQueue.unshift(imgIdx);
-      updateYoloStatus("YOLO worker failed  -  retrying with fewer workers...", true);
+      updateYoloStatus("Worker failed - retrying", true);
     } else {
       const failDot = yoloPool.dots.get(imgIdx);
       if (failDot) {
@@ -1557,7 +1539,7 @@ function onEncodeError(wIdx, message) {
         failDot.classList.add("im-yolo-failed");
         failDot.title = "Encoding failed";
       }
-      updateYoloStatus("Could not encode [" + (imgById(imgIdx)?.name ?? imgIdx) + "]  -  skipping.", true);
+      updateYoloStatus("Encode failed - skipped", true);
     }
   } else {
     // Failure during decode or init (imgIdx null) — just report it.
@@ -1586,8 +1568,7 @@ async function sendEncode(wIdx, imgIdx) {
     dot.title = "Encoding...";
   }
   const entry = imgById(imgIdx);
-  // The model letterboxes to 640px; decoding a photo any larger only triples
-  // full-res copies (bitmap + canvas + getImageData) on the main thread.
+  // The model letterboxes to 640px; decoding larger is pure waste.
   const cap = entry ? Math.min(1, 640 / Math.max(entry.w, entry.h)) : 1;
   const bm = await decodeEntry(entry, cap < 1 ? { resizeWidth: Math.max(1, Math.round(entry.w * cap)), resizeHeight: Math.max(1, Math.round(entry.h * cap)), resizeQuality: "high" } : undefined);
   // Image may have been removed while decoding -> free the worker slot and re-drain.
@@ -1702,7 +1683,7 @@ function requestDecode(x, y) {
         entry.polygons.filter((_, j) => j !== i),
         { undo: true },
       );
-      updateYoloStatus("Segment removed. Click to add or click an object to segment.");
+      updateYoloStatus("Segment removed");
       return;
     }
   }
@@ -1717,7 +1698,7 @@ function requestDecode(x, y) {
         drainEncodeQueue();
       }
     }
-    updateYoloStatus("Encoding - click the subject again when the thumbnail stops pulsing", true);
+    updateYoloStatus("Encoding... tap again soon", true);
     return;
   }
   const { segments, origW, origH } = yoloPool.embeddingCache.get(imgIdx);
@@ -1725,24 +1706,21 @@ function requestDecode(x, y) {
   // the click arrives in image space, so map it into encode space.
   const seg = findBestSegmentAt(segments, (x * origW) / entry.w, (y * origH) / entry.h, origW, origH);
   if (!seg) {
-    updateYoloStatus("No segment found  -  try clicking on a recognized object.", true);
+    updateYoloStatus("No segment found", true);
     return;
   }
   applyMaskAsPolygon(seg.mask, seg.maskW, seg.maskH, imgIdx);
 }
 
-// Seg polygons are kept out of an edge margin (7% of width/height per axis):
-// a mask running to the frame edge gives the merge nothing to blend into (hard
-// cut at the border). Vertices inside the margin are simply dropped and the
-// surviving neighbors connect directly -- reads more naturally than a straight
-// clip line along the margin rectangle. Manual painting is untouched.
+// Seg polygons keep out of this per-axis edge margin so merges have blend room
+// at the frame border; vertices inside it are dropped. Manual painting is untouched.
 const SEG_EDGE_MARGIN_FRAC = 0.07;
 
 function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   if (forImgIdx !== state.rankOrder[state.paintIdx]) return; // stale result
   const poly = maskToPolygon(maskData, width, height);
   if (!poly || poly.length < 3) {
-    updateYoloStatus("No region found  -  try clicking a different point.", true);
+    updateYoloStatus("No region found", true);
     return;
   }
   const entry = imgById(forImgIdx);
@@ -1756,12 +1734,12 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   const my = entry.h * SEG_EDGE_MARGIN_FRAC;
   const kept = scaledPoly.filter((p) => p.x >= mx && p.x <= entry.w - mx && p.y >= my && p.y <= entry.h - my);
   if (kept.length < 3) {
-    updateYoloStatus("Segment lies in the edge margin - paint it manually if needed.", true);
+    updateYoloStatus("Segment inside edge margin", true);
     return;
   }
 
   setPolygons(forImgIdx, [...entry.polygons, kept], { undo: true });
-  updateYoloStatus("Segment added. Click for another or switch to manual mode.");
+  updateYoloStatus("Segment added");
 }
 
 // Convert a flat Uint8Array mask (0=bg, 1=fg) to an [{x,y}...] polygon
@@ -1834,7 +1812,7 @@ btnYoloToggle.addEventListener("click", () => {
   btnYoloToggle.textContent = yoloPool.yoloMode ? "Seg: On" : "Seg: Off";
   if (yoloPool.yoloMode) {
     const imgIdx = state.rankOrder[state.paintIdx];
-    updateYoloStatus(yoloPool.embeddingCache.has(imgIdx) ? "Click a subject to segment" : "Click a subject to begin encoding and segment");
+    updateYoloStatus("Click a subject to segment");
   } else {
     updateYoloStatus("YOLO ready");
   }
@@ -4479,9 +4457,7 @@ function _importMetaReplace(session) {
   yoloPool.embeddingCache.clear();
   yoloPool.dots.clear();
   rankList.innerHTML = "";
-  // Old session's content-addressed bytes are unreachable after a replace; keeping
-  // them leaked a whole session of blobs per import (and blob storage is quota'd).
-  assetStore.clear();
+  assetStore.clear(); // old session's assets are unreachable; keeping them leaked a session per import
 
   // Restore config to DOM + state
   state.outW = session.outW;
@@ -4594,10 +4570,7 @@ function _importImage(i, msg, ctx) {
   if (!entry) return;
 
   if (msg.jpegBuf) {
-    // Keep the compressed bytes in JS memory as the source of truth. Android
-    // Chrome pages constructed Blobs into browser-managed storage whose backing
-    // can go unreadable (NotReadableError on every later use) -- entry.bytes is
-    // immune, and decodeEntry mints a transient Blob from it per decode.
+    // bytes are the source of truth: Android blob-storage backing can go unreadable
     entry.bytes = msg.jpegBuf;
     entry.blob = new Blob([msg.jpegBuf], { type: "image/jpeg" });
     if (!entry.w && msg.w) entry.w = msg.w;
@@ -4608,8 +4581,7 @@ function _importImage(i, msg, ctx) {
     entry.thumbUrl = _bufToDataUrl(msg.thumbBuf, "image/jpeg");
     _updateFilmstripThumb(id);
   } else if (entry.blob) {
-    // Worker could not decode a thumb (memory pressure on big photos); retry here.
-    _thumbFallback(entry);
+    _thumbFallback(entry); // worker could not thumb it; retry here
   }
   if (msg.encoding) {
     _restoreEncodings([msg.encoding], [id]);
@@ -4622,9 +4594,7 @@ function _importImage(i, msg, ctx) {
   _showMergeBtn(); // offer merge only once every placed image has its pixels
 }
 
-// Build a filmstrip thumb on the main thread from an entry's compressed bytes.
-// Decodes straight to thumb size; failures back off and retry (memory-pressure
-// decodes recover once transient allocations are released).
+// Filmstrip thumb from an entry's bytes; failures back off and retry.
 async function _thumbFallback(entry, attempt = 0) {
   if ((!entry.blob && !entry.bytes) || entry.thumbUrl || !entry.w || !entry.h || imgById(entry.id) !== entry) return;
   try {

@@ -23,8 +23,7 @@ function _sessionWorkerBody() {
     }
   };
 
-  // JPEG or PNG bytes go into the zip as-is: no decode/re-encode (a 32MP decode
-  // is a ~130MB allocation that OOMs mobile) and no repeated-export quality loss.
+  // JPEG/PNG bytes zip as-is: no re-encode quality loss, no 32MP decode spike.
   function isPassthroughImage(buf) {
     const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
     return (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) || (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47);
@@ -33,8 +32,7 @@ function _sessionWorkerBody() {
   async function doExport({ session, imageBufs, encodings }) {
     const zip = new JSZip();
 
-    // One image at a time so export never holds all decoded at once. Already-
-    // compressed bytes are STOREd (DEFLATE over JPEG wastes CPU and memory).
+    // One image at a time; STORE (DEFLATE over JPEG wastes CPU and memory).
     for (let i = 0; i < imageBufs.length; i++) {
       let out = imageBufs[i];
       if (!isPassthroughImage(out)) {
@@ -76,10 +74,8 @@ function _sessionWorkerBody() {
     self.postMessage({ type: "done", buffer: buf }, [buf]);
   }
 
-  // Decode a buffer to an exact target size. ImageDecoder (WebCodecs) consumes
-  // the ArrayBuffer directly -- no Blob, so the browser's blob storage (whose
-  // backing can go unreadable on Android) never enters the path. Falls back to
-  // a transient Blob + createImageBitmap where ImageDecoder is unavailable.
+  // ImageDecoder first (no Blob, dodges Android's unreliable blob storage),
+  // transient Blob + createImageBitmap where unavailable.
   async function decodeScaled(buf, tW, tH) {
     const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
     const type = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff ? "image/jpeg" : b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 ? "image/png" : null;
@@ -145,9 +141,8 @@ function _sessionWorkerBody() {
         }
       }
       if (jpegBuf) {
-        // A failed decode (bad bytes, or allocation failure on a big photo under
-        // mobile memory pressure) must not abort the import: the compressed bytes
-        // are still good, so ship them without a thumb and retry after the stream.
+        // A failed decode must not abort the import: ship the bytes thumb-less
+        // and retry after the stream.
         try {
           if (!w || !h) {
             const full = await createImageBitmap(new Blob([jpegBuf], { type: "image/jpeg" }));
@@ -179,8 +174,8 @@ function _sessionWorkerBody() {
       self.postMessage({ type: "progress", pct: Math.round(((i + 1) / n) * 100) });
     }
 
-    // Second pass over mid-stream failures: the per-image transients are gone
-    // now, so an allocation-starved inflate/decode usually succeeds on retry.
+    // Second pass: per-image transients are gone, so starved inflates/decodes
+    // usually succeed now.
     for (const i of retryBytes) {
       try {
         const jpegBuf = await zip.file("images/" + i + ".jpg").async("arraybuffer");
@@ -255,16 +250,14 @@ const SessionIO = {
   async exportBlob(exportData, onProgress) {
     const { state, simGroups, yoloPool, cfg } = exportData;
 
-    // Entries whose bytes have not arrived yet (collab pull still in flight) cannot
-    // be exported; fail with names instead of crashing on a null blob.
+    // Still-transferring entries cannot be exported; fail with names, not a crash.
     const missing = state.images.filter((e) => !e.blob && !e.bytes).map((e) => e.name || e.id);
     if (missing.length) {
       throw new Error(missing.length + " image(s) still transferring: " + missing.slice(0, 3).join(", ") + (missing.length > 3 ? ", ..." : ""));
     }
 
-    // Hand the worker the compressed bytes. entry.bytes is preferred (a Blob's
-    // backing can go unreadable on Android) and copied, because the postMessage
-    // transfer below would otherwise detach the entry's resident buffer.
+    // bytes preferred (blob backing can go unreadable on Android), copied because
+    // the postMessage transfer would otherwise detach the resident buffer.
     const imageBufs = await Promise.all(state.images.map((e) => (e.bytes ? e.bytes.slice(0) : e.blob.arrayBuffer())));
 
     const session = {
