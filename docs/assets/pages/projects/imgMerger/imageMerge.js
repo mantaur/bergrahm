@@ -414,11 +414,36 @@ function updateScalePreview(imgIdx) {
 // Decode-on-demand: images are kept only as compressed bytes (entry.blob); the
 // full-res bitmap is decoded transiently when needed (painter, merge, encode,
 // export) and released, so memory stays ~zip-sized even with 100+ large images.
+// Some mobile browsers hard-reject createImageBitmap on very large encoded
+// images (dimension caps, not memory). An <img> element decodes through the
+// browser's subsampling path instead; rasterize at the target size and hand
+// back a real ImageBitmap so callers (incl. worker transfer) are unaffected.
+function _imgElementBitmap(blob, opts) {
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  const loaded = new Promise((res, rej) => {
+    img.onload = res;
+    img.onerror = () => rej(new Error("image decode failed"));
+  });
+  img.src = url;
+  return loaded
+    .then(() => {
+      const w = opts && opts.resizeWidth ? opts.resizeWidth : img.naturalWidth;
+      const h = opts && opts.resizeHeight ? opts.resizeHeight : img.naturalHeight;
+      const cv = document.createElement("canvas");
+      cv.width = w;
+      cv.height = h;
+      cv.getContext("2d").drawImage(img, 0, 0, w, h);
+      return createImageBitmap(cv);
+    })
+    .finally(() => URL.revokeObjectURL(url));
+}
+
 // opts can carry { resizeWidth, resizeHeight, resizeQuality } to decode straight
 // to a target size without ever materialising the full-res bitmap.
 function decodeEntry(entry, opts) {
   if (!entry || !entry.blob) return Promise.resolve(null);
-  return createImageBitmap(entry.blob, opts || undefined);
+  return createImageBitmap(entry.blob, opts || undefined).catch(() => _imgElementBitmap(entry.blob, opts));
 }
 
 // Base64 data URL from raw bytes -- portable across peers (a blob: URL is only
@@ -4459,7 +4484,7 @@ async function _thumbFallback(entry, attempt = 0) {
     const ts = Math.min(1, 256 / Math.max(entry.w, entry.h));
     const tW = Math.max(1, Math.round(entry.w * ts));
     const tH = Math.max(1, Math.round(entry.h * ts));
-    const bm = await createImageBitmap(entry.blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+    const bm = await decodeEntry(entry, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
     entry.thumbUrl = buildThumb(bm, entry.w, entry.h);
     bm.close();
     _updateFilmstripThumb(entry.id);

@@ -120,6 +120,35 @@ test.describe('Session import', () => {
     await expect.poll(() => page.evaluate((id) => (window as any).getImageThumb(id), id1)).toMatch(/^data:/);
   });
 
+  // Mobile browsers can hard-reject createImageBitmap on very large encoded
+  // images (dimension cap). The <img>-element fallback must still deliver the
+  // thumb and the painter pixels.
+  test('decode falls back to <img> when createImageBitmap rejects blobs', async ({ page }) => {
+    await addImage(page, [FIXTURE_IMG, FIXTURE_IMG2]);
+    await openPaintStep(page);
+    await page.evaluate(() => {
+      const orig = window.createImageBitmap.bind(window);
+      (window as any).createImageBitmap = (src: any, ...rest: any[]) =>
+        src instanceof Blob ? Promise.reject(new DOMException('too big', 'InvalidStateError')) : orig(src, ...rest);
+      const id = (window as any).getSessionMeta().images[1].id;
+      (window as any).imgById(id).thumbUrl = null;
+    });
+
+    await page.locator('#btn-next-img').click(); // view image 1
+    await expect.poll(() => page.evaluate(() => {
+      const id = (window as any).getSessionMeta().images[1].id;
+      return (window as any).getImageThumb(id);
+    })).toMatch(/^data:/);
+
+    await expect.poll(() => page.evaluate(() => {
+      const cv = document.getElementById('paint-canvas') as HTMLCanvasElement;
+      const d = cv.getContext('2d')!.getImageData(0, 0, Math.min(50, cv.width), Math.min(50, cv.height)).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i++) sum += d[i];
+      return sum;
+    })).toBeGreaterThan(0);
+  });
+
   // The host streams imported images to a collab guest via these window getters:
   // raw bytes by content hash (getImageBuffer) + a portable data-URL thumbnail
   // (getImageThumb, never a blob: URL, which is only valid in the host's document).
