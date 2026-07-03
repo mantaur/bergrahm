@@ -4399,6 +4399,9 @@ function _importImage(i, msg, ctx) {
     // Data URL (not a blob: URL) so it stays valid when streamed to a collab guest.
     entry.thumbUrl = _bufToDataUrl(msg.thumbBuf, "image/jpeg");
     _updateFilmstripThumb(id);
+  } else if (entry.blob) {
+    // Worker could not decode a thumb (memory pressure on big photos); retry here.
+    _thumbFallback(entry);
   }
   if (msg.encoding) {
     _restoreEncodings([msg.encoding], [id]);
@@ -4409,6 +4412,23 @@ function _importImage(i, msg, ctx) {
     ctx.painted = true;
   }
   _showMergeBtn(); // offer merge only once every placed image has its pixels
+}
+
+// Build a filmstrip thumb on the main thread from an entry's compressed bytes.
+// Decodes straight to thumb size; if even that fails, the placeholder stays.
+async function _thumbFallback(entry) {
+  if (!entry.blob || entry.thumbUrl || !entry.w || !entry.h) return;
+  try {
+    const ts = Math.min(1, 256 / Math.max(entry.w, entry.h));
+    const tW = Math.max(1, Math.round(entry.w * ts));
+    const tH = Math.max(1, Math.round(entry.h * ts));
+    const bm = await createImageBitmap(entry.blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+    entry.thumbUrl = buildThumb(bm, entry.w, entry.h);
+    bm.close();
+    _updateFilmstripThumb(entry.id);
+  } catch (err) {
+    /* placeholder stays */
+  }
 }
 
 // ── Content-addressed asset store ─────────────────────────────────────────────

@@ -68,6 +68,42 @@ test.describe('Session import', () => {
     expect(await imageCount(page)).toBe(1);
   });
 
+  // One undecodable image must not abort the import: its compressed bytes still
+  // land (thumb-less), every other image loads, and the run ends in "Imported".
+  test('import survives an image the decoder rejects', async ({ page }) => {
+    await page.addScriptTag({ url: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js' });
+    const zipB64 = await page.evaluate(async () => {
+      const cv = document.createElement('canvas');
+      cv.width = 40; cv.height = 30;
+      cv.getContext('2d')!.fillRect(0, 0, 40, 30);
+      const good = await new Promise<Blob>((r) => cv.toBlob((b) => r(b!), 'image/jpeg'));
+
+      const zip = new (window as any).JSZip();
+      zip.file('images/0.jpg', await good.arrayBuffer());
+      zip.file('images/1.jpg', new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])); // garbage bytes
+      zip.file('session.json', JSON.stringify({
+        version: 2, outW: 800, outH: 600, fillColor: '#ffffff', blendMode: 'gradient',
+        seed: 42, ditherExp: 4, slides: 1, useYolo: false,
+        rankOrder: ['good', 'bad'], paintIdx: 0,
+        images: [
+          { id: 'good', name: 'good.jpg', w: 40, h: 30, scale: null, polygons: [], currentPoly: [] },
+          { id: 'bad', name: 'bad.jpg', w: 40, h: 30, scale: null, polygons: [], currentPoly: [] },
+        ],
+      }));
+      return zip.generateAsync({ type: 'base64' });
+    });
+
+    await page.locator('#inp-import-session').setInputFiles({
+      name: 'broken.zip', mimeType: 'application/zip', buffer: Buffer.from(zipB64, 'base64'),
+    });
+
+    await expect(page.locator('#session-status')).toHaveText(/Imported/, { timeout: 15000 });
+    expect(await imageCount(page)).toBe(2);
+    // The bad image's bytes were still shipped for later use/export.
+    const badLen = await page.evaluate(async () => (await (window as any).getImageBuffer('bad'))?.buffer.byteLength ?? 0);
+    expect(badLen).toBe(8);
+  });
+
   // The host streams imported images to a collab guest via these window getters:
   // raw bytes by content hash (getImageBuffer) + a portable data-URL thumbnail
   // (getImageThumb, never a blob: URL, which is only valid in the host's document).

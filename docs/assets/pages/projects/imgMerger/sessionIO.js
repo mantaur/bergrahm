@@ -23,17 +23,28 @@ function _sessionWorkerBody() {
     }
   };
 
+  // JPEG or PNG bytes go into the zip as-is: no decode/re-encode (a 32MP decode
+  // is a ~130MB allocation that OOMs mobile) and no repeated-export quality loss.
+  function isPassthroughImage(buf) {
+    const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+    return (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) || (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47);
+  }
+
   async function doExport({ session, imageBufs, encodings }) {
     const zip = new JSZip();
 
-    // Decode + re-encode one image at a time so export never holds all decoded at once.
+    // One image at a time so export never holds all decoded at once. Already-
+    // compressed bytes are STOREd (DEFLATE over JPEG wastes CPU and memory).
     for (let i = 0; i < imageBufs.length; i++) {
-      const bm = await createImageBitmap(new Blob([imageBufs[i]]));
-      const oc = new OffscreenCanvas(bm.width, bm.height);
-      oc.getContext("2d").drawImage(bm, 0, 0);
-      bm.close();
-      const blob = await oc.convertToBlob({ type: "image/jpeg", quality: 0.92 });
-      zip.file("images/" + i + ".jpg", await blob.arrayBuffer());
+      let out = imageBufs[i];
+      if (!isPassthroughImage(out)) {
+        const bm = await createImageBitmap(new Blob([out]));
+        const oc = new OffscreenCanvas(bm.width, bm.height);
+        oc.getContext("2d").drawImage(bm, 0, 0);
+        bm.close();
+        out = await (await oc.convertToBlob({ type: "image/jpeg", quality: 0.92 })).arrayBuffer();
+      }
+      zip.file("images/" + i + ".jpg", out, { compression: "STORE" });
       self.postMessage({ type: "progress", pct: Math.round(((i + 1) / imageBufs.length) * 65) });
     }
 
@@ -85,26 +96,39 @@ function _sessionWorkerBody() {
       const imgFile = zip.file("images/" + i + ".jpg");
       if (imgFile) {
         jpegBuf = await imgFile.async("arraybuffer"); // kept compressed; decoded on demand
-        const blob = new Blob([jpegBuf], { type: "image/jpeg" });
-        if (!w || !h) {
-          const full = await createImageBitmap(blob);
-          w = full.width;
-          h = full.height;
-          full.close();
+        // A failed decode (bad bytes, or allocation failure on a big photo under
+        // mobile memory pressure) must not abort the import: the compressed bytes
+        // are still good, so ship them without a thumb and keep going.
+        try {
+          const blob = new Blob([jpegBuf], { type: "image/jpeg" });
+          if (!w || !h) {
+            const full = await createImageBitmap(blob);
+            w = full.width;
+            h = full.height;
+            full.close();
+          }
+          // Thumbnail decoded straight to target size off-thread (no full-res bitmap kept).
+          const ts = Math.min(1, 256 / Math.max(w, h));
+          const tW = Math.max(1, Math.round(w * ts)),
+            tH = Math.max(1, Math.round(h * ts));
+          const tbm = await createImageBitmap(blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+          const oc = new OffscreenCanvas(tW, tH);
+          oc.getContext("2d").drawImage(tbm, 0, 0);
+          tbm.close();
+          thumbBuf = await (await oc.convertToBlob({ type: "image/jpeg", quality: 0.82 })).arrayBuffer();
+        } catch (err) {
+          thumbBuf = null;
         }
-        // Thumbnail decoded straight to target size off-thread (no full-res bitmap kept).
-        const ts = Math.min(1, 256 / Math.max(w, h));
-        const tW = Math.max(1, Math.round(w * ts)),
-          tH = Math.max(1, Math.round(h * ts));
-        const tbm = await createImageBitmap(blob, { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
-        const oc = new OffscreenCanvas(tW, tH);
-        oc.getContext("2d").drawImage(tbm, 0, 0);
-        tbm.close();
-        thumbBuf = await (await oc.convertToBlob({ type: "image/jpeg", quality: 0.82 })).arrayBuffer();
       }
 
       const encFile = zip.file("encodings/" + i + ".json");
-      if (encFile) encoding = JSON.parse(await encFile.async("string"));
+      if (encFile) {
+        try {
+          encoding = JSON.parse(await encFile.async("string"));
+        } catch (err) {
+          encoding = null; // a broken encoding is recomputable; never abort for it
+        }
+      }
 
       const transfer = [];
       if (jpegBuf) transfer.push(jpegBuf);
@@ -145,8 +169,14 @@ const SessionIO = {
   async exportBlob(exportData, onProgress) {
     const { state, simGroups, yoloPool, cfg } = exportData;
 
-    // Hand the worker the compressed bytes (transferred, zero-copy); it decodes +
-    // re-encodes them sequentially, so export never holds all images decoded at once.
+    // Entries whose bytes have not arrived yet (collab pull still in flight) cannot
+    // be exported; fail with names instead of crashing on a null blob.
+    const missing = state.images.filter((e) => !e.blob).map((e) => e.name || e.id);
+    if (missing.length) {
+      throw new Error(missing.length + " image(s) still transferring: " + missing.slice(0, 3).join(", ") + (missing.length > 3 ? ", ..." : ""));
+    }
+
+    // Hand the worker the compressed bytes (transferred, zero-copy).
     const imageBufs = await Promise.all(state.images.map((e) => e.blob.arrayBuffer()));
 
     const session = {
