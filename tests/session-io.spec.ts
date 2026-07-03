@@ -120,6 +120,34 @@ test.describe('Session import', () => {
     await expect.poll(() => page.evaluate((id) => (window as any).getImageThumb(id), id1)).toMatch(/^data:/);
   });
 
+  // Imported entries keep their compressed bytes in JS memory (entry.bytes) and
+  // decode from a transient Blob minted per call -- so a stored Blob whose
+  // backing has gone unreadable (Android blob storage) is never consulted.
+  test('entry.bytes is the decode source of truth when the stored Blob breaks', async ({ page }) => {
+    await page.locator('#inp-import-session').setInputFiles(SESSION_ZIP);
+    await expect.poll(() => imageCount(page)).toBe(2);
+    await openPaintStep(page);
+
+    const id1 = await page.evaluate(() => {
+      const id = (window as any).getSessionMeta().images[1].id;
+      const e = (window as any).imgById(id);
+      if (!e.bytes) throw new Error('bytes not retained on import');
+      e.blob = new Blob([]); // model a broken backing store: undecodable if consulted
+      e.thumbUrl = null;
+      return id;
+    });
+
+    await page.locator('#btn-next-img').click(); // step onto image 1
+    await expect.poll(() => page.evaluate((id) => (window as any).getImageThumb(id), id1)).toMatch(/^data:/);
+    await expect.poll(() => page.evaluate(() => {
+      const cv = document.getElementById('paint-canvas') as HTMLCanvasElement;
+      const d = cv.getContext('2d')!.getImageData(0, 0, Math.min(50, cv.width), Math.min(50, cv.height)).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i++) sum += d[i];
+      return sum;
+    })).toBeGreaterThan(0);
+  });
+
   // Mobile browsers can hard-reject createImageBitmap on very large encoded
   // images (dimension cap). The <img>-element fallback must still deliver the
   // thumb and the painter pixels.

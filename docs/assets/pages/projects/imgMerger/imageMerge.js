@@ -3,7 +3,7 @@ const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || w
 
 // Keep in sync with the ?v= cache-buster in index.html. Shown by the import
 // debug overlay so on-device tests can prove which build they are running.
-const BUILD = "97";
+const BUILD = "98";
 
 // Import/decode debug log. Always captured (bounded, strings only); the on-screen
 // overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
@@ -485,39 +485,27 @@ async function _blobProbe(blob) {
 
 // opts can carry { resizeWidth, resizeHeight, resizeQuality } to decode straight
 // to a target size without ever materialising the full-res bitmap.
+// Entries carrying entry.bytes (imported/collab images) decode from a transient
+// Blob minted per call: the resident bytes never live in the browser's blob
+// storage, whose backing can go unreadable on Android (NotReadableError).
 function decodeEntry(entry, opts) {
-  if (!entry || !entry.blob) return Promise.resolve(null);
+  if (!entry || (!entry.blob && !entry.bytes)) return Promise.resolve(null);
   const name = entry.name || entry.id;
   const tgt = opts ? opts.resizeWidth + "x" + opts.resizeHeight : "full";
-  return createImageBitmap(entry.blob, opts || undefined).catch(async (err) => {
-    implog("cib fail " + name + " " + tgt + ": " + (err && err.message));
-    implog("probe " + name + " " + (await _blobProbe(entry.blob)));
-    try {
-      const bm = await _imgElementBitmap(entry.blob, opts);
-      implog("img-fallback ok " + name);
-      return bm;
-    } catch (err2) {
-      implog("img-fallback fail " + name + ": " + (err2 && err2.message));
-    }
-    // Last resort: pull the bytes out of blob storage and decode from a fresh
-    // in-memory Blob. If the original blob's backing went bad, this both
-    // proves it (probe above) and heals it (the fresh blob replaces it).
-    const buf = await entry.blob.arrayBuffer();
-    const fresh = new Blob([buf], { type: entry.blob.type || "image/jpeg" });
-    return createImageBitmap(fresh, opts || undefined)
-      .catch(() => _imgElementBitmap(fresh, opts))
-      .then(
-        (bm) => {
-          implog("re-blob ok " + name);
-          if (entry.assetHash && assetStore.get(entry.assetHash) === entry.blob) assetStore.set(entry.assetHash, fresh);
-          entry.blob = fresh;
-          return bm;
-        },
-        (err3) => {
-          implog("re-blob FAIL " + name + ": " + (err3 && err3.message));
-          throw err3;
-        },
-      );
+  const src = entry.bytes ? new Blob([entry.bytes], { type: "image/jpeg" }) : entry.blob;
+  return createImageBitmap(src, opts || undefined).catch(async (err) => {
+    implog("cib fail " + name + " " + tgt + (entry.bytes ? " (bytes)" : "") + ": " + (err && err.message));
+    implog("probe " + name + " " + (await _blobProbe(src)));
+    return _imgElementBitmap(src, opts).then(
+      (bm) => {
+        implog("img-fallback ok " + name);
+        return bm;
+      },
+      (err2) => {
+        implog("img-fallback fail " + name + ": " + (err2 && err2.message));
+        throw err2;
+      },
+    );
   });
 }
 
@@ -598,6 +586,15 @@ cfgImages.addEventListener("change", () => {
         scale: null,
         simHidden: false,
       };
+      // Rescue the bytes into JS memory while the File reference is fresh: on
+      // Android the picker's grant can lapse, after which every read of the File
+      // throws NotReadableError ("permission problems after a reference...").
+      file.arrayBuffer().then(
+        (buf) => {
+          entry.bytes = buf;
+        },
+        () => {},
+      );
       ensureAssetHash(entry); // content-address the bytes for on-demand serving
       ensureThumbHash(entry); // content-address the tiny preview too
       entries[i] = entry;
@@ -4392,6 +4389,7 @@ function _sessionEntry(si, id) {
     id,
     file: null,
     blob: null,
+    bytes: null,
     assetHash: si.assetHash || null, // content key; bytes pulled on demand
     thumbHash: si.thumbHash || null, // tiny preview, pulled first
     name: si.name,
@@ -4419,6 +4417,9 @@ function _importMetaReplace(session) {
   yoloPool.embeddingCache.clear();
   yoloPool.dots.clear();
   rankList.innerHTML = "";
+  // Old session's content-addressed bytes are unreachable after a replace; keeping
+  // them leaked a whole session of blobs per import (and blob storage is quota'd).
+  assetStore.clear();
 
   // Restore config to DOM + state
   state.outW = session.outW;
@@ -4531,6 +4532,11 @@ function _importImage(i, msg, ctx) {
   if (!entry) return;
 
   if (msg.jpegBuf) {
+    // Keep the compressed bytes in JS memory as the source of truth. Android
+    // Chrome pages constructed Blobs into browser-managed storage whose backing
+    // can go unreadable (NotReadableError on every later use) -- entry.bytes is
+    // immune, and decodeEntry mints a transient Blob from it per decode.
+    entry.bytes = msg.jpegBuf;
     entry.blob = new Blob([msg.jpegBuf], { type: "image/jpeg" });
     if (!entry.w && msg.w) entry.w = msg.w;
     if (!entry.h && msg.h) entry.h = msg.h;
@@ -4558,7 +4564,7 @@ function _importImage(i, msg, ctx) {
 // Decodes straight to thumb size; failures back off and retry (memory-pressure
 // decodes recover once transient allocations are released).
 async function _thumbFallback(entry, attempt = 0) {
-  if (!entry.blob || entry.thumbUrl || !entry.w || !entry.h || imgById(entry.id) !== entry) return;
+  if ((!entry.blob && !entry.bytes) || entry.thumbUrl || !entry.w || !entry.h || imgById(entry.id) !== entry) return;
   try {
     const ts = Math.min(1, 256 / Math.max(entry.w, entry.h));
     const tW = Math.max(1, Math.round(entry.w * ts));
@@ -4582,8 +4588,8 @@ async function _thumbFallback(entry, attempt = 0) {
 // plain-http LAN origins, a common collab setup here.
 const assetStore = new Map(); // assetHash -> Blob (compressed bytes)
 
-async function _assetHash(blob) {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+async function _assetHash(src) {
+  const bytes = new Uint8Array(src instanceof Blob ? await src.arrayBuffer() : src);
   let h1 = 0x811c9dc5,
     h2 = 0x01000193;
   for (let i = 0; i < bytes.length; i++) {
@@ -4595,14 +4601,18 @@ async function _assetHash(blob) {
 
 // Ensure an entry's bytes are hashed + registered; returns the hash.
 async function ensureAssetHash(entry) {
-  if (!entry.blob) return entry.assetHash || null;
-  if (!entry.assetHash) entry.assetHash = await _assetHash(entry.blob);
-  assetStore.set(entry.assetHash, entry.blob);
+  if (!entry.blob && !entry.bytes) return entry.assetHash || null;
+  if (!entry.assetHash) entry.assetHash = await _assetHash(entry.bytes || entry.blob);
+  assetStore.set(entry.assetHash, entry.blob || new Blob([entry.bytes], { type: "image/jpeg" }));
   return entry.assetHash;
 }
 
 window.hasAsset = (hash) => assetStore.has(hash);
 window.getAssetBuffer = async (hash) => {
+  // Serve from a live entry's JS-memory bytes when possible (blob backing can
+  // go unreadable on Android); copy so chunked sends can't detach the resident.
+  const e = state.images.find((x) => x.assetHash === hash && x.bytes);
+  if (e) return e.bytes.slice(0);
   const b = assetStore.get(hash);
   return b ? await b.arrayBuffer() : null;
 };
@@ -4612,6 +4622,11 @@ async function _fillEntryFromStore(entry) {
   const blob = assetStore.get(entry.assetHash);
   if (!blob || entry.blob) return false;
   entry.blob = blob;
+  try {
+    entry.bytes = await blob.arrayBuffer(); // rescue into JS memory while readable
+  } catch (err) {
+    implog("store read fail " + (entry.name || entry.id) + ": " + (err && err.message));
+  }
   await _thumbFallback(entry); // thumb-size decode (never full-res); retries under pressure
   simRefreshGroup(entry.id);
   _simViewDirty = true;
@@ -4767,17 +4782,15 @@ window.addEventListener("collab:remote-session", async (e) => {
 
 window.addEventListener("collab:remote-image", async (e) => {
   const { id, name, w, h, jpegBase64, encoding, polygons, simPos, simAngle } = e.detail;
-  const blob = await (await fetch(jpegBase64)).blob();
+  const buf = await (await fetch(jpegBase64)).arrayBuffer();
   if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64); // live-add binary path
-  const bm = await createImageBitmap(blob);
-  const thumbUrl = buildThumb(bm, w, h);
-  bm.close();
 
   const newId = id || newImgId();
   if (imgById(newId)) return; // already have this image (duplicate / echo)
-  const newEntry = { id: newId, file: null, blob, assetHash: null, name, thumbUrl, w, h, polygons: polygons || [], currentPoly: [], scale: null, simHidden: false };
+  const newEntry = { id: newId, file: null, bytes: buf, blob: new Blob([buf], { type: "image/jpeg" }), assetHash: null, name, thumbUrl: null, w, h, polygons: polygons || [], currentPoly: [], scale: null, simHidden: false };
   ensureAssetHash(newEntry); // register bytes so this peer can serve them on request
   registerImages([newEntry], { broadcast: false });
+  _thumbFallback(newEntry); // thumb-size decode; patches the filmstrip when done
 
   if (encoding) _restoreEncodings([encoding], [newId]);
 
@@ -5128,9 +5141,10 @@ async function _populateImageEntry(detail) {
     if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
     return;
   }
-  const blob = await (await fetch(jpegBase64)).blob();
+  const buf = await (await fetch(jpegBase64)).arrayBuffer();
   if (jpegBase64.startsWith("blob:")) URL.revokeObjectURL(jpegBase64);
-  entry.blob = blob; // kept compressed; decoded on demand
+  entry.bytes = buf; // JS-memory source of truth (blob backing can go bad on Android)
+  entry.blob = new Blob([buf], { type: "image/jpeg" });
   if (!entry.w && w) entry.w = w;
   if (!entry.h && h) entry.h = h;
   await _thumbFallback(entry); // thumb-size decode (never full-res); retries under pressure

@@ -233,13 +233,15 @@ const SessionIO = {
 
     // Entries whose bytes have not arrived yet (collab pull still in flight) cannot
     // be exported; fail with names instead of crashing on a null blob.
-    const missing = state.images.filter((e) => !e.blob).map((e) => e.name || e.id);
+    const missing = state.images.filter((e) => !e.blob && !e.bytes).map((e) => e.name || e.id);
     if (missing.length) {
       throw new Error(missing.length + " image(s) still transferring: " + missing.slice(0, 3).join(", ") + (missing.length > 3 ? ", ..." : ""));
     }
 
-    // Hand the worker the compressed bytes (transferred, zero-copy).
-    const imageBufs = await Promise.all(state.images.map((e) => e.blob.arrayBuffer()));
+    // Hand the worker the compressed bytes. entry.bytes is preferred (a Blob's
+    // backing can go unreadable on Android) and copied, because the postMessage
+    // transfer below would otherwise detach the entry's resident buffer.
+    const imageBufs = await Promise.all(state.images.map((e) => (e.bytes ? e.bytes.slice(0) : e.blob.arrayBuffer())));
 
     const session = {
       version: 2,
