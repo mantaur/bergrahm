@@ -3,7 +3,7 @@ const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || w
 
 // Keep in sync with the ?v= cache-buster in index.html. Shown by the import
 // debug overlay so on-device tests can prove which build they are running.
-const BUILD = "98";
+const BUILD = "99";
 
 // Import/decode debug log. Always captured (bounded, strings only); the on-screen
 // overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
@@ -13,7 +13,7 @@ function implog(msg) {
   if (_implog.length > 300) _implog.splice(0, 100);
   _implog.push(msg);
   const el = document.getElementById("imp-dbg");
-  if (el) el.textContent = "BUILD " + BUILD + "\n" + _implog.slice(-28).join("\n");
+  if (el) el.textContent = "BUILD " + BUILD + "\n" + _implog.slice(-20).join("\n");
 }
 (function () {
   const p = new URLSearchParams(location.search);
@@ -21,9 +21,9 @@ function implog(msg) {
   const el = document.createElement("div");
   el.id = "imp-dbg";
   el.style.cssText =
-    "position:fixed;right:6px;bottom:6px;z-index:99999;max-width:70vw;font:10px/1.3 monospace;" +
+    "position:fixed;left:6px;bottom:6px;z-index:99999;max-width:70vw;font:10px/1.3 monospace;" +
     "background:rgba(0,0,0,.85);color:#fc6;padding:6px 8px;border-radius:6px;white-space:pre-wrap;" +
-    "pointer-events:none;max-height:50vh;overflow:hidden";
+    "pointer-events:none;max-height:35vh;overflow:hidden";
   el.textContent = "BUILD " + BUILD;
   document.body.appendChild(el);
   implog("UA " + navigator.userAgent);
