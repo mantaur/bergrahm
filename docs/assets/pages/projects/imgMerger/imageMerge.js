@@ -3,7 +3,7 @@ const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || w
 
 // Keep in sync with the ?v= cache-buster in index.html. Shown by the import
 // debug overlay so on-device tests can prove which build they are running.
-const BUILD = "100";
+const BUILD = "101";
 
 // Import/decode debug log. Always captured (bounded, strings only); the on-screen
 // overlay is opt-in via ?impdbg=1 or localStorage impdbg=1.
@@ -1731,6 +1731,37 @@ function requestDecode(x, y) {
   applyMaskAsPolygon(seg.mask, seg.maskW, seg.maskH, imgIdx);
 }
 
+// Seg polygons are kept out of an edge margin: min(128px, 10% of the image's
+// width/height per axis). A mask that runs to the frame edge gives the merge
+// nothing to blend into (hard cut); the margin guarantees blend room. Only the
+// segmentor path is clipped -- manually painted polygons are untouched.
+const SEG_EDGE_MARGIN_PX = 128;
+const SEG_EDGE_MARGIN_FRAC = 0.1;
+
+// Sutherland-Hodgman clip of a closed polygon to an axis-aligned rectangle.
+function _clipPolyToRect(poly, x1, y1, x2, y2) {
+  const planes = [
+    { inside: (p) => p.x >= x1, cross: (a, b) => ({ x: x1, y: a.y + ((x1 - a.x) * (b.y - a.y)) / (b.x - a.x) }) },
+    { inside: (p) => p.x <= x2, cross: (a, b) => ({ x: x2, y: a.y + ((x2 - a.x) * (b.y - a.y)) / (b.x - a.x) }) },
+    { inside: (p) => p.y >= y1, cross: (a, b) => ({ x: a.x + ((y1 - a.y) * (b.x - a.x)) / (b.y - a.y), y: y1 }) },
+    { inside: (p) => p.y <= y2, cross: (a, b) => ({ x: a.x + ((y2 - a.y) * (b.x - a.x)) / (b.y - a.y), y: y2 }) },
+  ];
+  let out = poly;
+  for (const pl of planes) {
+    const inp = out;
+    out = [];
+    for (let i = 0; i < inp.length; i++) {
+      const a = inp[i];
+      const b = inp[(i + 1) % inp.length];
+      const ain = pl.inside(a);
+      if (ain) out.push(a);
+      if (ain !== pl.inside(b)) out.push(pl.cross(a, b));
+    }
+    if (out.length === 0) return [];
+  }
+  return out;
+}
+
 function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   if (forImgIdx !== state.rankOrder[state.paintIdx]) return; // stale result
   const poly = maskToPolygon(maskData, width, height);
@@ -1745,7 +1776,15 @@ function applyMaskAsPolygon(maskData, width, height, forImgIdx) {
   const scaleY = entry.h / height;
   const scaledPoly = scaleX === 1 && scaleY === 1 ? poly : poly.map((pt) => ({ x: pt.x * scaleX, y: pt.y * scaleY }));
 
-  setPolygons(forImgIdx, [...entry.polygons, scaledPoly], { undo: true });
+  const mx = Math.min(SEG_EDGE_MARGIN_PX, entry.w * SEG_EDGE_MARGIN_FRAC);
+  const my = Math.min(SEG_EDGE_MARGIN_PX, entry.h * SEG_EDGE_MARGIN_FRAC);
+  const clipped = _clipPolyToRect(scaledPoly, mx, my, entry.w - mx, entry.h - my);
+  if (clipped.length < 3) {
+    updateYoloStatus("Segment lies in the edge margin - paint it manually if needed.", true);
+    return;
+  }
+
+  setPolygons(forImgIdx, [...entry.polygons, clipped], { undo: true });
   updateYoloStatus("Segment added. Click for another or switch to manual mode.");
 }
 
