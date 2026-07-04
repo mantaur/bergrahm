@@ -23,10 +23,18 @@ function _sessionWorkerBody() {
     }
   };
 
+  function sniffType(buf) {
+    const b = new Uint8Array(buf, 0, Math.min(12, buf.byteLength));
+    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+    if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
+    return null;
+  }
+
   // JPEG/PNG bytes zip as-is: no re-encode quality loss, no 32MP decode spike.
   function isPassthroughImage(buf) {
-    const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
-    return (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) || (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47);
+    const t = sniffType(buf);
+    return t === "image/jpeg" || t === "image/png";
   }
 
   async function doExport({ session, imageBufs, encodings }) {
@@ -77,8 +85,7 @@ function _sessionWorkerBody() {
   // ImageDecoder first (no Blob, dodges Android's unreliable blob storage),
   // transient Blob + createImageBitmap where unavailable.
   async function decodeScaled(buf, tW, tH) {
-    const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
-    const type = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff ? "image/jpeg" : b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 ? "image/png" : null;
+    const type = sniffType(buf);
     if (type && typeof ImageDecoder !== "undefined") {
       try {
         const dec = new ImageDecoder({ data: buf, type, desiredWidth: tW, desiredHeight: tH });
@@ -97,6 +104,14 @@ function _sessionWorkerBody() {
       }
     }
     return createImageBitmap(new Blob([buf], { type: "image/jpeg" }), { resizeWidth: tW, resizeHeight: tH, resizeQuality: "medium" });
+  }
+
+  // Old sessions may lack stored dimensions; probe them from the bytes.
+  async function probeDims(buf) {
+    const bm = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
+    const dims = { w: bm.width, h: bm.height };
+    bm.close();
+    return dims;
   }
 
   // Thumbnail decoded straight to target size (no full-res bitmap kept).
@@ -144,12 +159,7 @@ function _sessionWorkerBody() {
         // A failed decode must not abort the import: ship the bytes thumb-less
         // and retry after the stream.
         try {
-          if (!w || !h) {
-            const full = await createImageBitmap(new Blob([jpegBuf], { type: "image/jpeg" }));
-            w = full.width;
-            h = full.height;
-            full.close();
-          }
+          if (!w || !h) ({ w, h } = await probeDims(jpegBuf));
           thumbBuf = await thumbFromBuf(jpegBuf, w, h);
         } catch (err) {
           thumbBuf = null;
@@ -184,12 +194,7 @@ function _sessionWorkerBody() {
           h = si.h,
           thumbBuf = null;
         try {
-          if (!w || !h) {
-            const full = await createImageBitmap(new Blob([jpegBuf], { type: "image/jpeg" }));
-            w = full.width;
-            h = full.height;
-            full.close();
-          }
+          if (!w || !h) ({ w, h } = await probeDims(jpegBuf));
           thumbBuf = await thumbFromBuf(jpegBuf, w, h);
         } catch (err) {
           thumbBuf = null; // bytes still land; the app thumbs later
@@ -205,12 +210,7 @@ function _sessionWorkerBody() {
       try {
         const buf = await zip.file("images/" + i + ".jpg").async("arraybuffer");
         let { w, h } = session.images[i] || {};
-        if (!w || !h) {
-          const full = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
-          w = full.width;
-          h = full.height;
-          full.close();
-        }
+        if (!w || !h) ({ w, h } = await probeDims(buf));
         const thumbBuf = await thumbFromBuf(buf, w, h);
         self.postMessage({ type: "thumb", i, thumbBuf, w, h }, [thumbBuf]);
       } catch (err) {

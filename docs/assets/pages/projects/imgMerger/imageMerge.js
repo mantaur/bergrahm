@@ -2,7 +2,7 @@
 const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia("(pointer: coarse)").matches;
 
 // Keep in sync with the ?v= cache-buster in index.html.
-const BUILD = "104";
+const BUILD = "105";
 
 // Always-on bounded debug log; overlay opt-in via ?impdbg=1 / localStorage impdbg=1.
 const _implog = [];
@@ -478,25 +478,34 @@ async function _blobProbe(blob) {
 
 // ImageDecoder needs the true container type.
 function _sniffImageType(bytes) {
-  const b = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
+  const b = new Uint8Array(bytes, 0, Math.min(12, bytes.byteLength));
   if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
   if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
   return null;
 }
 
 // WebCodecs decode straight off the ArrayBuffer -- no Blob, so Android's
 // unreliable blob storage never enters the path. SecureContext-only.
-function _imageDecoderBitmap(bytes, type, opts) {
+// async so a synchronous constructor throw becomes a rejection, not a crash
+// in callers that expect a promise.
+async function _imageDecoderBitmap(bytes, type, opts) {
   const init = { data: bytes, type };
   if (opts && opts.resizeWidth) {
     init.desiredWidth = opts.resizeWidth;
     init.desiredHeight = opts.resizeHeight;
   }
   const dec = new ImageDecoder(init);
-  return dec
-    .decode()
-    .then(({ image }) => createImageBitmap(image, opts || undefined).finally(() => image.close()))
-    .finally(() => dec.close());
+  try {
+    const { image } = await dec.decode();
+    try {
+      return await createImageBitmap(image, opts || undefined);
+    } finally {
+      image.close();
+    }
+  } finally {
+    dec.close();
+  }
 }
 
 // Decode an entry straight to opts' target size (never the full-res bitmap).
@@ -521,10 +530,12 @@ function decodeEntry(entry, opts) {
   return first.then((bm) => {
     if (bm) return bm;
     const haveBytes = entry.bytes && entry.bytes.byteLength > 0;
-    const src = haveBytes ? new Blob([entry.bytes], { type: "image/jpeg" }) : entry.blob;
+    const src = haveBytes ? new Blob([entry.bytes], { type: type || "image/jpeg" }) : entry.blob;
     return createImageBitmap(src, opts || undefined).catch(async (err) => {
       implog("cib fail " + name + " " + tgt + (haveBytes ? " (bytes)" : "") + ": " + (err && err.message));
-      implog("probe " + name + " " + (await _blobProbe(src)));
+      // A transient bytes-minted blob is healthy by construction; probing only
+      // tells us something about a stored blob.
+      if (!haveBytes) implog("probe " + name + " " + (await _blobProbe(src)));
       // data: URL when bytes exist: inline, no blob storage, works on the
       // insecure LAN contexts where ImageDecoder is unavailable.
       const url = haveBytes ? _bufToDataUrl(entry.bytes, type || "image/jpeg") : URL.createObjectURL(src);
@@ -987,6 +998,8 @@ function loadPainterImage(rankIdx) {
   if (!entry) return;
 
   // A fresh view re-arms exhausted decode backoffs (recover on look).
+  // _lastPainterViewId resets on replace-import: ids are stable across
+  // re-imports, and the re-imported viewed image must re-arm too.
   if (_lastPainterViewId !== imgIdx) {
     _lastPainterViewId = imgIdx;
     entry._painterRetry = 0;
@@ -4449,6 +4462,7 @@ function _sessionEntry(si, id) {
 // positions -- so masks + the filmstrip render immediately. Returns { ids }.
 function _importMetaReplace(session) {
   teardownSim();
+  _lastPainterViewId = null;
 
   // Wipe existing state
   state.images = [];
@@ -4458,6 +4472,7 @@ function _importMetaReplace(session) {
   yoloPool.dots.clear();
   rankList.innerHTML = "";
   assetStore.clear(); // old session's assets are unreachable; keeping them leaked a session per import
+  _assetReqAt.clear(); // stale request timestamps would delay fresh pulls of re-imported hashes
 
   // Restore config to DOM + state
   state.outW = session.outW;
