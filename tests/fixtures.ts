@@ -40,6 +40,7 @@ export async function routeVendor(context: BrowserContext) {
   await context.route(/unpkg\.com\/.*peerjs/i, r => r.fulfill(jsFile('peerjs.min.js')));
   await context.route(/qrcodejs/i,             r => r.fulfill(jsFile('qrcode.min.js')));
   await context.route(/cdnjs\.cloudflare\.com\/.*jszip/i, r => r.fulfill(jsFile('jszip.min.js')));
+  await context.route(/googletagmanager\.com|google-analytics\.com/i, r => r.abort()); // no GA pings from tests
 }
 
 // Init script (string form so it can be reused for manually-created pages).
