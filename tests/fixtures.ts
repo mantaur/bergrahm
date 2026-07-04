@@ -62,6 +62,17 @@ const COLLAB_SPY_INIT = `
       bubbles: true, cancelable: true,
     }));
   };
+  // Multi-finger variant: touching = fingers still on screen ({id,x,y}),
+  // changed = fingers that changed this event (defaults to touching).
+  window.__fireMultiTouch = (el, type, touching, changed) => {
+    const mk = (p) => new Touch({ identifier: p.id, target: el, clientX: p.x, clientY: p.y });
+    const ts = (touching || []).map(mk);
+    const ch = (changed || touching || []).map(mk);
+    el.dispatchEvent(new TouchEvent(type, {
+      touches: ts, targetTouches: ts, changedTouches: ch,
+      bubbles: true, cancelable: true,
+    }));
+  };
 `;
 
 export const test = base.extend<{}>({

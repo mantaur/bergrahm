@@ -2,7 +2,7 @@
 const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia("(pointer: coarse)").matches;
 
 // Keep in sync with the ?v= cache-buster in index.html.
-const BUILD = "105";
+const BUILD = "106";
 
 // Always-on bounded debug log; overlay opt-in via ?impdbg=1 / localStorage impdbg=1.
 const _implog = [];
@@ -4005,6 +4005,11 @@ window.addEventListener("resize", () => {
         } else if (mode === "idle") {
           mode = "view";
           initViewPinch(all[0], all[1]);
+        } else if (mode === "pan") {
+          // A second finger mid-pan escalates straight into pinch-zoom.
+          panLastPx = null;
+          mode = "view";
+          initViewPinch(all[0], all[1]);
         } else if (mode === "lifted") {
           mode = "group";
           const t1 = findTouch(all, liftedId) || all[0];
@@ -4145,8 +4150,16 @@ window.addEventListener("resize", () => {
         if (all.length < 2) {
           commitScale();
           grpStart = null;
-          if (all.length === 1 && findTouch(all, liftedId)) {
-            // one finger remains -- back to drag mode
+          const g = all.length === 1 && liftedGroup ? simGroups.get(liftedGroup.imgIdx) : null;
+          if (g) {
+            // One finger remains -- resume the drag with it. commitScale's
+            // refresh rebuilt the sim group, so re-point at the live body and
+            // re-anchor the grab offset under that finger.
+            const t = all[0];
+            const phys = viewport.canvasToWorld(t.clientX, t.clientY);
+            liftedId = t.identifier;
+            liftedGroup = g;
+            liftedOffset = { x: g.x - phys.x, y: g.y - phys.y };
             mode = "lifted";
           } else {
             releaseGroup();
@@ -4156,7 +4169,14 @@ window.addEventListener("resize", () => {
       } else if (mode === "view") {
         if (all.length < 2) {
           viewStart = null;
-          mode = "idle";
+          if (all.length === 1) {
+            // The remaining finger keeps panning.
+            liftedId = all[0].identifier;
+            panLastPx = viewport.clientToCanvasPx(all[0].clientX, all[0].clientY);
+            mode = "pan";
+          } else {
+            mode = "idle";
+          }
         }
       }
     },
