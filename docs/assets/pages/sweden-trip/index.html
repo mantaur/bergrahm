@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <!-- Google tag (gtag.js) -- production only, so dev/LAN/test visits never pollute analytics -->
+    <script>
+        if (location.hostname.endsWith("bergrahm.com")) {
+            var gs = document.createElement("script");
+            gs.async = true;
+            gs.src = "https://www.googletagmanager.com/gtag/js?id=G-0FMB6WDGXG";
+            document.head.appendChild(gs);
+            window.dataLayer = window.dataLayer || [];
+            window.gtag = function () {
+                dataLayer.push(arguments);
+            };
+            gtag("js", new Date());
+            gtag("config", "G-0FMB6WDGXG");
+        }
+    </script>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <meta name="Description" content="Personal travel guide">
+    <meta name="robots" content="noindex, nofollow">
+
+    <link rel="stylesheet" href="../../main.css">
+    <link rel="stylesheet" href="trip.css?v=6">
+    <link rel="shortcut icon" type="image/png" href="../../images/favicon2.png" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <title>Stockholm guide</title>
+</head>
+
+<body>
+    <div class="wrapper">
+        <div></div> <!-- Dummy div just to align things right -->
+        <div class="header">
+            <h1>Stockholm, picked for Britos</h1>
+            <p>Personal recommendations and favorites for a short visit to Stockholm. I hope you'll enjoy your stay ❤️</p>
+        </div>
+
+        <div class="trip-controls">
+            <input id="trip-search" class="trip-search" type="search" placeholder="Search places..."
+                autocomplete="off">
+            <div id="trip-chips" class="trip-chips"></div>
+            <div class="trip-view-toggle">
+                <button id="trip-view-list" class="trip-view-btn active" type="button">List</button>
+                <button id="trip-view-map" class="trip-view-btn" type="button">Map</button>
+            </div>
+        </div>
+
+        <div id="trip-status" class="trip-status"></div>
+
+        <div id="trip-grid" class="trip-grid"></div>
+        <div id="trip-map" class="trip-map" hidden></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="trip.js?v=7"></script>
+</body>
+
+</html>
