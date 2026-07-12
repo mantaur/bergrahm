@@ -2,6 +2,22 @@
 <html lang="en">
 
 <head>
+    <!-- Google tag (gtag.js) -- production only, so dev/LAN/test visits never pollute analytics -->
+    <script>
+        if (location.hostname.endsWith("bergrahm.com")) {
+            var gs = document.createElement("script");
+            gs.async = true;
+            gs.src = "https://www.googletagmanager.com/gtag/js?id=G-0FMB6WDGXG";
+            document.head.appendChild(gs);
+            window.dataLayer = window.dataLayer || [];
+            window.gtag = function () {
+                dataLayer.push(arguments);
+            };
+            gtag("js", new Date());
+            gtag("config", "G-0FMB6WDGXG");
+        }
+    </script>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
